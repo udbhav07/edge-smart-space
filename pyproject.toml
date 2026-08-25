@@ -2,20 +2,24 @@
 name = "edge-smart-space"
 version = "0.1.0"
 description = "Self-calibrating, fault-tolerant autonomous personal smart space"
-requires-python = ">=3.10"
 
-# Pinned exactly: no open ranges (docs/coding-guidelines.md, Dependencies).
+# numpy 2.3 dropped Python 3.10. JetPack 6 ships 3.10 by default, so the
+# Jetson needs a 3.11+ environment at acquisition (DESIGN.md A-05, 9.2).
+requires-python = ">=3.11"
+
+# Pinned exactly to the verified working set: no open ranges
+# (docs/coding-guidelines.md, Dependencies & Security).
 dependencies = [
-    "pydantic==2.9.2",
+    "pydantic==2.12.5",
     "paho-mqtt==2.1.0",
-    "numpy==1.26.4",
-    "PyYAML==6.0.2",
+    "numpy==2.3.3",
+    "PyYAML==6.0.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==8.3.3",
-    "pytest-cov==5.0.0",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
 ]
 
 [tool.pytest.ini_options]
