@@ -68,8 +68,8 @@ mode:
 # simulator makes simulated success predict nothing about hardware.
 sim:
   room:
-    thermal_capacitance_j_per_k: 900000.0   # ~35 m3 room plus furnishings
-    thermal_resistance_k_per_w: 0.018
+    thermal_capacitance_j_per_k: 600000.0   # ~35 m3 room plus furnishings
+    thermal_resistance_k_per_w: 0.0035
     cooling_power_w: 2500.0
     occupant_gain_w: 100.0
     initial_temperature_c: 29.0
