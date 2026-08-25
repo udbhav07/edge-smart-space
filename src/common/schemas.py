@@ -22,9 +22,28 @@ Payload examples: DESIGN.md section 6.2.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from enum import Enum
+from types import MappingProxyType
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
+
+#: Absolute tolerance when checking a field against the inputs it is derived
+#: from. Two orders of magnitude below the resolution of any sensor in the
+#: system, so it catches a genuinely wrong value without rejecting ordinary
+#: floating-point round-off.
+_DERIVED_FIELD_TOLERANCE = 1e-6
+
+#: The only values a boolean-unit reading may carry (FR-02 binary occupancy).
+_BOOLEAN_READING_VALUES = (0.0, 1.0)
 
 # --- Enumerations ----------------------------------------------------------
 
@@ -164,12 +183,27 @@ class SensorReading(BlackboardMessage):
     Carries its own id and timestamp so a consumer never has to infer either
     from the topic or from arrival order. Arrival order is not trustworthy:
     A-02's uniform sampling will not survive WiFi reconnect bursts.
+
+    Temperature and humidity are deliberately unbounded. Their physical limits
+    are detector D3's configured range, and a reading outside it must reach
+    the detector to be detected (FR-22). A boolean reading is different: a PIR
+    reporting 27.4 is a malformed message, not a sensor fault, so it is
+    rejected here.
     """
 
     sensor_id: str = Field(min_length=1)
     value: float
     unit: Unit
     quality: Quality = Quality.OK
+
+    @model_validator(mode="after")
+    def _boolean_readings_carry_only_zero_or_one(self) -> SensorReading:
+        if self.unit is Unit.BOOLEAN and self.value not in _BOOLEAN_READING_VALUES:
+            raise ValueError(
+                f"a {Unit.BOOLEAN.value} reading must be one of "
+                f"{list(_BOOLEAN_READING_VALUES)}, got {self.value!r}"
+            )
+        return self
 
 
 class SensorHealth(BlackboardMessage):
@@ -187,7 +221,12 @@ class SensorHealth(BlackboardMessage):
 
 
 class ThermalEstimate(BlackboardMessage):
-    """One-step prediction and residual, published every tick (FR-05)."""
+    """One-step prediction and residual, published every tick (FR-05).
+
+    ``residual`` is derived from the other two fields, so it is checked
+    against them. An inconsistent triple would corrupt D4, whose CUSUM test
+    runs on this residual, and would do so silently.
+    """
 
     t_in: float
     t_pred: float
@@ -197,6 +236,18 @@ class ThermalEstimate(BlackboardMessage):
         ge=0.0, le=1.0, description="Derived from trace(P). Not a probability."
     )
     adaptation: AdaptationState
+
+    @model_validator(mode="after")
+    def _residual_agrees_with_the_values_it_is_derived_from(self) -> ThermalEstimate:
+        expected = self.t_in - self.t_pred
+        if not math.isclose(
+            self.residual, expected, abs_tol=_DERIVED_FIELD_TOLERANCE
+        ):
+            raise ValueError(
+                f"residual {self.residual!r} contradicts t_in - t_pred "
+                f"({expected!r})"
+            )
+        return self
 
 
 class Coefficients(BlackboardMessage):
@@ -219,6 +270,23 @@ class Coefficients(BlackboardMessage):
     samples_since_reset: int = Field(ge=0)
     adaptation: AdaptationState
 
+    @model_validator(mode="after")
+    def _steady_state_residual_agrees_with_the_coefficients(self) -> Coefficients:
+        """Section 5.2.1 makes drift from a1 + a2 = 1 a diagnostic signal.
+
+        A value that disagrees with the coefficients it summarises would
+        misreport that diagnostic, so the two are checked against each other.
+        """
+        expected = abs(self.a1 + self.a2 - 1.0)
+        if not math.isclose(
+            self.steady_state_residual, expected, abs_tol=_DERIVED_FIELD_TOLERANCE
+        ):
+            raise ValueError(
+                f"steady_state_residual {self.steady_state_residual!r} contradicts "
+                f"|a1 + a2 - 1| ({expected!r})"
+            )
+        return self
+
 
 # --- Faults and mode -------------------------------------------------------
 
@@ -226,9 +294,11 @@ class Coefficients(BlackboardMessage):
 class FaultEvent(BlackboardMessage):
     """A detector's finding, with the evidence that produced it.
 
-    evidence is a mutable mapping by necessity: each detector reports a
-    different set of numeric features and the schema is shared. Treat it as
-    read-only; it exists to be displayed and logged, never mutated.
+    evidence is an open mapping because each detector reports a different set
+    of numeric features and the schema is shared. It is made immutable at
+    validation: freezing the model alone would still leave the dictionary
+    writable, and a fault's evidence is the record of why a mode transition
+    happened. It serialises back to a plain JSON object.
     """
 
     fault_id: str = Field(min_length=1)
@@ -237,8 +307,17 @@ class FaultEvent(BlackboardMessage):
     fault_class: FaultClass = Field(alias="class")
     confidence: float = Field(ge=0.0, le=1.0)
     detected_ts: float = Field(gt=0.0)
-    evidence: dict[str, float] = Field(default_factory=dict)
+    evidence: Mapping[str, float] = Field(default_factory=dict)
     mode_impact: Mode
+
+    @field_validator("evidence", mode="after")
+    @classmethod
+    def _freeze_evidence(cls, value: Mapping[str, float]) -> Mapping[str, float]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("evidence")
+    def _serialise_evidence(self, value: Mapping[str, float]) -> dict[str, float]:
+        return dict(value)
 
 
 class ModeState(BlackboardMessage):

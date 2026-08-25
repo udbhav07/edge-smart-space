@@ -101,6 +101,23 @@ class TestSensorReading:
         with pytest.raises(ValidationError):
             _reading(unit="kelvin")
 
+    def test_a_boolean_reading_carrying_a_temperature_is_rejected(self):
+        """A PIR reporting 27.4 is a malformed message, not a sensor fault."""
+        with pytest.raises(ValidationError):
+            _reading(sensor_id="pir_01", unit=Unit.BOOLEAN, value=27.4)
+
+    @pytest.mark.parametrize("value", [0.0, 1.0])
+    def test_a_boolean_reading_accepts_both_occupancy_states(self, value):
+        assert _reading(sensor_id="pir_01", unit=Unit.BOOLEAN, value=value).value == value
+
+    @pytest.mark.parametrize("value", [-40.0, 150.0])
+    def test_an_out_of_range_temperature_stays_representable_for_d3(self, value):
+        """FR-22 detects out-of-range readings, so they must reach the detector."""
+        assert _reading(value=value).value == value
+
+    def test_an_out_of_range_humidity_stays_representable_for_d3(self):
+        assert _reading(unit=Unit.PERCENT_RH, value=120.0).value == 120.0
+
 
 class TestThermalEstimate:
     def test_model_confidence_is_bounded_to_the_unit_interval(self):
@@ -126,6 +143,44 @@ class TestThermalEstimate:
                 model_confidence=0.87,
                 adaptation=AdaptationState.ACTIVE,
             )
+
+    def test_a_residual_contradicting_its_inputs_is_rejected(self):
+        """An inconsistent residual would corrupt D4's CUSUM silently."""
+        with pytest.raises(ValidationError):
+            ThermalEstimate(
+                ts=TS,
+                t_in=27.4,
+                t_pred=27.31,
+                residual=99.0,
+                residual_sigma=0.12,
+                model_confidence=0.87,
+                adaptation=AdaptationState.ACTIVE,
+            )
+
+    def test_the_documented_payload_survives_float_round_off(self):
+        """27.4 - 27.31 is not exactly 0.09 in binary floating point."""
+        estimate = ThermalEstimate(
+            ts=TS,
+            t_in=27.4,
+            t_pred=27.31,
+            residual=0.09,
+            residual_sigma=0.12,
+            model_confidence=0.87,
+            adaptation=AdaptationState.ACTIVE,
+        )
+        assert estimate.residual == 0.09
+
+    def test_a_zero_residual_is_valid_when_prediction_matches_measurement(self):
+        estimate = ThermalEstimate(
+            ts=TS,
+            t_in=27.4,
+            t_pred=27.4,
+            residual=0.0,
+            residual_sigma=0.12,
+            model_confidence=0.87,
+            adaptation=AdaptationState.FROZEN,
+        )
+        assert estimate.residual == 0.0
 
 
 class TestCoefficients:
@@ -177,6 +232,36 @@ class TestCoefficients:
                 adaptation=AdaptationState.ACTIVE,
             )
 
+    def test_a_steady_state_residual_contradicting_the_coefficients_is_rejected(self):
+        """Section 5.2.1 makes drift from a1 + a2 = 1 a diagnostic signal."""
+        with pytest.raises(ValidationError):
+            Coefficients(
+                ts=TS,
+                a1=0.98,
+                a2=0.02,
+                a3=-0.04,
+                a4=0.01,
+                trace_p=0.1,
+                steady_state_residual=42.0,
+                samples_since_reset=1,
+                adaptation=AdaptationState.ACTIVE,
+            )
+
+    def test_the_documented_payload_is_internally_consistent(self):
+        """The example in DESIGN.md section 6.2 must satisfy its own invariant."""
+        coefficients = Coefficients(
+            ts=TS,
+            a1=0.9812,
+            a2=0.0173,
+            a3=-0.0421,
+            a4=0.0094,
+            trace_p=0.0031,
+            steady_state_residual=0.0015,
+            samples_since_reset=14203,
+            adaptation=AdaptationState.ACTIVE,
+        )
+        assert coefficients.steady_state_residual == 0.0015
+
 
 class TestFaultEvent:
     """The payload in DESIGN.md section 6.2 uses the reserved word 'class'."""
@@ -221,6 +306,25 @@ class TestFaultEvent:
             }
         )
         assert event.evidence == {}
+
+    def test_evidence_cannot_be_mutated_after_construction(self):
+        """Freezing the model alone would still leave the mapping writable."""
+        event = self._event()
+        with pytest.raises(TypeError):
+            event.evidence["injected"] = 999.0
+
+    def test_evidence_still_serialises_to_a_plain_json_object(self):
+        assert '"evidence":{"window_s":300.0' in self._event().model_dump_json()
+
+    def test_evidence_survives_a_json_round_trip(self):
+        original = self._event()
+        restored = FaultEvent.model_validate_json(original.model_dump_json())
+        assert dict(restored.evidence) == dict(original.evidence)
+
+    def test_a_restored_event_is_also_immutable(self):
+        restored = FaultEvent.model_validate_json(self._event().model_dump_json())
+        with pytest.raises(TypeError):
+            restored.evidence["injected"] = 999.0
 
 
 class TestModeState:
