@@ -11,33 +11,66 @@ SHORT_SLEEP_S = 0.01
 WALL_CLOCK_TOLERANCE_S = 1.0
 NEGATIVE_DURATION_S = -0.001
 
+CLOCK_FACTORIES = [RealClock, SimClock]
 
-@pytest.mark.parametrize("clock", [RealClock(), SimClock()])
-def test_both_implementations_satisfy_the_clock_protocol(clock):
-    assert isinstance(clock, Clock)
+
+@pytest.mark.parametrize("make_clock", CLOCK_FACTORIES)
+class TestClockContract:
+    """Behaviour every implementation must exhibit (Liskov substitutability).
+
+    ``isinstance(x, Clock)`` is deliberately not the test here. Clock is a
+    runtime-checkable Protocol, so isinstance only confirms that three
+    correctly-named methods exist: an object whose ``now()`` returns a string
+    passes it. These tests assert the contract the docstring actually
+    promises, so a substituted implementation cannot satisfy the type and
+    still break its callers.
+    """
+
+    def test_now_returns_epoch_seconds_as_a_float(self, make_clock):
+        assert isinstance(make_clock().now(), float)
+
+    def test_monotonic_returns_seconds_as_a_float(self, make_clock):
+        assert isinstance(make_clock().monotonic(), float)
+
+    def test_monotonic_never_decreases_across_a_sleep(self, make_clock):
+        clock = make_clock()
+        before = clock.monotonic()
+        clock.sleep(SHORT_SLEEP_S)
+        assert clock.monotonic() >= before
+
+    def test_sleep_advances_monotonic_time(self, make_clock):
+        clock = make_clock()
+        before = clock.monotonic()
+        clock.sleep(SHORT_SLEEP_S)
+        assert clock.monotonic() > before
+
+    def test_now_advances_across_a_sleep(self, make_clock):
+        clock = make_clock()
+        before = clock.now()
+        clock.sleep(SHORT_SLEEP_S)
+        assert clock.now() > before
+
+    def test_sleep_rejects_a_negative_duration(self, make_clock):
+        with pytest.raises(ValueError):
+            make_clock().sleep(NEGATIVE_DURATION_S)
+
+    def test_sleep_accepts_a_zero_duration(self, make_clock):
+        make_clock().sleep(0.0)
+
+    def test_satisfies_the_clock_protocol_structurally(self, make_clock):
+        assert isinstance(make_clock(), Clock)
 
 
 class TestRealClock:
     def test_now_tracks_wall_clock_epoch(self):
         assert abs(RealClock().now() - time.time()) < WALL_CLOCK_TOLERANCE_S
 
-    def test_monotonic_never_decreases(self):
+    def test_sleep_actually_blocks_for_the_requested_duration(self):
+        """NFR-01 measures loop period against real elapsed time."""
         clock = RealClock()
-        first = clock.monotonic()
-        assert clock.monotonic() >= first
-
-    def test_sleep_advances_monotonic_time(self):
-        clock = RealClock()
-        before = clock.monotonic()
+        wall_before = time.monotonic()
         clock.sleep(SHORT_SLEEP_S)
-        assert clock.monotonic() > before
-
-    def test_sleep_rejects_negative_duration(self):
-        with pytest.raises(ValueError):
-            RealClock().sleep(NEGATIVE_DURATION_S)
-
-    def test_sleep_accepts_zero_duration(self):
-        RealClock().sleep(0.0)
+        assert time.monotonic() - wall_before >= SHORT_SLEEP_S
 
 
 class TestSimClock:
@@ -73,11 +106,11 @@ class TestSimClock:
         clock.sleep(SECONDS_PER_DAY)
         assert time.monotonic() - wall_before < WALL_CLOCK_TOLERANCE_S
 
-    def test_advance_rejects_negative_duration(self):
+    def test_advance_rejects_a_negative_duration(self):
         with pytest.raises(ValueError):
             SimClock().advance(NEGATIVE_DURATION_S)
 
-    def test_advance_accepts_zero_duration(self):
+    def test_advance_accepts_a_zero_duration(self):
         clock = SimClock(start_epoch_s=0.0)
         clock.advance(0.0)
         assert clock.now() == 0.0
