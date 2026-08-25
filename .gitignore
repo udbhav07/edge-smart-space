@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Testing, typing, linting
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Recorded runs and experiment artefacts (FR-62)
+data/
+runs/
+*.parquet
+*.csv
+*.log
+
+# Persisted estimator state (FR-07)
+state/
+*.npz
+
+# Model weights — multi-GB, never in git
+models/
+*.gguf
+
+# Local Claude Code settings.
+# The rest of .claude/ IS tracked: skills are shared with the team.
+.claude/settings.local.json
+
+# OS and editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
