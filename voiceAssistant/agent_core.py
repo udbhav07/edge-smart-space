@@ -4,7 +4,8 @@ import openwakeword
 from openwakeword.model import Model
 from silero_vad import load_silero_vad, VADIterator
 from faster_whisper import WhisperModel
-import config
+from . import config
+from .llm_engine import SmartAgentLLM
 
 class SmartAgent:
     def __init__(self, audio_queue):
@@ -30,6 +31,14 @@ class SmartAgent:
         )
 
         print("Loading Faster-Whisper (CUDA)...")
+
+        print("Loading Faster-Whisper (CUDA)...")
+        self.stt_model = WhisperModel("base.en", device="cuda", compute_type="float16")
+        
+        # Add this line to spin up the LLM brain
+        print("Connecting to LLM Engine...")
+        self.llm = SmartAgentLLM() 
+        # ...
         # Leveraging the Jetson Orin's CUDA cores and FP16 compute
         self.stt_model = WhisperModel("base.en", device="cuda", compute_type="float16")
         
@@ -87,11 +96,15 @@ class SmartAgent:
         if not self.command_buffer:
             return
 
-        # Combine chunks and convert to float32 for Faster-Whisper
         audio_np = np.concatenate(self.command_buffer).astype(np.float32) / 32768.0
         segments, info = self.stt_model.transcribe(audio_np, beam_size=5)
         text = " ".join([segment.text for segment in segments]).strip()
-        print(f"\n[JARVIS HEARD]: {text}\n")
+        print(f"\n[JARVIS HEARD]: {text}")
+        
+        # Send text to the LLM and get the AI's response
+        if text:
+            ai_response = self.llm.chat(text)
+            print(f"[JARVIS SAYS]: {ai_response}\n")
 
     def reset_state(self):
         # Flush the queue to discard ambient noise collected while STT was running
