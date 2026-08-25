@@ -104,13 +104,26 @@ A change is not finished until all of these hold:
 Quick check before commit:
 
 ```bash
-grep -rnE "time\.(time|monotonic)\(|datetime\.now\(" src/ sim/ --include=*.py | grep -v "src/common/clock.py"
-grep -rn "from src.io\|import src.io\|from sim\.\|import sim\." src/estimation src/control src/faults src/reasoning
-grep -rn "src.estimation" sim/
-grep -rn '"space/' src/ --include=*.py | grep -v "src/common/topics.py"
+# 1. direct clock calls outside the one module allowed to make them
+grep -rnE "\b(time\.(time|monotonic)|datetime\.now)\s*\(" src/ sim/ --include=*.py \
+  | grep -v "^src/common/clock.py"
+
+# 2. Layer 2-4 reaching into Layer 1 or the simulator
+grep -rnE "^\s*(from|import)\s+(src\.io|sim)\b" --include=*.py \
+  src/estimation src/control src/faults src/reasoning
+
+# 3. the plant importing the estimator (section 5.10)
+grep -rnE "^\s*(from|import)\s+src\.estimation\b" sim/ --include=*.py
+
+# 4. topic literals outside topics.py
+grep -rn '"space/' src/ --include=*.py | grep -v "^src/common/topics.py"
 ```
 
-All four must return nothing.
+All four must return nothing. They match import *statements* and call sites,
+not prose, so a docstring that names a forbidden module does not trip them —
+and `--include=*.py` keeps `__pycache__` out of the results. If a check fires
+on a comment rather than on code, fix the check: one that cries wolf gets
+ignored, and then it is worse than absent.
 ---
 
 ## 6. Commit discipline
