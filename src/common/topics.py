@@ -31,7 +31,7 @@ _SINGLE_LEVEL_WILDCARD = "+"
 #: wildcard, or it would silently reshape the topic tree.
 _FORBIDDEN_IN_PARAMETER = ("/", "+", "#")
 
-_PARAMETER_PATTERN = re.compile(r"\{[a-z_]+\}")
+_PARAMETER_PATTERN = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
 
 class Qos(IntEnum):
@@ -76,13 +76,40 @@ class TopicSpec:
     qos: Qos
     retain: bool
 
+    @property
+    def parameter_names(self) -> frozenset[str]:
+        """Names this pattern requires, in no particular order."""
+        return frozenset(
+            match.group(1) for match in _PARAMETER_PATTERN.finditer(self.pattern)
+        )
+
     def format(self, **parameters: str) -> str:
         """Build a concrete topic.
 
-        :raises TopicParameterError: if a parameter is empty or contains a
-            topic separator or wildcard.
-        :raises KeyError: if a required parameter is missing.
+        A name the pattern does not use is an error rather than a no-op.
+        ``str.format`` would ignore it and hand back a plausible-looking
+        topic, which is exactly the silent publisher/subscriber mismatch this
+        module exists to prevent.
+
+        :raises TopicParameterError: if a parameter is unknown, missing,
+            empty, or contains a topic separator or wildcard.
         """
+        expected = self.parameter_names
+        supplied = frozenset(parameters)
+
+        unknown = supplied - expected
+        if unknown:
+            raise TopicParameterError(
+                f"{self.pattern!r} takes {sorted(expected)}, "
+                f"got unknown parameter(s) {sorted(unknown)}"
+            )
+
+        missing = expected - supplied
+        if missing:
+            raise TopicParameterError(
+                f"{self.pattern!r} requires parameter(s) {sorted(missing)}"
+            )
+
         for name, value in parameters.items():
             _require_valid_parameter(name, value)
         return self.pattern.format(**parameters)

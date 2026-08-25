@@ -116,8 +116,33 @@ class TestFormat:
             topics.SENSOR_STATE.format(sensor_id="")
 
     def test_missing_parameter_is_an_error_not_a_silent_partial_topic(self):
-        with pytest.raises(KeyError):
+        with pytest.raises(TopicParameterError):
             topics.FAULT.format()
+
+    def test_a_misspelled_parameter_is_rejected_not_silently_ignored(self):
+        """str.format would return 'space/system/mode' and hide the mistake."""
+        with pytest.raises(TopicParameterError):
+            topics.SYSTEM_MODE.format(sensor_id="temp_01")
+
+    def test_a_surplus_parameter_alongside_a_valid_one_is_rejected(self):
+        with pytest.raises(TopicParameterError):
+            topics.SENSOR_STATE.format(sensor_id=SENSOR_ID, bogus="x")
+
+    def test_a_parameterless_topic_accepts_no_parameters(self):
+        assert topics.SYSTEM_MODE.format() == "space/system/mode"
+
+
+class TestParameterNames:
+    def test_reports_the_names_a_pattern_requires(self):
+        assert topics.SENSOR_STATE.parameter_names == frozenset({"sensor_id"})
+
+    def test_a_parameterless_topic_requires_nothing(self):
+        assert topics.SYSTEM_MODE.parameter_names == frozenset()
+
+    @pytest.mark.parametrize("spec", ALL_SPECS)
+    def test_every_declared_name_is_substitutable(self, spec):
+        filled = spec.format(**{name: "x" for name in spec.parameter_names})
+        assert "{" not in filled
 
 
 class TestWildcard:
