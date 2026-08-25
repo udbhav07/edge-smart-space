@@ -1,0 +1,33 @@
+[project]
+name = "edge-smart-space"
+version = "0.1.0"
+description = "Self-calibrating, fault-tolerant autonomous personal smart space"
+requires-python = ">=3.10"
+
+# Pinned exactly: no open ranges (docs/coding-guidelines.md, Dependencies).
+dependencies = [
+    "pydantic==2.9.2",
+    "paho-mqtt==2.1.0",
+    "numpy==1.26.4",
+    "PyYAML==6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "pytest-cov==5.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+source = ["src", "sim"]
+
+[tool.coverage.report]
+# T1: >=85% line, >=80% branch.
+fail_under = 85
+show_missing = true
