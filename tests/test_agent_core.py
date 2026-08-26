@@ -6,6 +6,11 @@ openai_stub = types.ModuleType("openai")
 setattr(openai_stub, "OpenAI", object)
 sys.modules.setdefault("openai", openai_stub)
 
+silero_vad_stub = types.ModuleType("silero_vad")
+setattr(silero_vad_stub, "load_silero_vad", object)
+setattr(silero_vad_stub, "VADIterator", object)
+sys.modules.setdefault("silero_vad", silero_vad_stub)
+
 from voiceAssistant import agent_core
 
 
