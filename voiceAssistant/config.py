@@ -1,3 +1,5 @@
+import os
+
 import pyaudio
 
 # Audio Settings
@@ -6,6 +8,11 @@ CHANNELS = 1
 FORMAT = pyaudio.paInt16
 CHUNK = 512 # Required size for Silero VAD
 DEVICE_INDEX = None # Update if needed
+STT_DEVICE = os.getenv("SMART_SPACE_STT_DEVICE", "cuda")
+STT_COMPUTE_TYPE = os.getenv(
+	"SMART_SPACE_STT_COMPUTE_TYPE",
+	"float16" if STT_DEVICE == "cuda" else "int8",
+)
 
 # Agent Settings
 WAKE_WORD_THRESHOLD = 0.1

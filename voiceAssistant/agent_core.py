@@ -14,9 +14,6 @@ class SmartAgent:
         self.command_buffer = []
         self.chunks_since_wake = 0
         self.has_spoken = False
-        print("Loading OpenWakeWord...")
-        # Add this line to download the missing ONNX files
-        openwakeword.utils.download_models()
 
         print("Loading OpenWakeWord...")
         # self.oww_model = Model(wakeword_models=["hey_jarvis"])
@@ -30,17 +27,15 @@ class SmartAgent:
             min_silence_duration_ms=config.VAD_SILENCE_TIMEOUT_MS
         )
 
-        print("Loading Faster-Whisper (CUDA)...")
+        print(f"Loading Faster-Whisper ({config.STT_DEVICE})...")
+        self.stt_model = WhisperModel(
+            "base.en",
+            device=config.STT_DEVICE,
+            compute_type=config.STT_COMPUTE_TYPE,
+        )
 
-        print("Loading Faster-Whisper (CUDA)...")
-        self.stt_model = WhisperModel("base.en", device="cuda", compute_type="float16")
-        
-        # Add this line to spin up the LLM brain
         print("Connecting to LLM Engine...")
-        self.llm = SmartAgentLLM() 
-        # ...
-        # Leveraging the Jetson Orin's CUDA cores and FP16 compute
-        self.stt_model = WhisperModel("base.en", device="cuda", compute_type="float16")
+        self.llm = SmartAgentLLM()
         
         print("\n[System Ready] Agent is online.")
         print("Listening for Hey Jarvis...\n")
