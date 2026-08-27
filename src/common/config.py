@@ -130,6 +130,9 @@ class ControllerConfig(_Section):
     min_off_s: float = Field(
         ge=0.0, description="Compressor protection; also enforced by validator V-3"
     )
+    default_setpoint_c: float = Field(
+        description="Held before any goal arrives and when every goal is stale"
+    )
 
 
 class ValidatorConfig(_Section):
@@ -291,6 +294,22 @@ class Config(_Section):
             raise ValueError(
                 f"controller.min_off_s ({self.controller.min_off_s}) must equal "
                 f"validator.min_off_s ({self.validator.min_off_s})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _default_setpoint_is_itself_admissible(self) -> Config:
+        """The fallback must survive the gate it falls back through.
+
+        A default outside V-1's bounds would be clamped on every startup, so
+        the system would never actually hold the value it is configured to.
+        """
+        bounds = self.validator.setpoint_bounds_c
+        if not bounds.contains(self.controller.default_setpoint_c):
+            raise ValueError(
+                f"controller.default_setpoint_c "
+                f"({self.controller.default_setpoint_c}) is outside "
+                f"validator.setpoint_bounds_c [{bounds.low}, {bounds.high}]"
             )
         return self
 

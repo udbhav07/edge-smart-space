@@ -169,6 +169,11 @@ CONTEXT_PREFERENCE = TopicSpec(
 AUDIT_VALIDATION = TopicSpec("space/audit/validation", Qos.AT_LEAST_ONCE, retain=False)
 AUDIT_REASONING = TopicSpec("space/audit/reasoning", Qos.AT_LEAST_ONCE, retain=False)
 
+#: Command-level verdicts (rules V-3 to V-5). Separate from AUDIT_VALIDATION
+#: so a subscriber never has to discriminate between two payload shapes on
+#: one topic; the section 6.1 table predates the split.
+AUDIT_COMMAND = TopicSpec("space/audit/command", Qos.AT_LEAST_ONCE, retain=False)
+
 # --- Fault injection (FR-31) -----------------------------------------------
 
 #: Not in the DESIGN.md section 6.1 table. Added so every fault class is

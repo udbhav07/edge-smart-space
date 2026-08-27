@@ -393,6 +393,34 @@ class Command(BlackboardMessage):
         return self
 
 
+class CommandVerdict(BlackboardMessage):
+    """The audit record of one command-level validation decision.
+
+    DESIGN.md section 6.2 specifies a verdict payload for setpoints only, but
+    section 5.4 defines three rules that act on commands rather than goals
+    (V-3 dwell, V-4 command rate, V-5 mode consistency). Those decisions need
+    an audit trail of the same shape, so this mirrors ValidationVerdict for
+    the command path.
+    """
+
+    actuator_id: str = Field(min_length=1)
+    proposed_kind: CommandKind
+    verdict: Verdict
+    reason: ReasonCode
+    applied_kind: CommandKind
+
+    @model_validator(mode="after")
+    def _accepted_verdict_must_not_alter_the_command(self) -> CommandVerdict:
+        if self.verdict is Verdict.ACCEPTED:
+            if self.reason is not ReasonCode.NONE:
+                raise ValueError("an ACCEPTED verdict must carry reason NONE")
+            if self.applied_kind is not self.proposed_kind:
+                raise ValueError("an ACCEPTED verdict must apply the command unchanged")
+        elif self.reason is ReasonCode.NONE:
+            raise ValueError(f"a {self.verdict.value} verdict must carry a reason code")
+        return self
+
+
 class ActuatorState(BlackboardMessage):
     """Retained actuator state.
 

@@ -37,6 +37,7 @@ estimator:
 controller:
   deadband_c: 0.5
   min_off_s: 180.0
+  default_setpoint_c: 24.0
 
 # Rules V-1 to V-6, section 5.4.
 validator:
