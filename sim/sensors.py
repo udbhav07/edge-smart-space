@@ -68,6 +68,11 @@ class SimulatedSensor:
         rng: random.Random,
         clock: Clock,
     ) -> None:
+        if unit is Unit.BOOLEAN:
+            raise ValueError(
+                f"{type(self).__name__} applies Gaussian noise and quantisation, "
+                f"which are meaningless for {Unit.BOOLEAN.value}. Use BinarySensor."
+            )
         self._sensor_id = sensor_id
         self._unit = unit
         self._config = config
@@ -157,7 +162,17 @@ class BinarySensor:
     Occupancy is binary by design (ADR-0003), so the noise, quantisation and
     drift models above are meaningless here and are deliberately absent
     rather than applied and rounded away.
+
+    For the same reason only DROPOUT and STUCK_AT can be injected. Injecting
+    DRIFT or OUT_OF_RANGE is refused rather than ignored: an injection that
+    silently does nothing would make a fault-detection trial look like a
+    missed detection when in fact no fault was ever present.
     """
+
+    #: Faults that mean something for a two-valued signal.
+    SUPPORTED_FAULTS = frozenset(
+        {InjectedFault.NONE, InjectedFault.DROPOUT, InjectedFault.STUCK_AT}
+    )
 
     def __init__(
         self,
@@ -181,6 +196,16 @@ class BinarySensor:
         return self._injection.kind
 
     def inject(self, injection: FaultInjection) -> None:
+        """Begin injecting a fault.
+
+        :raises ValueError: if the fault has no meaning for a binary signal.
+        """
+        if injection.kind not in self.SUPPORTED_FAULTS:
+            supported = sorted(fault.value for fault in self.SUPPORTED_FAULTS)
+            raise ValueError(
+                f"{type(self).__name__} cannot inject {injection.kind.value}; "
+                f"supported: {supported}"
+            )
         self._injection = injection
 
     def clear(self) -> None:

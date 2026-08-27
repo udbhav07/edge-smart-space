@@ -15,11 +15,17 @@ The unit is bang-bang: the deadband law in section 5.3 emits COOL or OFF,
 never a modulated fraction. The identified coefficient a3 therefore sees a
 binary drive, which is exactly the weak-excitation situation R-01 warns
 about.
+
+Time advances through ``apply_due_commands``, which the simulation loop calls
+once per step. Reading ``cooling_fraction`` never changes anything: a getter
+that silently advanced state would make the plant's behaviour depend on how
+many times it happened to be queried.
 """
 
 from __future__ import annotations
 
 import random
+from collections import deque
 from dataclasses import dataclass
 
 from src.common.clock import Clock
@@ -29,6 +35,14 @@ from src.common.schemas import AckStatus, CommandKind
 #: Bang-bang drive levels, as a fraction of rated cooling power.
 COOLING_ON = 1.0
 COOLING_OFF = 0.0
+
+#: Commands that can be in flight at once. Dead time divided by the minimum
+#: command interval is under two in the shipped configuration; this is a
+#: generous bound that still refuses to grow without limit.
+MAX_IN_FLIGHT_COMMANDS = 16
+
+#: Commands that instruct the unit to keep doing what it is already doing.
+_NO_CHANGE_COMMANDS = frozenset({CommandKind.MAINTAIN, CommandKind.HOLD})
 
 
 @dataclass(frozen=True)
@@ -56,7 +70,7 @@ class SimulatedActuator:
         self._rng = rng
         self._clock = clock
         self._applied_fraction = COOLING_OFF
-        self._pending: _PendingCommand | None = None
+        self._pending: deque[_PendingCommand] = deque(maxlen=MAX_IN_FLIGHT_COMMANDS)
         self._failed = False
         self._last_command_ts: float | None = None
 
@@ -70,20 +84,40 @@ class SimulatedActuator:
         """When a command was last accepted. None before the first one."""
         return self._last_command_ts
 
-    def inject_failure(self, failed: bool) -> None:
-        """Make the unit stop affecting the room while still accepting commands.
+    @property
+    def pending_count(self) -> int:
+        """Commands sent but not yet in effect."""
+        return len(self._pending)
 
-        This is the fault D5 exists to catch: commands are acknowledged as
-        usual, or not acknowledged as usual, and the room simply does not
-        respond (FR-24).
+    @property
+    def cooling_fraction(self) -> float:
+        """The drive the room receives, as of the last ``apply_due_commands``.
+
+        Zero while a failure is injected, however the unit was commanded: the
+        room stops responding but the commands keep being accepted, which is
+        exactly the fault D5 exists to catch (FR-24).
         """
+        if self._failed:
+            return COOLING_OFF
+        return self._applied_fraction
+
+    def inject_failure(self, failed: bool) -> None:
+        """Make the unit stop affecting the room while still accepting commands."""
         self._failed = failed
+
+    def apply_due_commands(self) -> None:
+        """Promote every command whose dead time has elapsed, in order.
+
+        Called once per simulation step. Applying them in order rather than
+        keeping only the newest means a command issued inside another's dead
+        time still takes effect first, as a real unit would do.
+        """
+        now = self._clock.now()
+        while self._pending and self._pending[0].effective_ts <= now:
+            self._applied_fraction = self._pending.popleft().cooling_fraction
 
     def command(self, kind: CommandKind, setpoint_c: float | None = None) -> AckStatus:
         """Send a command and report what is known about its fate.
-
-        MAINTAIN and HOLD deliberately leave the drive untouched: they are
-        instructions to keep doing what is already being done.
 
         :returns: ACKNOWLEDGED only if the unit has readback and the command
             arrived; FAILED if it was lost on a unit with readback; UNKNOWN
@@ -91,16 +125,18 @@ class SimulatedActuator:
         """
         self._last_command_ts = self._clock.now()
 
-        if kind in (CommandKind.MAINTAIN, CommandKind.HOLD):
+        if kind in _NO_CHANGE_COMMANDS:
             return self._acknowledge(arrived=True)
 
         if self._rng.random() < self._config.command_loss_probability:
             return self._acknowledge(arrived=False)
 
         fraction = COOLING_ON if kind is CommandKind.COOL else COOLING_OFF
-        self._pending = _PendingCommand(
-            effective_ts=self._clock.now() + self._config.dead_time_s,
-            cooling_fraction=fraction,
+        self._pending.append(
+            _PendingCommand(
+                effective_ts=self._clock.now() + self._config.dead_time_s,
+                cooling_fraction=fraction,
+            )
         )
         return self._acknowledge(arrived=True)
 
@@ -108,17 +144,3 @@ class SimulatedActuator:
         if not self._config.acknowledges:
             return AckStatus.UNKNOWN
         return AckStatus.ACKNOWLEDGED if arrived else AckStatus.FAILED
-
-    def cooling_fraction(self) -> float:
-        """The drive the room actually receives right now.
-
-        Applies any pending command whose dead time has elapsed. Returns zero
-        while a failure is injected, however the unit was commanded.
-        """
-        if self._pending is not None and self._clock.now() >= self._pending.effective_ts:
-            self._applied_fraction = self._pending.cooling_fraction
-            self._pending = None
-
-        if self._failed:
-            return COOLING_OFF
-        return self._applied_fraction
