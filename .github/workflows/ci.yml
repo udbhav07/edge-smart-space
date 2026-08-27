@@ -30,7 +30,7 @@ jobs:
         run: python -m pip install -e ".[dev,speech]"
 
       - name: Compile Python modules
-        run: python -m compileall -q src sim voiceAssistant setup_models.py
+        run: python -m compileall -q src sim setup_models.py
 
       - name: Run tests
         run: python -m pytest tests -q

@@ -65,6 +65,30 @@ mode:
   fault_clear_confirm_s: 120.0
   transition_deadline_s: 2.0         # FR-26
 
+# Section 5.8. Capture opens only after the wake word and closes at end of
+# utterance or the hard timeout (FR-50).
+speech:
+  sample_rate_hz: 16000
+  channels: 1
+  chunk_samples: 512            # Required size for Silero VAD
+  device_index: null            # null selects the system default
+  queue_seconds: 5.0
+  wake_word: hey_jarvis
+  wake_word_threshold: 0.5      # Below ~0.5 the mic is effectively always on
+  vad_silence_ms: 1000
+  no_speech_timeout_s: 3.0
+  command_timeout_s: 15.0
+  asr_model: base.en
+  asr_device: cpu               # Must run on a laptop; set cuda on the Jetson
+  asr_compute_type: int8
+
+# Section 5.7.5. One server serves every call site.
+reasoning:
+  base_url: http://localhost:11434/v1
+  model: qwen2.5:7b
+  timeout_s: 30.0
+  max_history_turns: 20
+
 # Adversarial by default. Every value here is switched on, not off: a kind
 # simulator makes simulated success predict nothing about hardware.
 sim:

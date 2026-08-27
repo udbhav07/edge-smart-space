@@ -200,6 +200,68 @@ class ModeConfig(_Section):
     )
 
 
+class SpeechConfig(_Section):
+    """Speech pipeline settings (DESIGN.md section 5.8).
+
+    Capture opens only after wake-word detection and closes at end of
+    utterance or a hard timeout (FR-50), so both timeouts are policy and
+    live here rather than in code.
+    """
+
+    sample_rate_hz: int = Field(gt=0, description="Capture rate; Whisper expects 16 kHz")
+    channels: int = Field(gt=0, description="Capture channels; mono for ASR")
+    chunk_samples: int = Field(gt=0, description="Frame size; Silero VAD requires 512")
+    device_index: int | None = Field(
+        default=None, description="Input device; None selects the system default"
+    )
+    queue_seconds: float = Field(
+        gt=0.0, description="Audio buffered before the oldest frame is dropped"
+    )
+    wake_word: str = Field(min_length=1, description="Model name to listen for")
+    wake_word_threshold: float = Field(
+        gt=0.0,
+        le=1.0,
+        description="Detection score gate; low values make capture near-continuous",
+    )
+    vad_silence_ms: int = Field(gt=0, description="Silence marking end of utterance")
+    no_speech_timeout_s: float = Field(
+        gt=0.0, description="Give up if nothing is said after the wake word"
+    )
+    command_timeout_s: float = Field(
+        gt=0.0, description="Hard cap on one utterance (FR-50)"
+    )
+    asr_model: str = Field(min_length=1, description="Whisper model size")
+    asr_device: str = Field(
+        min_length=1, description="cuda or cpu; cpu must work for laptop runs"
+    )
+    asr_compute_type: str = Field(min_length=1, description="float16, int8, ...")
+
+    @model_validator(mode="after")
+    def _an_utterance_may_run_longer_than_the_silence_timeout(self) -> SpeechConfig:
+        if self.command_timeout_s <= self.no_speech_timeout_s:
+            raise ValueError(
+                "command_timeout_s must exceed no_speech_timeout_s, or a "
+                "spoken request is cut off before it can finish"
+            )
+        return self
+
+
+class ReasoningConfig(_Section):
+    """Inference endpoint shared by every call site (DESIGN.md section 5.7.5).
+
+    One server serves all call sites, differentiated by system prompt and
+    constraint mechanism. The endpoint is OpenAI-compatible, which both
+    llama.cpp's server and Ollama expose.
+    """
+
+    base_url: str = Field(min_length=1, description="Local endpoint; no traffic leaves")
+    model: str = Field(min_length=1)
+    timeout_s: float = Field(gt=0.0, description="Abandon a stalled call")
+    max_history_turns: int = Field(
+        gt=0, description="Retained turns; unbounded history grows every prompt"
+    )
+
+
 class SensorNoiseConfig(_Section):
     """Adversarial-by-default sensor imperfection.
 
@@ -281,6 +343,8 @@ class Config(_Section):
     validator: ValidatorConfig
     detectors: DetectorsConfig
     mode: ModeConfig
+    speech: SpeechConfig
+    reasoning: ReasoningConfig
     sim: SimConfig
 
     @model_validator(mode="after")

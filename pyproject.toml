@@ -43,7 +43,7 @@ speech = [
 [tool.setuptools]
 # Declared explicitly: flat layout with several top-level directories is
 # ambiguous to auto-discovery.
-packages = ["src", "sim", "voiceAssistant"]
+packages = ["src", "sim"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

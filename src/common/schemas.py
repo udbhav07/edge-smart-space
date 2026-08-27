@@ -425,6 +425,35 @@ class Command(TimestampedMessage):
         return self
 
 
+class Comfort(str, Enum):
+    """The direction an occupant asked for, in their own terms."""
+
+    WARMER = "warmer"
+    COOLER = "cooler"
+    UNCHANGED = "unchanged"
+
+
+class PreferenceHint(TimestampedMessage):
+    """A spoken preference, forwarded as a supervisory input (FR-53).
+
+    Deliberately not a command. It names a direction and, optionally, a
+    temperature the occupant asked for, and it reaches the plant only if the
+    goal path proposes a setpoint from it and the validator admits that
+    setpoint. Speech is a request weighed like any other, not a shortcut past
+    the gate.
+
+    This is the payload on ``space/context/preference``. Section 6.1 names
+    the message; its fields are not specified there, so they are kept to what
+    the control path can actually consume.
+    """
+
+    comfort: Comfort
+    target_c: float | None = Field(
+        default=None, description="Temperature named by the occupant, if any"
+    )
+    rationale: str = Field(default="", description="What was said, briefly")
+
+
 class ActuatorState(TimestampedMessage):
     """Retained actuator state.
 
