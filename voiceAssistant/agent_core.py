@@ -5,7 +5,7 @@ from openwakeword.model import Model
 from silero_vad import load_silero_vad, VADIterator
 from faster_whisper import WhisperModel
 from . import config
-from .llm_engine import SmartAgentLLM
+from .llm_engine import LlmUnavailableError, SmartAgentLLM
 
 class SmartAgent:
     def __init__(self, audio_queue):
@@ -14,6 +14,7 @@ class SmartAgent:
         self.command_buffer = []
         self.chunks_since_wake = 0
         self.has_spoken = False
+        self.pending_request = None
 
         print("Loading OpenWakeWord...")
         # self.oww_model = Model(wakeword_models=["hey_jarvis"])
@@ -94,12 +95,28 @@ class SmartAgent:
         audio_np = np.concatenate(self.command_buffer).astype(np.float32) / 32768.0
         segments, info = self.stt_model.transcribe(audio_np, beam_size=5)
         text = " ".join([segment.text for segment in segments]).strip()
+
+        # Section 5.8 discards the buffer as soon as transcription finishes;
+        # recordings are not held longer than the work requires.
+        self.command_buffer = []
+
         print(f"\n[JARVIS HEARD]: {text}")
-        
-        # Send text to the LLM and get the AI's response
-        if text:
-            ai_response = self.llm.chat(text)
-            print(f"[JARVIS SAYS]: {ai_response}\n")
+        if not text:
+            return
+
+        try:
+            interaction = self.llm.chat(text)
+        except LlmUnavailableError as exc:
+            # Speech is the lowest-priority feature. It degrades on its own
+            # rather than taking the process with it.
+            print(f"[JARVIS] Assistant unavailable: {exc}")
+            return
+
+        print(f"[JARVIS SAYS]: {interaction.reply}\n")
+        if interaction.request is not None:
+            # A request, not a command. Forwarding it to the control system
+            # is the caller's job; nothing here touches a device (FR-45).
+            self.pending_request = interaction.request
 
     def reset_state(self):
         # Flush the queue to discard ambient noise collected while STT was running
