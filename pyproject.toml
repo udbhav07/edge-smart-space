@@ -1,14 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "edge-smart-space"
 version = "0.1.0"
 description = "Self-calibrating, fault-tolerant autonomous personal smart space"
 
 # numpy 2.3 dropped Python 3.10. JetPack 6 ships 3.10 by default, so the
-# Jetson needs a 3.11+ environment at acquisition (DESIGN.md A-05, 9.2).
+# Jetson needs a 3.11+ environment at acquisition.
 requires-python = ">=3.11"
 
-# Pinned exactly to the verified working set: no open ranges
-# (docs/coding-guidelines.md, Dependencies & Security).
+# Pinned exactly: no open ranges. This file is the only dependency manifest;
+# anything added here must be verified to install, not assumed.
 dependencies = [
     "pydantic==2.12.5",
     "paho-mqtt==2.1.0",
@@ -21,6 +25,25 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
 ]
+
+# Voice pipeline. Kept optional because torch and friends are large, and
+# because torch 2.5.1 has no wheel for Python 3.14: a developer on 3.14
+# installs the core only and the speech tests skip themselves. CI runs 3.11,
+# where the whole set installs and every test executes.
+speech = [
+    "openai==1.68.2",
+    "openwakeword==0.6.0",
+    "faster-whisper==1.1.1",
+    "PyAudio==0.2.14",
+    "silero-vad==5.1.2",
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+]
+
+[tool.setuptools]
+# Declared explicitly: flat layout with several top-level directories is
+# ambiguous to auto-discovery.
+packages = ["src", "sim", "voiceAssistant"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

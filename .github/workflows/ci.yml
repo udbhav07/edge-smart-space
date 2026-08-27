@@ -15,18 +15,22 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
+          # 3.11 is the floor: numpy 2.3 dropped 3.10, and the Jetson needs a
+          # 3.11+ environment for the same reason.
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: pyproject.toml
 
       - name: Install PortAudio headers
         run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        # Both extras, so the speech tests actually execute here. A developer
+        # machine without the speech extra skips them; CI is where they run.
+        run: python -m pip install -e ".[dev,speech]"
 
       - name: Compile Python modules
-        run: python -m compileall -q voiceAssistant setup_models.py
+        run: python -m compileall -q src sim voiceAssistant setup_models.py
 
       - name: Run tests
         run: python -m pytest tests -q
