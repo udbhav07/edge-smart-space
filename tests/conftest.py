@@ -1,47 +1,20 @@
 """Shared pytest configuration.
 
-The voice pipeline depends on torch, onnxruntime, PortAudio and an OpenAI
-client. Those are an optional install (the ``speech`` extra), and torch has
-no wheel for Python 3.14 at all, so on a core-only machine those modules
-cannot even be imported.
+Every module in the tree imports without torch, PortAudio, openWakeWord or
+an OpenAI client. Those packages are needed only to *build the defaults* --
+to load a model or open a device -- so each is imported inside the function
+that does that, and every collaborator is injectable.
 
-Without this file an unimportable test module is a *collection error*, which
-aborts the entire run — the core tests never execute, and the failure looks
-identical whether a dependency is merely absent or the code is genuinely
-broken. Ignoring the modules whose dependencies are missing keeps the two
-cases distinguishable: a missing extra is silence, a real failure is a
-failure.
+The effect is that the parts most likely to break are tested on every
+machine: the endpointing state machine, the FR-50 timeout arithmetic, the
+wake-word threshold, the queue's drop-oldest policy, and the post-decode
+validation in FR-44. None of them need a GPU, a microphone or a server.
 
-Note what is *not* listed here. The pipeline's state machine and timeout
-arithmetic, and the validator's post-decode checks, are pure logic and are
-tested on every machine. Only the modules that load a model or open a device
-are optional.
-
-CI installs the speech extra, so nothing is skipped there.
+Nothing is skipped, so this file deliberately declares no ignores. If a
+module ever has to import a heavy dependency at module scope again, add it
+here with the reason -- but prefer making it injectable instead.
 """
 
 from __future__ import annotations
 
-import importlib.util
-
-#: Test module -> the import that module cannot survive without.
-_OPTIONAL_DEPENDENCIES = {
-    "speech/test_asr.py": "torch",
-    "speech/test_wakeword.py": "openwakeword",
-    "speech/test_audio_capture.py": "pyaudio",
-    "reasoning/test_single_shot.py": "openai",
-}
-
-
-def _is_missing(module_name: str) -> bool:
-    try:
-        return importlib.util.find_spec(module_name) is None
-    except (ImportError, ValueError):
-        return True
-
-
-collect_ignore = [
-    test_module
-    for test_module, dependency in _OPTIONAL_DEPENDENCIES.items()
-    if _is_missing(dependency)
-]
+collect_ignore: list[str] = []

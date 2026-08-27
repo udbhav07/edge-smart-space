@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from openwakeword.model import Model
 
 from src.common.config import SpeechConfig
 
@@ -39,9 +38,21 @@ class WakeWordDetector:
     specified not to have (NFR-06); ``setup_models.py`` fetches them once.
     """
 
-    def __init__(self, config: SpeechConfig, model: Model | None = None) -> None:
+    def __init__(self, config: SpeechConfig, model=None) -> None:
         self._config = config
-        self._model = model if model is not None else Model(
+        self._model = model if model is not None else self._load(config)
+
+    @staticmethod
+    def _load(config: SpeechConfig):
+        """Build the default detector.
+
+        openWakeWord is imported here rather than at module scope so the
+        threshold logic stays importable on a machine without it (NFR-09).
+        """
+        from openwakeword.model import Model
+
+        LOGGER.info("loading wake word model %r", config.wake_word)
+        return Model(
             wakeword_models=[config.wake_word],
             inference_framework=_INFERENCE_FRAMEWORK,
         )

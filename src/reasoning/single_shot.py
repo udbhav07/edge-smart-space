@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import logging
 
-from openai import OpenAI
 from pydantic import ValidationError
 
 from src.common.clock import Clock
@@ -73,11 +72,23 @@ class PersonalContext:
         self,
         config: ReasoningConfig,
         clock: Clock,
-        client: OpenAI | None = None,
+        client=None,
     ) -> None:
         self._config = config
         self._clock = clock
-        self._client = client if client is not None else OpenAI(
+        self._client = client if client is not None else self._connect(config)
+
+    @staticmethod
+    def _connect(config: ReasoningConfig):
+        """Build the default client.
+
+        The OpenAI package is imported here rather than at module scope so
+        the post-decode validation stays importable and testable without the
+        inference stack installed.
+        """
+        from openai import OpenAI
+
+        return OpenAI(
             base_url=config.base_url,
             api_key=LOCAL_API_KEY,
             timeout=config.timeout_s,

@@ -13,7 +13,6 @@ import queue
 import threading
 
 import numpy as np
-import pyaudio
 
 from src.common.clock import Clock
 from src.common.config import SpeechConfig
@@ -28,27 +27,41 @@ MAX_CONSECUTIVE_ERRORS = 10
 #: Pause after a failed read, so a persistent fault does not burn a core.
 ERROR_BACKOFF_S = 0.1
 
-#: PyAudio sample format matching int16 capture.
-SAMPLE_FORMAT = pyaudio.paInt16
-
 _JOIN_TIMEOUT_S = 2.0
+
+
+def _open_default_stream(config: SpeechConfig):
+    """Open the microphone.
+
+    PyAudio is imported here rather than at module scope so the queue and
+    error-handling logic stay importable without PortAudio installed.
+
+    :returns: the stream and the PyAudio instance owning it.
+    """
+    import pyaudio
+
+    audio = pyaudio.PyAudio()
+    stream = audio.open(
+        format=pyaudio.paInt16,
+        channels=config.channels,
+        rate=config.sample_rate_hz,
+        input=True,
+        input_device_index=config.device_index,
+        frames_per_buffer=config.chunk_samples,
+    )
+    return stream, audio
 
 
 class AudioCapture:
     """Background microphone reader feeding a bounded frame queue."""
 
-    def __init__(self, config: SpeechConfig, clock: Clock) -> None:
+    def __init__(self, config: SpeechConfig, clock: Clock, stream=None, audio=None) -> None:
         self._config = config
         self._clock = clock
-        self._audio = pyaudio.PyAudio()
-        self._stream = self._audio.open(
-            format=SAMPLE_FORMAT,
-            channels=config.channels,
-            rate=config.sample_rate_hz,
-            input=True,
-            input_device_index=config.device_index,
-            frames_per_buffer=config.chunk_samples,
-        )
+        if stream is None:
+            stream, audio = _open_default_stream(config)
+        self._stream = stream
+        self._audio = audio
         frames_per_second = config.sample_rate_hz / config.chunk_samples
         self._queue: queue.Queue = queue.Queue(
             maxsize=max(1, int(frames_per_second * config.queue_seconds))
@@ -83,7 +96,8 @@ class AudioCapture:
             self._stream.close()
         except OSError as exc:
             LOGGER.warning("closing the audio stream failed: %s", exc)
-        self._audio.terminate()
+        if self._audio is not None:
+            self._audio.terminate()
 
     def drain(self) -> None:
         """Discard buffered audio, through the queue's own interface.
