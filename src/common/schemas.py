@@ -45,6 +45,10 @@ _DERIVED_FIELD_TOLERANCE = 1e-6
 #: The only values a boolean-unit reading may carry (FR-02 binary occupancy).
 _BOOLEAN_READING_VALUES = (0.0, 1.0)
 
+#: Keys inside a ValidationVerdict's proposed and applied objects.
+SETPOINT_KEY = "setpoint_c"
+COMMAND_KIND_KEY = "kind"
+
 # --- Enumerations ----------------------------------------------------------
 
 
@@ -167,9 +171,18 @@ class TariffBand(str, Enum):
 
 
 class BlackboardMessage(BaseModel):
-    """Common contract for every payload published to the blackboard."""
+    """Common contract for every payload published to the blackboard.
+
+    Frozen and closed to unknown fields. Carries no timestamp of its own:
+    FaultEvent times itself with ``detected_ts`` rather than ``ts``, and
+    forcing both onto it would reject the payload in section 6.2.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+
+class TimestampedMessage(BlackboardMessage):
+    """A payload stamped with the moment it describes."""
 
     ts: float = Field(gt=0.0, description="Unix epoch seconds, from the injected Clock")
 
@@ -177,7 +190,7 @@ class BlackboardMessage(BaseModel):
 # --- Sensing ---------------------------------------------------------------
 
 
-class SensorReading(BlackboardMessage):
+class SensorReading(TimestampedMessage):
     """One sample from one sensor (FR-01).
 
     Carries its own id and timestamp so a consumer never has to infer either
@@ -206,7 +219,7 @@ class SensorReading(BlackboardMessage):
         return self
 
 
-class SensorHealth(BlackboardMessage):
+class SensorHealth(TimestampedMessage):
     """Retained per-sensor status, so a late subscriber knows what is trusted."""
 
     sensor_id: str = Field(min_length=1)
@@ -220,7 +233,7 @@ class SensorHealth(BlackboardMessage):
 # --- Estimation ------------------------------------------------------------
 
 
-class ThermalEstimate(BlackboardMessage):
+class ThermalEstimate(TimestampedMessage):
     """One-step prediction and residual, published every tick (FR-05).
 
     ``residual`` is derived from the other two fields, so it is checked
@@ -250,7 +263,7 @@ class ThermalEstimate(BlackboardMessage):
         return self
 
 
-class Coefficients(BlackboardMessage):
+class Coefficients(TimestampedMessage):
     """The four RC coefficients and their identification health (FR-04).
 
     a1 to a4 are deliberately unconstrained here. Their plausibility box is
@@ -268,7 +281,6 @@ class Coefficients(BlackboardMessage):
         ge=0.0, description="|a1 + a2 - 1|; drift from steady-state consistency"
     )
     samples_since_reset: int = Field(ge=0)
-    adaptation: AdaptationState
 
     @model_validator(mode="after")
     def _steady_state_residual_agrees_with_the_coefficients(self) -> Coefficients:
@@ -320,7 +332,7 @@ class FaultEvent(BlackboardMessage):
         return dict(value)
 
 
-class ModeState(BlackboardMessage):
+class ModeState(TimestampedMessage):
     """Retained current mode (FR-61), published before any diagnosis runs."""
 
     mode: Mode
@@ -332,7 +344,7 @@ class ModeState(BlackboardMessage):
 # --- Goals and validation --------------------------------------------------
 
 
-class Goal(BlackboardMessage):
+class Goal(TimestampedMessage):
     """A proposed or active setpoint goal.
 
     The reasoning layer's entire influence on the plant is this message
@@ -348,24 +360,44 @@ class Goal(BlackboardMessage):
     )
 
 
-class ValidationVerdict(BlackboardMessage):
+class ValidationVerdict(TimestampedMessage):
     """The audit record of one validation decision (FR-13).
 
     A CLAMPED verdict is evidence the gate works and is displayed as a
     finding, not hidden as an error (DESIGN.md section 5.4).
+
+    ``proposed`` and ``applied`` are open objects rather than bare setpoints.
+    That is what the section 6.2 payload specifies, and it is what lets one
+    schema on one topic carry both kinds of verdict the validator produces:
+    section 5.4's rules act on setpoints (V-1, V-2, V-6) *and* on commands
+    (V-3, V-4, V-5), and section 5.4 sends every verdict to
+    ``space/audit/validation``.
     """
 
-    proposed_setpoint_c: float
+    proposed: Mapping[str, float | str]
     verdict: Verdict
     reason: ReasonCode
-    applied_setpoint_c: float
+    applied: Mapping[str, float | str]
+
+    @field_validator("proposed", "applied", mode="after")
+    @classmethod
+    def _freeze_decision(
+        cls, value: Mapping[str, float | str]
+    ) -> Mapping[str, float | str]:
+        return MappingProxyType(dict(value))
+
+    @field_serializer("proposed", "applied")
+    def _serialise_decision(
+        self, value: Mapping[str, float | str]
+    ) -> dict[str, float | str]:
+        return dict(value)
 
     @model_validator(mode="after")
     def _accepted_verdict_must_not_alter_the_proposal(self) -> ValidationVerdict:
         if self.verdict is Verdict.ACCEPTED:
             if self.reason is not ReasonCode.NONE:
                 raise ValueError("an ACCEPTED verdict must carry reason NONE")
-            if self.applied_setpoint_c != self.proposed_setpoint_c:
+            if dict(self.applied) != dict(self.proposed):
                 raise ValueError("an ACCEPTED verdict must apply the proposal unchanged")
         elif self.reason is ReasonCode.NONE:
             raise ValueError(f"a {self.verdict.value} verdict must carry a reason code")
@@ -375,7 +407,7 @@ class ValidationVerdict(BlackboardMessage):
 # --- Actuation -------------------------------------------------------------
 
 
-class Command(BlackboardMessage):
+class Command(TimestampedMessage):
     """One actuator command, after validation (FR-12)."""
 
     actuator_id: str = Field(min_length=1)
@@ -393,35 +425,7 @@ class Command(BlackboardMessage):
         return self
 
 
-class CommandVerdict(BlackboardMessage):
-    """The audit record of one command-level validation decision.
-
-    DESIGN.md section 6.2 specifies a verdict payload for setpoints only, but
-    section 5.4 defines three rules that act on commands rather than goals
-    (V-3 dwell, V-4 command rate, V-5 mode consistency). Those decisions need
-    an audit trail of the same shape, so this mirrors ValidationVerdict for
-    the command path.
-    """
-
-    actuator_id: str = Field(min_length=1)
-    proposed_kind: CommandKind
-    verdict: Verdict
-    reason: ReasonCode
-    applied_kind: CommandKind
-
-    @model_validator(mode="after")
-    def _accepted_verdict_must_not_alter_the_command(self) -> CommandVerdict:
-        if self.verdict is Verdict.ACCEPTED:
-            if self.reason is not ReasonCode.NONE:
-                raise ValueError("an ACCEPTED verdict must carry reason NONE")
-            if self.applied_kind is not self.proposed_kind:
-                raise ValueError("an ACCEPTED verdict must apply the command unchanged")
-        elif self.reason is ReasonCode.NONE:
-            raise ValueError(f"a {self.verdict.value} verdict must carry a reason code")
-        return self
-
-
-class ActuatorState(BlackboardMessage):
+class ActuatorState(TimestampedMessage):
     """Retained actuator state.
 
     simulated has no default: FR-15 requires every simulated actuator to be

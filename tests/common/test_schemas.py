@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.common.schemas import (
+    SETPOINT_KEY,
     AckStatus,
     ActuatorState,
     AdaptationState,
@@ -178,7 +179,7 @@ class TestThermalEstimate:
             residual=0.0,
             residual_sigma=0.12,
             model_confidence=0.87,
-            adaptation=AdaptationState.FROZEN,
+            adaptation=AdaptationState.ACTIVE,
         )
         assert estimate.residual == 0.0
 
@@ -200,7 +201,6 @@ class TestCoefficients:
             trace_p=0.0031,
             steady_state_residual=0.1,
             samples_since_reset=14203,
-            adaptation=AdaptationState.FROZEN,
         )
         assert coefficients.a3 == 0.9
 
@@ -215,7 +215,6 @@ class TestCoefficients:
                 trace_p=-1.0,
                 steady_state_residual=0.0,
                 samples_since_reset=0,
-                adaptation=AdaptationState.ACTIVE,
             )
 
     def test_sample_count_cannot_be_negative(self):
@@ -229,7 +228,6 @@ class TestCoefficients:
                 trace_p=0.1,
                 steady_state_residual=0.0,
                 samples_since_reset=-1,
-                adaptation=AdaptationState.ACTIVE,
             )
 
     def test_a_steady_state_residual_contradicting_the_coefficients_is_rejected(self):
@@ -244,7 +242,6 @@ class TestCoefficients:
                 trace_p=0.1,
                 steady_state_residual=42.0,
                 samples_since_reset=1,
-                adaptation=AdaptationState.ACTIVE,
             )
 
     def test_the_documented_payload_is_internally_consistent(self):
@@ -258,7 +255,6 @@ class TestCoefficients:
             trace_p=0.0031,
             steady_state_residual=0.0015,
             samples_since_reset=14203,
-            adaptation=AdaptationState.ACTIVE,
         )
         assert coefficients.steady_state_residual == 0.0015
 
@@ -269,7 +265,6 @@ class TestFaultEvent:
     def _event(self, **overrides) -> FaultEvent:
         return FaultEvent.model_validate(
             {
-                "ts": 1756032300.0,
                 "fault_id": "f_temp01_stuck_1756032",
                 "detector": DetectorId.D2_STUCK_AT,
                 "subject": SENSOR_ID,
@@ -295,7 +290,6 @@ class TestFaultEvent:
     def test_evidence_defaults_to_empty_rather_than_null(self):
         event = FaultEvent.model_validate(
             {
-                "ts": 1756032300.0,
                 "fault_id": "f",
                 "detector": DetectorId.D1_DROPOUT,
                 "subject": SENSOR_ID,
@@ -344,16 +338,16 @@ class TestValidationVerdict:
         return ValidationVerdict(
             **{
                 "ts": TS,
-                "proposed_setpoint_c": SETPOINT_C,
+                "proposed": {SETPOINT_KEY: SETPOINT_C},
                 "verdict": Verdict.ACCEPTED,
                 "reason": ReasonCode.NONE,
-                "applied_setpoint_c": SETPOINT_C,
+                "applied": {SETPOINT_KEY: SETPOINT_C},
                 **overrides,
             }
         )
 
     def test_an_accepted_proposal_passes_through_unchanged(self):
-        assert self._verdict().applied_setpoint_c == SETPOINT_C
+        assert self._verdict().applied[SETPOINT_KEY] == SETPOINT_C
 
     def test_an_accepted_verdict_cannot_carry_a_reason_code(self):
         with pytest.raises(ValidationError):
@@ -361,13 +355,13 @@ class TestValidationVerdict:
 
     def test_an_accepted_verdict_cannot_alter_the_proposal(self):
         with pytest.raises(ValidationError):
-            self._verdict(applied_setpoint_c=23.0)
+            self._verdict(applied={SETPOINT_KEY: 23.0})
 
     def test_a_clamped_verdict_records_why(self):
         verdict = self._verdict(
             verdict=Verdict.CLAMPED,
             reason=ReasonCode.RATE_LIMIT,
-            proposed_setpoint_c=23.0,
+            proposed={SETPOINT_KEY: 23.0},
         )
         assert verdict.reason is ReasonCode.RATE_LIMIT
 

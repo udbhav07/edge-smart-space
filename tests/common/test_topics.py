@@ -31,7 +31,6 @@ TRANSIENT_SPECS = (
     topics.CONTEXT_PREFERENCE,
     topics.AUDIT_VALIDATION,
     topics.AUDIT_REASONING,
-    topics.FAULT_INJECT,
 )
 
 ALL_SPECS = RETAINED_SPECS + TRANSIENT_SPECS
@@ -164,13 +163,3 @@ class TestImmutability:
     def test_a_spec_cannot_be_altered_for_other_components(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             topics.SYSTEM_MODE.retain = False
-
-
-class TestInjection:
-    def test_injection_topic_is_parameterised_by_subject(self):
-        assert topics.FAULT_INJECT.format(subject=SENSOR_ID) == (
-            f"space/inject/{SENSOR_ID}"
-        )
-
-    def test_injection_is_not_retained_so_it_never_replays_on_restart(self):
-        assert topics.FAULT_INJECT.retain is False

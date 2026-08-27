@@ -11,6 +11,8 @@ import pytest
 from src.common.clock import SimClock
 from src.common.config import ValidatorConfig, load_config
 from src.common.schemas import (
+    COMMAND_KIND_KEY,
+    SETPOINT_KEY,
     Command,
     CommandKind,
     Goal,
@@ -78,14 +80,14 @@ class TestRuleV1AbsoluteBounds:
     def test_a_setpoint_below_the_floor_is_clamped_up(self, goals, clock, config):
         verdict = goals.validate(_goal(clock, 5.0))
         assert verdict.verdict is Verdict.CLAMPED
-        assert verdict.applied_setpoint_c == pytest.approx(
+        assert verdict.applied[SETPOINT_KEY] == pytest.approx(
             START_SETPOINT_C - config.max_step_c
         )
 
     def test_a_setpoint_above_the_ceiling_is_clamped_down(self, goals, clock, config):
         verdict = goals.validate(_goal(clock, 99.0))
         assert verdict.verdict is Verdict.CLAMPED
-        assert verdict.applied_setpoint_c == pytest.approx(
+        assert verdict.applied[SETPOINT_KEY] == pytest.approx(
             START_SETPOINT_C + config.max_step_c
         )
 
@@ -96,10 +98,10 @@ class TestRuleV1AbsoluteBounds:
         validator = GoalValidator(config, clock, initial_setpoint_c=19.0)
         verdict = validator.validate(_goal(clock, 5.0))
         assert verdict.reason is ReasonCode.BOUND_CLAMP
-        assert verdict.applied_setpoint_c == config.setpoint_bounds_c.low
+        assert verdict.applied[SETPOINT_KEY] == config.setpoint_bounds_c.low
 
     def test_the_proposal_is_preserved_in_the_audit_record(self, goals, clock):
-        assert goals.validate(_goal(clock, 99.0)).proposed_setpoint_c == 99.0
+        assert goals.validate(_goal(clock, 99.0)).proposed[SETPOINT_KEY] == 99.0
 
     @pytest.mark.parametrize("setpoint", [18.0, 30.0])
     def test_the_bounds_themselves_are_admissible(self, config, clock, setpoint):
@@ -111,18 +113,18 @@ class TestRuleV2RateLimit:
     def test_a_step_within_the_limit_is_accepted_unchanged(self, goals, clock):
         verdict = goals.validate(_goal(clock, START_SETPOINT_C + 1.0))
         assert verdict.verdict is Verdict.ACCEPTED
-        assert verdict.applied_setpoint_c == START_SETPOINT_C + 1.0
+        assert verdict.applied[SETPOINT_KEY] == START_SETPOINT_C + 1.0
 
     def test_an_upward_step_beyond_the_limit_is_clamped(self, goals, clock, config):
         verdict = goals.validate(_goal(clock, START_SETPOINT_C + 10.0))
         assert verdict.reason is ReasonCode.RATE_LIMIT
-        assert verdict.applied_setpoint_c == pytest.approx(
+        assert verdict.applied[SETPOINT_KEY] == pytest.approx(
             START_SETPOINT_C + config.max_step_c
         )
 
     def test_a_downward_step_beyond_the_limit_is_clamped(self, goals, clock, config):
         verdict = goals.validate(_goal(clock, START_SETPOINT_C - 10.0))
-        assert verdict.applied_setpoint_c == pytest.approx(
+        assert verdict.applied[SETPOINT_KEY] == pytest.approx(
             START_SETPOINT_C - config.max_step_c
         )
 
@@ -158,7 +160,7 @@ class TestRuleV6Staleness:
         goal = _goal(clock, 26.0)
         clock.advance(config.goal_max_age_s + 1.0)
         verdict = goals.validate(goal)
-        assert verdict.applied_setpoint_c == START_SETPOINT_C
+        assert verdict.applied[SETPOINT_KEY] == START_SETPOINT_C
         assert goals.applied_setpoint_c == START_SETPOINT_C
 
     def test_a_goal_past_its_own_expiry_is_blocked(self, goals, clock):
@@ -188,7 +190,7 @@ class TestRuleV5ModeConsistency:
         verdict = commands.validate(_command(clock, kind, setpoint), mode)
         assert verdict.verdict is Verdict.BLOCKED
         assert verdict.reason is ReasonCode.MODE_BLOCK
-        assert verdict.applied_kind is CommandKind.HOLD
+        assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.HOLD.value
 
     @pytest.mark.parametrize("mode", [Mode.NORMAL, Mode.DEGRADED_SENSOR])
     def test_actuation_is_permitted_in_an_actuating_mode(self, commands, clock, mode):
@@ -216,7 +218,7 @@ class TestRuleV3CompressorDwell:
         clock.advance(config.min_off_s / 2.0)
         verdict = commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
         assert verdict.reason is ReasonCode.DWELL
-        assert verdict.applied_kind is CommandKind.MAINTAIN
+        assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.MAINTAIN.value
 
     def test_a_restart_after_the_dwell_window_is_admitted(
         self, commands, clock, config
@@ -242,7 +244,7 @@ class TestRuleV4CommandRate:
         commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
         verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
         assert verdict.reason is ReasonCode.CMD_RATE
-        assert verdict.applied_kind is CommandKind.MAINTAIN
+        assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.MAINTAIN.value
 
     def test_a_change_after_the_interval_is_admitted(self, commands, clock, config):
         commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
@@ -288,16 +290,12 @@ class TestCompressorState:
 
 
 class TestAuditRecord:
-    def test_every_verdict_names_the_actuator(self, commands, clock):
-        verdict = commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
-        assert verdict.actuator_id == ACTUATOR_ID
-
     def test_every_verdict_preserves_what_was_proposed(self, commands, clock):
         verdict = commands.validate(
             _command(clock, CommandKind.COOL, 25.0), Mode.SAFE_HOLD
         )
-        assert verdict.proposed_kind is CommandKind.COOL
-        assert verdict.applied_kind is CommandKind.HOLD
+        assert verdict.proposed[COMMAND_KIND_KEY] == CommandKind.COOL.value
+        assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.HOLD.value
 
     def test_verdicts_carry_the_clock_timestamp(self, goals, clock):
         clock.advance(100.0)

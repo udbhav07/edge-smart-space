@@ -31,9 +31,10 @@ from __future__ import annotations
 from src.common.clock import Clock
 from src.common.config import ValidatorConfig
 from src.common.schemas import (
+    COMMAND_KIND_KEY,
+    SETPOINT_KEY,
     Command,
     CommandKind,
-    CommandVerdict,
     Goal,
     Mode,
     ReasonCode,
@@ -137,12 +138,14 @@ class GoalValidator:
     ) -> ValidationVerdict:
         return ValidationVerdict(
             ts=now,
-            proposed_setpoint_c=proposed,
+            proposed={SETPOINT_KEY: proposed},
             verdict=verdict,
             reason=reason,
-            applied_setpoint_c=(
-                self._applied_setpoint_c if applied is None else applied
-            ),
+            applied={
+                SETPOINT_KEY: (
+                    self._applied_setpoint_c if applied is None else applied
+                )
+            },
         )
 
 
@@ -166,7 +169,7 @@ class CommandValidator:
         """Whether the last admitted command left the compressor running."""
         return self._compressor_on
 
-    def validate(self, command: Command, mode: Mode) -> CommandVerdict:
+    def validate(self, command: Command, mode: Mode) -> ValidationVerdict:
         """Admit, downgrade, or block a command.
 
         Rules apply in order V-5, V-3, V-4: most restrictive first, so a mode
@@ -186,7 +189,7 @@ class CommandValidator:
 
         if self._violates_dwell(command.kind, now):
             return self._verdict(
-                now, command, _SUPPRESSED_COMMAND, Verdict.BLOCKED, ReasonCode.DWELL
+                now, command, _SUPPRESSED_COMMAND, Verdict.CLAMPED, ReasonCode.DWELL
             )
 
         if self._violates_command_rate(now):
@@ -226,12 +229,11 @@ class CommandValidator:
         applied: CommandKind,
         verdict: Verdict,
         reason: ReasonCode,
-    ) -> CommandVerdict:
-        return CommandVerdict(
+    ) -> ValidationVerdict:
+        return ValidationVerdict(
             ts=now,
-            actuator_id=command.actuator_id,
-            proposed_kind=command.kind,
+            proposed={COMMAND_KIND_KEY: command.kind.value},
             verdict=verdict,
             reason=reason,
-            applied_kind=applied,
+            applied={COMMAND_KIND_KEY: applied.value},
         )
