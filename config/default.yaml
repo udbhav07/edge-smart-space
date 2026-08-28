@@ -74,7 +74,14 @@ speech:
   device_index: null            # null selects the system default
   queue_seconds: 5.0
   wake_word: hey_jarvis
-  wake_word_threshold: 0.5      # Below ~0.5 the mic is effectively always on
+  # Measured, not chosen. The openWakeWord hey_jarvis model is trained on
+  # American-accented speech and does not fire reliably for this team at 0.5;
+  # 0.1 detects consistently. That is a finding about the model, not a tuning
+  # knob, and it has a cost: the capture window opens more readily on
+  # background noise. FR-50 still holds structurally, since capture only ever
+  # follows a detection, but the false-wake rate is higher than the section
+  # 5.8 privacy claim implies. Retrain or swap the model to raise this.
+  wake_word_threshold: 0.1
   vad_silence_ms: 1000
   no_speech_timeout_s: 3.0
   command_timeout_s: 15.0
