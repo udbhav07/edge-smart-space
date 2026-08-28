@@ -21,6 +21,7 @@ import pytest
 from src.common import topics
 from src.common.schemas import (
     Coefficients,
+    PreferenceHint,
     FaultEvent,
     Goal,
     SensorReading,
@@ -87,6 +88,16 @@ VALIDATION_VERDICT_PAYLOAD = {
     "applied": {"setpoint_c": 25.5},
 }
 
+PREFERENCE_HINT_PAYLOAD = {
+    "ts": 1756032000.0,
+    "intent": "environment",
+    "comfort": "cooler",
+    "subject": "temperature",
+    "target_c": 24.0,
+    "rationale": "it is too warm in here",
+    "spoken_reply": "I have passed that on.",
+}
+
 DOCUMENTED_PAYLOADS = [
     (SensorReading, SENSOR_READING_PAYLOAD),
     (ThermalEstimate, THERMAL_ESTIMATE_PAYLOAD),
@@ -94,6 +105,7 @@ DOCUMENTED_PAYLOADS = [
     (FaultEvent, FAULT_EVENT_PAYLOAD),
     (Goal, GOAL_PAYLOAD),
     (ValidationVerdict, VALIDATION_VERDICT_PAYLOAD),
+    (PreferenceHint, PREFERENCE_HINT_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -157,6 +169,12 @@ class TestSection62Payloads:
 
     def test_coefficients_carry_only_the_documented_fields(self):
         assert set(Coefficients.model_fields) == set(COEFFICIENTS_PAYLOAD)
+
+    def test_a_preference_hint_carries_more_than_a_temperature(self):
+        """Section 6.4: a request about anything else must be representable."""
+        hint = PreferenceHint.model_validate(PREFERENCE_HINT_PAYLOAD)
+        assert hint.subject == "temperature"
+        assert hint.spoken_reply
 
     def test_a_verdict_nests_its_decision_objects(self):
         """The nesting is what lets one verdict schema carry both the setpoint

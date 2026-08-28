@@ -5,12 +5,24 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.0 |
+| Version | 1.1 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
 | Phase at time of writing | Simulation (pre-hardware) |
 | Related documents | Formal Problem Statement v5, Professor Briefing, Review Deck (17 slides), 12-Week Work Plan |
+
+### Revision history
+
+| Version | Change |
+|---|---|
+| 1.0 | Initial specification. |
+| 1.1 | Reconciled with the implementation after Weeks 1–4. Wake-word threshold lowered to a measured value and the always-listening claim in §5.8 qualified accordingly; §4.6 memory budget restated for the models actually loaded; §5.7.5 model selection changed to the served 7B; §5.10 layout updated; `PreferenceHint` added to §6.2. |
+
+Where this document and the code disagree, that is a defect in one of them.
+`tests/common/test_design_conformance.py` validates every payload in §6.2
+verbatim and asserts the §6.1 topic table matches the code in both
+directions, so the parts it covers cannot drift silently.
 
 ---
 
@@ -388,11 +400,22 @@ flowchart TB
 | Component | Estimate | Notes |
 |---|---|---|
 | JetPack, OS, desktop | 4.0 GB | Headless saves ~1 GB |
-| llama.cpp server (9B class, Q4_K_M, 8k ctx) | 7.0 GB | Weights ~5.3 GB plus KV cache |
-| Whisper (small, int8) | 1.0 GB | Loaded on demand after wake word |
+| Inference server (Qwen2.5 7B, Q4_K_M, 8k ctx) | 5.5 GB | Weights ~4.4 GB plus KV cache |
+| Whisper (`base.en`, float16 on GPU) | 0.5 GB | Loaded on demand after wake word. `int8` on CPU is smaller |
 | Wake-word detector | 0.1 GB | Always resident |
 | Python control stack, MQTT, logging | 1.5 GB | |
-| Headroom | ~18 GB | |
+| Headroom | ~20 GB | |
+
+Two rows changed in v1.1 to match what is actually loaded. The inference
+server serves a 7B rather than a 9B class model (§5.7.5), and speech runs
+`base.en` rather than `small` — smaller, and at half precision on the GPU
+rather than `int8` on the CPU, because the project selects CUDA first
+(§5.8.1). The net effect is roughly 2 GB more headroom than v1.0 assumed.
+
+Every figure here is an estimate. NFR-05 is enforced by a resident-set check
+in CI rather than by this table (§9.2), and E7 measures the real numbers on
+the board. Treat a disagreement between this table and E7 as this table being
+wrong.
 
 Capacity is not the binding constraint; memory bandwidth is. See NFR-03 for the latency consequence.
 
@@ -694,8 +717,8 @@ Only one component genuinely needs a tool loop. Calling the other two "agents" w
 
 Two distinct mechanisms, applied to different calls, for reasons given in §5.7.4:
 
-- **Environmental Supervisor** — native tool-call template via `llama-server --jinja`. The model's tool-calling post-training is the thing being relied on; overriding its template with a hand-written grammar discards that training.
-- **Personal Context and Fault Diagnosis** — GBNF grammar. These are pure structured-extraction calls with no tool loop, so a grammar is the cleaner and stricter mechanism.
+- **Environmental Supervisor** — the model's native tool-call template, served by whichever endpoint is running (`llama-server --jinja`, or Ollama's equivalent). The model's tool-calling post-training is the thing being relied on; overriding its template with a hand-written grammar discards that training.
+- **Personal Context and Fault Diagnosis** — a constrained decode. `llama.cpp` exposes this as a GBNF grammar; the OpenAI-compatible endpoint exposes it as a JSON response format. Both constrain the decode, and §5.7.4 applies to either: neither makes the content correct, which is why post-decode validation runs regardless.
 
 #### 5.7.4 What Grammar Constraint Does and Does Not Buy
 
@@ -715,11 +738,26 @@ Consequently the system applies **post-decode semantic validation** as a separat
 
 | Slot | Candidate | Quant | Notes |
 |---|---|---|---|
-| Primary | Qwen3.5-9B class | Q4_K_M | Native tool template, reasoning mode disabled — thinking tokens are unaffordable at this cadence |
+| Primary | Qwen2.5 7B Instruct | Q4_K_M | Native tool template, reasoning mode disabled — thinking tokens are unaffordable at this cadence |
 | Fallback | Llama 3.1 8B Instruct | Q4_K_M | Well-documented on Jetson; useful as a reproducibility baseline |
-| Simulation phase | 4B class | Q4_K_M | Runs on the development laptop during Weeks 1–4 |
+| Simulation phase | Qwen2.5 7B Instruct | Q4_K_M | The same model, so a simulation result and a hardware result are comparable |
 
-A **single** `llama-server` instance serves all three call sites, differentiated by system prompt and constraint mechanism. Model swapping costs tens of seconds of load time on Jetson and buys nothing here.
+Changed in v1.1 from a 9B class model. The reason for the original choice —
+native tool-calling post-training, which the Environmental Supervisor depends
+on — is satisfied by Qwen2.5 7B, and the smaller model leaves the memory
+headroom in §4.6. Running the same weights in simulation and on hardware also
+removes a variable: a difference between the two phases is then a difference
+in the system, not in the model.
+
+A **single** server instance serves all three call sites, differentiated by
+system prompt and constraint mechanism. Model swapping costs tens of seconds
+of load time on Jetson and buys nothing here.
+
+The endpoint is OpenAI-compatible and reached over HTTP, which both
+`llama.cpp`'s server and Ollama expose. Nothing in the system depends on which
+is running, and neither is started by the project: `start.py` checks the
+endpoint is reachable and proceeds without it if it is not, because FR-47
+requires regulatory control to survive total reasoning unavailability.
 
 ### 5.8 Speech Pipeline
 
@@ -758,7 +796,44 @@ sequenceDiagram
     end
 ```
 
-Audio never persists beyond transcription and never leaves the node (FR-51). The capture window opens only after wake-word detection (FR-50) — the system is not always-listening in the sense that matters.
+Audio never persists beyond transcription and never leaves the node (FR-51). The capture window opens only after wake-word detection (FR-50).
+
+#### 5.8.1 Wake-word threshold, and what it costs
+
+v1.0 claimed the system "is not always-listening in the sense that matters".
+That claim is narrowed here, because measurement contradicted the form it was
+written in.
+
+The openWakeWord `hey_jarvis` model is trained on American-accented speech and
+does not fire reliably for this team at the conventional threshold of 0.5. At
+0.1 it detects consistently, so 0.1 is the configured value. This is a finding
+about the model, not a tuning preference, and it has a cost that has to be
+stated rather than discovered during the demonstration:
+
+- **What still holds.** Capture only ever begins after a detection, the buffer
+  is discarded as soon as transcription finishes, and no audio leaves the node.
+  FR-50 and FR-51 are structural and unaffected by the threshold.
+- **What no longer holds.** At 0.1 the detector fires on speech it should not,
+  and on some background noise. The microphone is therefore *open* more often
+  than a 0.5 threshold would allow, so the system cannot claim a low false-wake
+  rate — only that every capture window was opened by something the detector
+  scored as the wake word.
+
+The honest statement is the second one. Raising the threshold requires either
+retraining the wake word on the team's own speech or substituting a model that
+generalises better, and either is a change with evidence behind it rather than
+a number edited upward to make a sentence true.
+
+Speech is the lowest-priority feature set (R-05) and FR-50 to FR-55 are
+cuttable, so this does not affect success criteria 1 to 5.
+
+#### 5.8.2 Compute placement
+
+Wake-word detection and transcription select CUDA first and fall back to CPU
+(§4.6). The fallback is reported rather than silent: on the Jetson the
+difference between running on the GPU and having quietly dropped to the CPU is
+the difference between meeting NFR-04 and missing it, and §9.2 records that a
+silent fallback is the failure most likely to be mistaken for slow code.
 
 ### 5.9 Key Sequences
 
@@ -841,10 +916,15 @@ The `par` block is the design point: diagnosis quality and diagnosis latency are
 
 ```
 edge-smart-space/
-├── README.md
+├── README.md                      # setup, running, what is not built yet
+├── start.py                       # launches every service; preflights the broker
+├── setup_models.py                # fetches wake-word weights at setup, not startup
+├── pyproject.toml                 # one dependency manifest; core + dev + speech extras
+├── config/
+│   └── default.yaml               # every tunable; no policy number lives in code
 ├── docs/
 │   ├── DESIGN.md                  # this document
-│   ├── problem_statement_v5.md
+│   ├── coding-guidelines.md
 │   └── adr/                       # architecture decision records
 │       ├── 0001-supervisory-control.md
 │       ├── 0002-rc-model-over-nn.md
@@ -852,6 +932,9 @@ edge-smart-space/
 │       └── 0004-single-real-actuator.md
 ├── src/
 │   ├── common/
+│   │   ├── clock.py               # injected time source; only module calling `time`
+│   │   ├── config.py              # typed, validated configuration
+│   │   ├── device.py              # CUDA-first device selection
 │   │   ├── schemas.py             # pydantic message schemas
 │   │   ├── topics.py              # canonical topic constants
 │   │   └── mqtt_client.py
@@ -879,11 +962,16 @@ edge-smart-space/
 │   │   ├── grammars/*.gbnf
 │   │   └── prompts/
 │   └── speech/
+│       ├── __main__.py            # `python -m src.speech` runs the pipeline
 │       ├── wakeword.py
-│       ├── asr.py
+│       ├── audio_capture.py       # bounded queue, background reader
+│       ├── asr.py                 # endpointing and transcription
+│       ├── pipeline.py            # wake -> capture -> transcribe -> extract
 │       └── speaker_profile.py
 ├── sim/
 │   ├── room_model.py              # ground-truth plant, distinct from estimator
+│   ├── sensors.py                 # noise, quantisation, dropout, injected faults
+│   ├── actuator.py                # dead time, command loss, no acknowledgement
 │   ├── scenarios/
 │   └── run_sim.py
 ├── eval/
@@ -894,8 +982,22 @@ edge-smart-space/
 │   ├── docker-compose.yml
 │   ├── systemd/
 │   └── esphome/
+├── .github/workflows/ci.yml
 └── tests/
 ```
+
+Written as of v1.1, the following are specified above but **not yet
+implemented**: everything under `src/estimation/` and `src/faults/`,
+`goal_manager.py`, `supervisor_agent.py`, `tools.py`, `speaker_profile.py`
+(FR-52), `simulated_actuators.py`, and the whole of `eval/` and `deploy/`.
+They are listed because they are the design, and named here so the gap
+between the document and the tree is explicit rather than discovered.
+
+`start.py` and `setup_models.py` are additions to the v1.0 layout. Neither is
+a component: `start.py` is the development and demonstration launcher, and on
+the Jetson the deployment path remains one `systemd` unit per process (§9.3).
+`setup_models.py` exists because wake-word weights were being downloaded at
+startup, which NFR-06 forbids.
 
 **`sim/room_model.py` must not import from `src/estimation/`.** The simulated plant and the estimator's internal model have to be independently parameterised, or the evaluation degenerates into the model predicting itself and every reported result is vacuous.
 
@@ -984,6 +1086,17 @@ edge-smart-space/
   "reason": "RATE_LIMIT",
   "applied": { "setpoint_c": 25.5 }
 }
+
+// PreferenceHint
+{
+  "ts": 1756032000.0,
+  "intent": "environment",       // environment | service | none
+  "comfort": "cooler",           // warmer | cooler | unchanged
+  "subject": "temperature",      // what was asked about; "" when nothing was
+  "target_c": 24.0,              // null when no temperature was named
+  "rationale": "it is too warm in here",
+  "spoken_reply": "I have passed that on."
+}
 ```
 
 ### 6.3 Fault Diagnosis Output Schema (GBNF-constrained)
@@ -999,6 +1112,24 @@ edge-smart-space/
 ```
 
 `recommended_mode` is checked against the state machine's legal transitions before use. An illegal recommendation is discarded and the detector-derived mode stands.
+
+### 6.4 On `PreferenceHint`
+
+Added in v1.1. §6.1 named the message from the start but left its fields
+unspecified, and the first implementation carried only a comfort direction and
+a temperature, so a request about anything else was discarded for naming no
+number.
+
+`intent` is the three-way branch §5.8's sequence already describes.
+`environment` is forwarded to the goal path as a supervisory input (FR-53);
+`service` is reported and waits for explicit confirmation before any external
+endpoint is invoked (FR-54); `none` is the ordinary case of nothing being
+asked. An intent of `none` may not carry a comfort direction or a target, so a
+discarded extraction cannot smuggle a request past the goal path.
+
+`spoken_reply` is what to say back to the occupant. It is a sentence, not an
+action: nothing that produces this message can move an actuator, and the
+prompt that generates it forbids claiming anything was changed (FR-45).
 
 ---
 
