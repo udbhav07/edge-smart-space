@@ -232,9 +232,12 @@ class SpeechConfig(_Section):
     )
     asr_model: str = Field(min_length=1, description="Whisper model size")
     asr_device: str = Field(
-        min_length=1, description="cuda or cpu; cpu must work for laptop runs"
+        min_length=1,
+        description="auto (prefer CUDA, fall back to CPU), cuda, or cpu",
     )
-    asr_compute_type: str = Field(min_length=1, description="float16, int8, ...")
+    asr_compute_type: str = Field(
+        min_length=1, description="auto (float16 on GPU, int8 on CPU), or explicit"
+    )
 
     @model_validator(mode="after")
     def _an_utterance_may_run_longer_than_the_silence_timeout(self) -> SpeechConfig:

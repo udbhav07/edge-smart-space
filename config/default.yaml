@@ -79,8 +79,12 @@ speech:
   no_speech_timeout_s: 3.0
   command_timeout_s: 15.0
   asr_model: base.en
-  asr_device: cpu               # Must run on a laptop; set cuda on the Jetson
-  asr_compute_type: int8
+  # GPU first. 'auto' prefers CUDA and falls back to CPU so a laptop still
+  # runs (NFR-09); 'cuda' demands it and fails loudly if absent, which is what
+  # you want on the Jetson where a silent CPU fallback looks like slow code
+  # rather than a broken build (section 9.2).
+  asr_device: auto
+  asr_compute_type: auto
 
 # Section 5.7.5. One server serves every call site.
 reasoning:

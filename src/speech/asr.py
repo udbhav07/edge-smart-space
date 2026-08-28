@@ -22,6 +22,7 @@ import logging
 import numpy as np
 
 from src.common.config import SpeechConfig
+from src.common.device import resolve
 
 LOGGER = logging.getLogger(__name__)
 
@@ -137,11 +138,21 @@ class Transcriber:
     def _load(config: SpeechConfig):
         from faster_whisper import WhisperModel
 
-        LOGGER.info("loading Whisper %s on %s", config.asr_model, config.asr_device)
+        selection = resolve(config.asr_device, config.asr_compute_type)
+        # Logged at INFO because the difference between running on the GPU and
+        # having quietly fallen back to the CPU is the difference between
+        # meeting NFR-04 and missing it, and it is invisible otherwise.
+        LOGGER.info(
+            "loading Whisper %s on %s/%s (%s)",
+            config.asr_model,
+            selection.device,
+            selection.compute_type,
+            selection.reason,
+        )
         return WhisperModel(
             config.asr_model,
-            device=config.asr_device,
-            compute_type=config.asr_compute_type,
+            device=selection.device,
+            compute_type=selection.compute_type,
         )
 
     def transcribe(self, frames: list[np.ndarray]) -> str:
