@@ -433,6 +433,29 @@ class Comfort(str, Enum):
     UNCHANGED = "unchanged"
 
 
+class Intent(str, Enum):
+    """What kind of thing was asked for.
+
+    These are the three branches in DESIGN.md section 5.8's sequence, named
+    so an utterance about something other than temperature is representable
+    rather than silently discarded:
+
+    ``ENVIRONMENT``
+        A preference about the space. Forwarded to the goal path as a
+        supervisory input and gated there (FR-53).
+    ``SERVICE``
+        An action against an external service. Requires explicit
+        confirmation before anything is invoked (FR-54), so it is never
+        acted on from here.
+    ``NONE``
+        Nothing actionable was said. The ordinary case, not an error.
+    """
+
+    ENVIRONMENT = "environment"
+    SERVICE = "service"
+    NONE = "none"
+
+
 class PreferenceHint(TimestampedMessage):
     """A spoken preference, forwarded as a supervisory input (FR-53).
 
@@ -445,13 +468,47 @@ class PreferenceHint(TimestampedMessage):
     This is the payload on ``space/context/preference``. Section 6.1 names
     the message; its fields are not specified there, so they are kept to what
     the control path can actually consume.
+
+    It carries more than a temperature. ``intent`` distinguishes the three
+    branches section 5.8 already describes, ``subject`` names what the
+    request was about, and ``spoken_reply`` carries what to say back. None of
+    that makes the message a command: a SERVICE intent is still only a
+    proposal awaiting explicit confirmation (FR-54), and an ENVIRONMENT
+    intent still reaches the plant only through a setpoint the validator
+    admits.
     """
 
+    intent: Intent = Field(
+        default=Intent.ENVIRONMENT, description="Which section 5.8 branch applies"
+    )
     comfort: Comfort
+    subject: str = Field(
+        default="",
+        description="What the request was about: temperature, lights, a booking",
+    )
     target_c: float | None = Field(
         default=None, description="Temperature named by the occupant, if any"
     )
     rationale: str = Field(default="", description="What was said, briefly")
+    spoken_reply: str = Field(
+        default="", description="Plain-English answer to speak back to the occupant"
+    )
+
+    @model_validator(mode="after")
+    def _nothing_actionable_carries_no_request(self) -> PreferenceHint:
+        """A NONE intent must not smuggle a request through.
+
+        Without this, an extraction that decided nothing was asked could
+        still name a target temperature, and the goal path would have no way
+        to tell an actual request from a discarded one.
+        """
+        if self.intent is not Intent.NONE:
+            return self
+        if self.comfort is not Comfort.UNCHANGED:
+            raise ValueError("an intent of NONE must carry comfort 'unchanged'")
+        if self.target_c is not None:
+            raise ValueError("an intent of NONE must not name a target temperature")
+        return self
 
 
 class ActuatorState(TimestampedMessage):

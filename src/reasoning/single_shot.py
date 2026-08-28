@@ -28,7 +28,7 @@ from pydantic import ValidationError
 
 from src.common.clock import Clock
 from src.common.config import ReasoningConfig
-from src.common.schemas import Comfort, PreferenceHint
+from src.common.schemas import Comfort, Intent, PreferenceHint
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,13 +41,40 @@ LOCAL_API_KEY = "local"
 _JSON_RESPONSE_FORMAT = {"type": "json_object"}
 
 PERSONAL_CONTEXT_PROMPT = (
-    "Extract the occupant's environmental preference from what they said. "
-    "Reply with a JSON object and nothing else, with keys: "
-    '"comfort" (one of "warmer", "cooler", "unchanged"), '
-    '"target_c" (a number, or null if no temperature was named), and '
-    '"rationale" (a short quote of what they asked for). '
-    'Use "unchanged" when no preference about temperature was expressed.'
+    "You understand what someone asked of their smart space. You do not "
+    "control anything: you describe the request so the control system can "
+    "weigh it. Reply with a JSON object and nothing else, with keys: "
+    '"intent" (one of "environment" for a request about the space, '
+    '"service" for an external action such as a booking, or "none" when '
+    "nothing was asked), "
+    '"subject" (a short noun for what it was about, such as "temperature", '
+    '"lights" or "booking", or "" for none), '
+    '"comfort" (one of "warmer", "cooler", "unchanged"; use "unchanged" '
+    "unless a temperature preference was expressed), "
+    '"target_c" (a number, or null if no temperature was named), '
+    '"rationale" (a short quote of what they asked for), and '
+    '"spoken_reply" (one short sentence of plain English to say back). '
+    "Never claim anything has been changed or switched: say a request has "
+    "been passed on, because that is all that has happened."
 )
+
+
+def _is_empty(hint: PreferenceHint) -> bool:
+    """Whether the extraction found nothing worth forwarding.
+
+    A hint about a non-thermal subject is still worth publishing even with no
+    temperature in it: the goal path may not act on it, but discarding it here
+    would hide from the audit log that anything was said at all.
+    """
+    if hint.intent is Intent.NONE:
+        return True
+    if hint.intent is Intent.SERVICE:
+        return False
+    return (
+        hint.comfort is Comfort.UNCHANGED
+        and hint.target_c is None
+        and not hint.subject
+    )
 
 
 class ReasoningUnavailableError(RuntimeError):
@@ -142,14 +169,15 @@ class PersonalContext:
         try:
             hint = PreferenceHint(
                 ts=self._clock.now(),
+                intent=Intent(decoded.get("intent", Intent.ENVIRONMENT.value)),
                 comfort=Comfort(decoded.get("comfort")),
+                subject=str(decoded.get("subject", "")),
                 target_c=decoded.get("target_c"),
                 rationale=str(decoded.get("rationale", "")),
+                spoken_reply=str(decoded.get("spoken_reply", "")),
             )
         except (ValidationError, ValueError) as exc:
             LOGGER.warning("discarding extraction failing validation: %s", exc)
             return None
 
-        if hint.comfort is Comfort.UNCHANGED and hint.target_c is None:
-            return None
-        return hint
+        return None if _is_empty(hint) else hint

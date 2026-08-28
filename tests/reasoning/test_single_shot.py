@@ -13,8 +13,12 @@ import pytest
 
 from src.common.clock import SimClock
 from src.common.config import ReasoningConfig, load_config
-from src.common.schemas import Comfort
-from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
+from src.common.schemas import Comfort, Intent
+from src.reasoning.single_shot import (
+    PERSONAL_CONTEXT_PROMPT,
+    PersonalContext,
+    ReasoningUnavailableError,
+)
 
 TRANSCRIPT = "it's too warm in here, make it 23"
 
@@ -137,3 +141,49 @@ class TestDegradation:
         with pytest.raises(ReasoningUnavailableError) as caught:
             _context(config, client).extract(TRANSCRIPT)
         assert isinstance(caught.value.__cause__, ConnectionError)
+
+
+class TestBroaderThanTemperature:
+    """A request about something other than the thermostat is representable.
+
+    Personal Context still holds no tools and drives nothing (FR-42). What
+    changed is the vocabulary it can report, not what it can do.
+    """
+
+    def test_a_non_thermal_request_is_still_forwarded(self, config):
+        client = StubClient('{"intent": "environment", "subject": "lights", "comfort": "unchanged", "target_c": null, "rationale": "turn the lights down", "spoken_reply": "I have passed that on."}')
+        hint = _context(config, client).extract("turn the lights down")
+        assert hint is not None
+        assert hint.subject == "lights"
+
+    def test_a_service_request_is_reported_not_acted_on(self, config):
+        """FR-54: an external action needs explicit confirmation first."""
+        client = StubClient('{"intent": "service", "subject": "booking", "comfort": "unchanged", "target_c": null, "rationale": "book the room at six", "spoken_reply": "Shall I request that booking?"}')
+        hint = _context(config, client).extract("book the room at six")
+        assert hint is not None
+        assert hint.intent is Intent.SERVICE
+
+    def test_a_spoken_reply_comes_back_for_the_occupant(self, config):
+        client = StubClient('{"intent": "environment", "subject": "temperature", "comfort": "cooler", "target_c": 24.0, "rationale": "too warm", "spoken_reply": "I have asked for it to be cooler."}')
+        hint = _context(config, client).extract("it is too warm")
+        assert hint.spoken_reply.startswith("I have asked")
+
+    def test_nothing_actionable_still_yields_nothing(self, config):
+        client = StubClient('{"intent": "none", "subject": "", "comfort": "unchanged", "target_c": null, "rationale": "", "spoken_reply": "I did not catch a request."}')
+        assert _context(config, client).extract("what is the weather") is None
+
+    def test_an_intent_of_none_cannot_smuggle_a_target(self, config):
+        """Otherwise a discarded extraction could still name a temperature."""
+        client = StubClient('{"intent": "none", "subject": "", "comfort": "cooler", "target_c": 18.0, "rationale": "", "spoken_reply": ""}')
+        assert _context(config, client).extract("mumbling") is None
+
+    def test_a_broadened_extraction_is_still_given_no_tools(self, config):
+        """FR-42: the tool loop belongs to the Environmental Supervisor."""
+        client = StubClient('{"intent": "environment", "subject": "lights", "comfort": "unchanged", "target_c": null, "rationale": "dim", "spoken_reply": "Passed on."}')
+        _context(config, client).extract("turn the lights down")
+        assert "tools" not in client.calls[0]
+
+    def test_the_prompt_forbids_claiming_anything_was_changed(self):
+        """Nothing here can switch a device, so the reply must not say one
+        was switched (FR-45)."""
+        assert "Never claim anything has been changed" in PERSONAL_CONTEXT_PROMPT
