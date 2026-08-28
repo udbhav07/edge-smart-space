@@ -61,7 +61,7 @@ def build_pipeline(
         detector=WakeWordDetector(config.speech),
         utterance=UtteranceDetector(config.speech),
         transcriber=Transcriber(config.speech),
-        personal_context=PersonalContext(config.reasoning),
+        personal_context=PersonalContext(config.reasoning, clock),
     )
 
 
@@ -86,7 +86,7 @@ def run(
     processed = 0
     while frames is None or processed < frames:
         try:
-            frame = capture.frames().get(timeout=_FRAME_WAIT_S)
+            frame = capture.frames.get(timeout=_FRAME_WAIT_S)
         except queue.Empty:
             continue
 

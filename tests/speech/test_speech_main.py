@@ -15,6 +15,7 @@ from src.common.config import load_config
 from src.common.schemas import Comfort, PreferenceHint
 from src.reasoning.single_shot import ReasoningUnavailableError
 from src.speech import __main__ as runner
+from src.speech.audio_capture import AudioCapture
 
 TS = 1756032000.0
 
@@ -25,13 +26,20 @@ def _config():
 
 
 class FakeCapture:
-    """Hands out preloaded frames, then nothing."""
+    """Hands out preloaded frames, then nothing.
+
+    ``frames`` is a property because it is a property on AudioCapture. An
+    earlier version declared it a method, so every test here passed while the
+    runner raised TypeError on its first frame: a double that does not match
+    the real interface tests nothing.
+    """
 
     def __init__(self, frames):
         self._queue = queue.Queue()
         for frame in frames:
             self._queue.put(frame)
 
+    @property
     def frames(self):
         return self._queue
 
@@ -144,3 +152,50 @@ class TestEmptyQueue:
             config, SimClock(), capture, pipeline, RecordingBlackboard(), frames=0
         )
         assert processed == 0
+
+
+class TestWiringAgainstTheRealInterfaces:
+    """Regressions for two bugs that shipped because the doubles drifted.
+
+    Both would have crashed `python -m src.speech` on startup while every
+    test in this file passed, which is the failure mode a test double
+    invites when it does not match the class it stands in for.
+    """
+
+    def test_the_runner_reads_frames_from_a_real_capture_object(self, config):
+        """AudioCapture.frames is a property; calling it raises TypeError."""
+        capture = AudioCapture(
+            config.speech, SimClock(), stream=object(), audio=object()
+        )
+        capture.frames.put("frame")
+
+        processed = runner.run(
+            config,
+            SimClock(),
+            capture,
+            FakePipeline([None]),
+            RecordingBlackboard(),
+            frames=1,
+        )
+        assert processed == 1
+
+    def test_build_pipeline_gives_personal_context_a_clock(self, config, monkeypatch):
+        """PersonalContext takes a clock; omitting it raises at construction."""
+        captured = {}
+
+        class StubModel:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        def _personal_context(reasoning_config, clock, *args, **kwargs):
+            captured["clock"] = clock
+            return object()
+
+        for name in ("WakeWordDetector", "UtteranceDetector", "Transcriber"):
+            monkeypatch.setattr(runner, name, StubModel)
+        monkeypatch.setattr(runner, "PersonalContext", _personal_context)
+        monkeypatch.setattr(runner, "SpeechPipeline", lambda **kwargs: kwargs)
+
+        clock = SimClock()
+        runner.build_pipeline(config, clock, FakeCapture([]))
+        assert captured["clock"] is clock
