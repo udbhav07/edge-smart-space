@@ -1,15 +1,15 @@
 """Tests for experiment E1.
 
-These assert what E1 *measured*, not what it was hoped to measure. The
-identification recovers the actuator authority and its sign well and does
-not recover a1, and that gap is a finding about the estimator's structure
-rather than a defect in this harness -- see the module docstring of
-``eval.experiments.e1_convergence`` and the note at the bottom of this file.
+E1 is the Weeks 2-3 gate: coefficients converge on synthetic data. It did
+not pass in the model's original form -- a1 settled at 0.754 against a truth
+of 0.998, because T[k] was a noisy regressor and least squares attenuates
+such a coefficient toward zero. Section 5.2.1 was changed in v1.2 to fit the
+temperature *change* against T_out - T, deriving a1 as 1 - a2, and these
+tests hold the resulting numbers in place.
 
-Writing a test that asserts a1 converges would make the suite red for a
-reason the code cannot fix, and writing one that asserts nothing would hide
-the result. So the bias is pinned: if it ever improves, this test fails and
-somebody has to come and read why.
+The tolerances are deliberately close to the measured values rather than
+generously loose. A test that would still pass if the reformulation were
+reverted would not be guarding anything.
 """
 
 import math
@@ -109,47 +109,71 @@ class TestTheRunItself:
         assert all(name in report for name in ("a1", "a2", "a3", "a4"))
 
 
-class TestWhatIdentifiesWell:
+class TestTheGate:
+    """Weeks 2-3: coefficients converge on synthetic data."""
+
+    def test_thermal_inertia_converges(self, result):
+        """The coefficient the old form could not recover. It settled at
+        0.754 against a truth of 0.998 before v1.2."""
+        assert abs(result.estimated[0] - result.truth[0]) < 0.01
+
+    def test_ambient_coupling_converges(self, result):
+        assert abs(result.estimated[1] - result.truth[1]) < 0.01
+
     def test_the_actuator_authority_keeps_its_sign(self, result):
         """FR-24 depends on this: a3 crossing zero means the air conditioner
         heats the room, which is an actuator fault rather than a property."""
         assert result.estimated[2] < 0.0
 
-    def test_the_actuator_authority_is_close_to_the_truth(self, result):
+    def test_the_actuator_authority_converges(self, result):
+        """Looser than a1's because a3 needs longer: measured against this
+        two-hour fixture the error is 0.011, falling to 0.003 at six hours
+        and 0.0001 over the full 24 h run the experiment actually reports.
+        a3 is identified only while the compressor is switching, so it
+        accumulates evidence more slowly than the always-present terms."""
         assert abs(result.estimated[2] - result.truth[2]) < 0.02
 
-    def test_steady_state_consistency_is_broadly_maintained(self, result):
-        assert result.steady_state_residual < 0.1
+    def test_the_worst_coefficient_error_is_small(self, result):
+        """0.243 in the old form. Now 0.018 over this fixture and 0.036 over
+        the full 24 h run, where the worst case is a4."""
+        assert result.worst_error < 0.05
 
 
-class TestKnownBias:
-    """a1 does not converge, and the reason is structural.
+class TestStructuralConsistency:
+    """a1 is derived, not fitted, so the identity cannot drift."""
 
-    T[k] is both a regressor and a noisy measurement. Least squares with a
-    noisy predictor attenuates that predictor's coefficient toward zero and
-    a2 absorbs the difference; at zero sensor noise the same estimator
-    recovers a1 exactly, so the algorithm is right and the *problem* is
-    mis-specified for a +/-0.15 C instrument.
+    def test_steady_state_consistency_holds_exactly(self, result):
+        assert result.steady_state_residual == pytest.approx(0.0, abs=1e-12)
 
-    This is pinned rather than asserted away. It bears directly on section
-    8.4's second success criterion, which asks for coefficients within a
-    stated tolerance of ground truth, and that tolerance now has to be
-    stated in the knowledge that a1 will not meet a tight one at this
-    sampling cadence and noise level.
+    def test_the_pair_sums_to_one(self, result):
+        assert result.estimated[0] + result.estimated[1] == pytest.approx(1.0)
+
+    def test_the_identity_is_therefore_not_a_useful_metric(self, result):
+        """Section 8.3 no longer lists it for E1: identically zero measures
+        nothing, and quoting it would read as success while saying nothing
+        about whether the coefficients are right."""
+        assert result.steady_state_residual == 0.0
+
+
+class TestRemainingWeakness:
+    """a4 is the cost of the change, and it is recorded rather than hidden.
+
+    Occupancy gain is about 0.0008 for one person, far below the noise
+    floor. The old form happened to estimate it adequately; this one does
+    not, and it is now the worst of the four. It contributes roughly 0.03 C
+    to a prediction, so the error costs less than a1's did.
     """
 
-    def test_a1_is_attenuated_toward_zero(self, result):
-        assert result.estimated[0] < result.truth[0]
+    def test_occupancy_gain_is_the_worst_identified_coefficient(self, result):
+        """True from about an hour in, and increasingly so: a4's error grows
+        with run length while every other coefficient's shrinks."""
+        assert np.argmax(result.errors) == 3
 
-    def test_a2_absorbs_what_a1_loses(self, result):
-        assert result.estimated[1] > result.truth[1]
+    def test_it_is_nonetheless_bounded(self, result):
+        assert abs(result.estimated[3] - result.truth[3]) < 0.05
 
-    def test_the_pair_still_roughly_sums_to_one(self, result):
-        """The attenuation moves weight between them rather than out of them,
-        which is why the steady-state diagnostic stays small even though the
-        individual coefficients are wrong. Reporting only |a1 + a2 - 1| would
-        therefore look like success and hide this entirely."""
-        assert result.estimated[0] + result.estimated[1] == pytest.approx(1.0, abs=0.1)
+    def test_it_stays_inside_its_widened_range(self, result, config):
+        assert config.estimator.bounds_a4.contains(result.estimated[3])
 
 
 class TestLoopback:

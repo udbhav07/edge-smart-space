@@ -18,8 +18,9 @@ from src.common.schemas import AdaptationState
 from src.estimation.rc_model import Regressor
 from src.estimation.rls import ThermalEstimator, UpdateStatus
 
-#: A plant the estimator's prior does not already match.
-TRUE_THETA = np.array([0.9700, 0.0300, -0.0800, 0.0050])
+#: A plant the estimator's prior does not already match, as the four
+#: coefficients the model is described by.
+TRUE_COEFFICIENTS = np.array([0.9700, 0.0300, -0.0800, 0.0050])
 
 
 @pytest.fixture(name="config")
@@ -47,13 +48,21 @@ def _regressor(step: int, indoor_c: float) -> Regressor:
     )
 
 
+def _next_temperature(phi) -> float:
+    """What the true plant does, in the model's own four-coefficient terms."""
+    return float(
+        TRUE_COEFFICIENTS
+        @ np.array([phi.indoor_c, phi.outdoor_c, phi.command, phi.occupancy])
+    )
+
+
 def _identify(estimator: ThermalEstimator, steps: int = 3000) -> np.ndarray:
     indoor_c = 29.0
     for step in range(steps):
         phi = _regressor(step, indoor_c)
-        indoor_c = float(TRUE_THETA @ phi.as_array())
+        indoor_c = _next_temperature(phi)
         estimator.update(phi, indoor_c)
-    return estimator.theta
+    return estimator.coefficients
 
 
 class TestInitialState:
@@ -64,7 +73,7 @@ class TestInitialState:
         assert estimator.adaptation is AdaptationState.ACTIVE
 
     def test_starts_with_a_weak_prior(self, estimator, config):
-        expected = 4 * config.initial_covariance
+        expected = 3 * config.initial_covariance
         assert estimator.trace == pytest.approx(expected)
 
     def test_reports_no_residual_spread_before_any_data(self, estimator):
@@ -82,7 +91,7 @@ class TestIdentification:
 
     def test_converges_on_a_known_plant(self, estimator):
         theta = _identify(estimator)
-        assert np.max(np.abs(theta - TRUE_THETA)) < 0.01
+        assert np.max(np.abs(theta - TRUE_COEFFICIENTS)) < 0.01
 
     def test_recovers_the_actuator_authority_with_its_sign(self, estimator):
         theta = _identify(estimator)
@@ -190,7 +199,7 @@ class TestExcitation:
         status = None
         for step in range(config.excitation_window_samples + 5):
             phi = _regressor(step, indoor_c)
-            indoor_c = float(TRUE_THETA @ phi.as_array())
+            indoor_c = _next_temperature(phi)
             status = estimator.update(phi, indoor_c).status
         assert status is UpdateStatus.APPLIED
 
@@ -202,6 +211,11 @@ class TestCovarianceSafeguards:
         for _ in range(500):
             estimator.update(phi, 0.0)
         assert estimator.trace <= config.max_covariance_trace * 1.0001
+
+    def test_the_derived_coefficients_are_a_fresh_array(self, estimator):
+        coefficients = estimator.coefficients
+        coefficients[0] = 99.0
+        assert estimator.coefficients[0] != 99.0
 
     def test_the_covariance_is_handed_out_as_a_copy(self, estimator):
         covariance = estimator.covariance
@@ -273,16 +287,13 @@ class TestImplausibleEstimates:
 class TestSnapshot:
     def test_reports_the_current_estimate(self, estimator, config):
         snapshot = estimator.snapshot()
-        assert (snapshot.a1, snapshot.a2) == (
-            config.initial_theta[0],
-            config.initial_theta[1],
-        )
+        assert snapshot.a2 == pytest.approx(config.initial_theta[0])
+        assert snapshot.a1 == pytest.approx(1.0 - config.initial_theta[0])
 
-    def test_carries_the_steady_state_diagnostic(self, estimator):
-        snapshot = estimator.snapshot()
-        assert snapshot.steady_state_residual == pytest.approx(
-            abs(snapshot.a1 + snapshot.a2 - 1.0)
-        )
+    def test_steady_state_consistency_holds_by_construction(self, estimator):
+        """Identically zero since a1 is derived rather than fitted."""
+        _identify(estimator, steps=300)
+        assert estimator.snapshot().steady_state_residual == pytest.approx(0.0)
 
     def test_is_stamped_from_the_injected_clock(self, config, clock):
         clock.advance(500.0)
@@ -295,7 +306,7 @@ class TestSnapshot:
     def test_a_later_snapshot_does_not_alter_an_earlier_one(self, estimator):
         first = estimator.snapshot()
         _identify(estimator, steps=200)
-        assert estimator.snapshot().a1 != first.a1 or first.a1 == estimator.theta[0]
+        assert first.a2 == pytest.approx(estimator._config.initial_theta[0])
 
 
 class TestResetAndRestore:
@@ -304,33 +315,38 @@ class TestResetAndRestore:
         estimator.reset()
         assert np.allclose(estimator.theta, config.initial_theta)
 
+    def test_the_derived_coefficients_follow_the_prior(self, estimator, config):
+        assert estimator.coefficients[0] == pytest.approx(
+            1.0 - config.initial_theta[0]
+        )
+
     def test_reset_clears_the_sample_count(self, estimator):
         _identify(estimator, steps=50)
         estimator.reset()
         assert estimator.samples_since_reset == 0
 
     def test_a_persisted_estimate_can_be_adopted(self, estimator):
-        theta = np.array([0.97, 0.03, -0.08, 0.005])
-        estimator.restore(theta, np.eye(4) * 0.5)
+        theta = np.array([0.03, -0.08, 0.005])
+        estimator.restore(theta, np.eye(3) * 0.5)
         assert np.allclose(estimator.theta, theta)
 
     def test_an_implausible_persisted_estimate_is_refused(self, estimator):
         """One that would be rejected on its first update must not be
         adopted at startup either."""
         with pytest.raises(ValueError):
-            estimator.restore(np.array([0.98, 0.02, 0.9, 0.01]), np.eye(4))
+            estimator.restore(np.array([0.02, 0.9, 0.01]), np.eye(3))
 
     def test_a_wrongly_shaped_estimate_is_refused(self, estimator):
         with pytest.raises(ValueError):
-            estimator.restore(np.array([0.98, 0.02]), np.eye(4))
+            estimator.restore(np.array([0.02, -0.05]), np.eye(3))
 
     def test_a_wrongly_shaped_covariance_is_refused(self, estimator):
         with pytest.raises(ValueError):
-            estimator.restore(np.array([0.98, 0.02, -0.05, 0.01]), np.eye(2))
+            estimator.restore(np.array([0.02, -0.05, 0.01]), np.eye(2))
 
     def test_a_restored_covariance_is_bounded_on_adoption(self, estimator, config):
         estimator.restore(
-            np.array([0.98, 0.02, -0.05, 0.01]),
-            np.eye(4) * config.max_covariance_trace,
+            np.array([0.02, -0.05, 0.01]),
+            np.eye(3) * config.max_covariance_trace,
         )
         assert estimator.trace <= config.max_covariance_trace * 1.0001

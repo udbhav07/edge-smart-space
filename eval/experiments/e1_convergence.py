@@ -216,7 +216,7 @@ def run(config: Config, hours: float, identifiable: bool, label: str) -> E1Resul
         updates_fitted=estimator.samples_since_reset,
         pairs_skipped=service.skipped_pairs,
         truth=arx_ground_truth(run_config.sim.room, interval_s),
-        estimated=estimator.theta,
+        estimated=estimator.coefficients,
         steady_state_residual=snapshot.steady_state_residual,
         residual_sigma=estimator.residual_sigma,
         model_confidence=estimator.model_confidence,

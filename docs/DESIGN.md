@@ -17,6 +17,7 @@
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.2 | §5.2.1 gains an identification form: the model is fitted on the temperature *change* against `T_out − T`, three parameters instead of four, with `a1` derived as `1 − a2`. E1 measured the previous form's `a1` settling at 0.754 against a truth of 0.998 — errors-in-variables attenuation, since `T[k]` is a noisy regressor — and the reformulation drops `a1`'s error by a factor of 220 and the worst coefficient error from 0.243 to 0.036, at the cost of `a4`. Steady-state consistency becomes structural, so `\|a1+a2−1\|` is retired as a diagnostic (§8.3) and `a4`'s plausible range widens to admit noise-driven excursions below zero. |
 | 1.1 | Reconciled with the implementation after Weeks 1–4. Wake-word threshold lowered to a measured value and the always-listening claim in §5.8 qualified accordingly; §4.6 memory budget restated for the models actually loaded; §5.7.5 model selection changed to the served 7B; §5.10 layout updated; `PreferenceHint` added to §6.2. |
 
 Where this document and the code disagree, that is a defect in one of them.
@@ -435,8 +436,8 @@ classDiagram
         +publish(Reading) void
     }
     class ThermalEstimator {
-        -theta: ndarray[4]
-        -P: ndarray[4,4]
+        -theta: ndarray[3]
+        -P: ndarray[3,3]
         -lambda_ff: float
         +predict(phi) float
         +update(phi, y) UpdateResult
@@ -505,26 +506,64 @@ T[k+1] = a1·T[k] + a2·T_out[k] + a3·u[k] + a4·o[k]
 | `a1` | Thermal inertia. Fraction of current temperature retained per step. | (0, 1) |
 | `a2` | Ambient coupling, ≈ Δt/(R·C). | (0, 1) |
 | `a3` | Actuator authority per unit command. Negative for cooling. | (−2.0, 0) |
-| `a4` | Internal gain from occupancy. | [0, 1.0) |
+| `a4` | Internal gain from occupancy. | (−0.05, 1.0) |
 
 Two structural facts are worth stating because they are what turns this from curve-fitting into identification:
 
-- **Steady-state consistency.** With `u = 0` and `o = 0`, the model settles to `T_out` only if `a1 + a2 = 1`. This is enforced as a soft constraint and any drift away from it is itself a diagnostic signal.
+- **Steady-state consistency.** With `u = 0` and `o = 0`, the model settles to `T_out` only if `a1 + a2 = 1`.
 - **Sign-constrained authority.** `a3` must remain negative in cooling mode. An estimate crossing zero means the identifier is being told the air conditioner heats the room — which is far more likely to be an actuator fault than a genuine thermal property. This link is exploited in FR-24.
+
+##### Identification form
+
+The equation above is what the model *means*. It is not the form the coefficients are identified in, and the difference is not cosmetic.
+
+`a1` is close to 1 — for a room with a 35 min time constant sampled at 5 s it is 0.998, because almost nothing changes in five seconds. Fitting a coefficient that close to 1 requires resolving the small part that does change, and that part is about 0.019 °C per step while the temperature sensor is accurate to ±0.15 °C. Least squares does not merely become imprecise here. `T[k]` appears on both sides of the equation — as the regressor and inside the measurement being predicted — and when a regressor carries measurement error its coefficient is pulled systematically toward zero. The attenuation factor is `var(T) / (var(T) + var(noise))`, which for this room and sensor is about 0.78; measured over a 24 h run, `a1` settled at 0.754 against a truth of 0.998, with `a2` absorbing the difference.
+
+Substituting the steady-state identity `a2 = 1 − a1` into the model and rearranging removes the problem rather than mitigating it:
+
+```
+T[k+1] − T[k] = a2·(T_out[k] − T[k]) + a3·u[k] + a4·o[k]        a1 := 1 − a2
+```
+
+Identical physics, the same four coefficients, still linear in the parameters, still ordinary recursive least squares. What changes is that the fit is asked for a small number (`a2` ≈ 0.002) instead of a number near 1, and small coefficients are what survive a noisy regressor. `a1` is then recovered rather than fitted, which makes steady-state consistency **structural**: `a1 + a2 = 1` holds exactly, by construction, instead of being a soft constraint that has to be checked afterwards.
+
+Measured over a 24 h simulated run against a plant with known R and C (E1, §8.3):
+
+| | truth | old form | error | identification form | error |
+|---|---|---|---|---|---|
+| `a1` | 0.997622 | 0.754398 | 0.243224 | 0.996518 | **0.001104** |
+| `a2` | 0.002378 | 0.207152 | 0.204774 | 0.003482 | **0.001104** |
+| `a3` | −0.020809 | −0.015891 | 0.004917 | −0.020933 | **0.000125** |
+| `a4` | 0.000832 | 0.005934 | 0.005102 | 0.036342 | 0.035510 |
+| worst | | | 0.243224 | | **0.035510** |
+
+`a1` improves by a factor of 220 and `a3` by 40. `a4` gets worse, and that is the honest cost of the change rather than a defect: occupancy gain is the one coefficient the old form happened to estimate adequately, and it is now the worst of the four.
+
+Two consequences follow and are recorded here rather than discovered later:
+
+- **`|a1 + a2 − 1|` is no longer a diagnostic.** It is identically zero in this form. What it used to detect — the fit drifting away from a physically coherent model — now shows up as `a2` leaving its plausible range, so the box in the table above carries that job alone.
+- **`a4` is the weakest coefficient, and the change makes it weaker.** Occupancy gain is around 0.0008 for a single occupant, far below the noise floor. The old form put it within 0.005 of truth; this one is out by 0.036. That is accepted deliberately: `a4` contributes about 0.03 °C to a prediction, so its error costs less than `a1`'s did, and no formulation identifies it well at this signal level. Its plausible range widens to `(−0.05, 1.0)` for the same reason — rejecting every noise-driven excursion below zero would raise `MODEL_DIVERGENCE` constantly for a coefficient the control law barely uses.
 
 #### 5.2.2 RLS Update
 
 Regressor and parameter vectors:
 
 ```
-φ[k] = [ T[k],  T_out[k],  u[k],  o[k] ]ᵀ
-θ    = [ a1,    a2,        a3,    a4   ]ᵀ
+φ[k] = [ T_out[k] − T[k],   u[k],   o[k] ]ᵀ
+θ    = [ a2,                a3,     a4   ]ᵀ
+```
+
+Three parameters are identified, not four. `a1` is recovered as `1 − a2` whenever the model is published or evaluated, which is what makes steady-state consistency exact rather than approximate (§5.2.1). The target is the temperature *change*:
+
+```
+y[k] = T[k+1] − T[k]
 ```
 
 Per-step update with exponential forgetting factor λ:
 
 ```
-ŷ[k]  = θ[k−1]ᵀ φ[k]                                  # one-step prediction
+Δ̂[k]  = θ[k−1]ᵀ φ[k]                                 # predicted change
+ŷ[k]  = T[k] + Δ̂[k]                                  # one-step prediction
 e[k]  = T[k+1] − ŷ[k]                                 # residual  (FR-05)
 g[k]  = P[k−1] φ[k] / ( λ + φ[k]ᵀ P[k−1] φ[k] )       # gain
 θ[k]  = θ[k−1] + g[k] · e[k]                          # parameter update
@@ -534,8 +573,8 @@ P[k]  = ( P[k−1] − g[k] φ[k]ᵀ P[k−1] ) / λ            # covariance upd
 | Parameter | Value | Rationale |
 |---|---|---|
 | λ (forgetting factor) | 0.995 | Effective memory ≈ 1/(1−λ) = 200 samples ≈ 17 min at 5 s. Tracks daily thermal variation without chasing noise. |
-| P₀ | 100·I₄ | Large initial covariance: weak prior, fast initial convergence. |
-| θ₀ | [0.98, 0.02, −0.05, 0.01] | Coarse physical guess so the first minutes of control are not wild. |
+| P₀ | 100·I₃ | Large initial covariance: weak prior, fast initial convergence. |
+| θ₀ | [0.02, −0.05, 0.01] | Coarse physical guess for `[a2, a3, a4]`, so the first minutes of control are not wild. `a1` follows as 0.98. |
 
 #### 5.2.3 Numerical and Physical Safeguards
 
@@ -546,7 +585,7 @@ These implement FR-06 and are the difference between "we ran RLS" and "we ran RL
 | Covariance windup | Trace bound: if `trace(P) > P_max`, rescale `P ← P · P_max/trace(P)`. Prevents blow-up during periods of low excitation (e.g. AC off overnight). |
 | Symmetry loss | After each update, symmetrise: `P ← (P + Pᵀ)/2`. |
 | Insufficient excitation | Skip the update when `‖φ[k]‖` variation over the last window falls below a threshold. A constant regressor carries no information and only degrades `P`. |
-| Implausible parameters | Project `θ` back into the box in §5.2.1. Log the rejection; three consecutive rejections raise a `MODEL_DIVERGENCE` fault. |
+| Implausible parameters | Test `θ` against the box in §5.2.1, `a1` included after deriving it. An estimate outside the box is **reverted**, not clamped: a projected vector is a point the data never supported, and adopting it would let one bad update park the estimate on a box edge and stay there. Log the rejection with the coefficient that broke; three consecutive rejections raise a `MODEL_DIVERGENCE` fault. |
 | Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). Never adapt to bad data. |
 
 ```mermaid
@@ -1050,9 +1089,9 @@ startup, which NFR-06 forbids.
 // Coefficients
 {
   "ts": 1756032000.123,
-  "a1": 0.9812, "a2": 0.0173, "a3": -0.0421, "a4": 0.0094,
+  "a1": 0.9827, "a2": 0.0173, "a3": -0.0421, "a4": 0.0094,
   "trace_p": 0.0031,
-  "steady_state_residual": 0.0015,   // |a1 + a2 - 1|
+  "steady_state_residual": 0.0,      // |a1 + a2 - 1|; identically zero since v1.2
   "samples_since_reset": 14203
 }
 
@@ -1148,7 +1187,7 @@ prompt that generates it forbids claiming anything was changed (FR-45).
 | MQTT broker down | Client disconnect callback | Each process holds last state; controller holds last setpoint | FR-11 |
 | LLM server down or slow | Invocation timeout (30 s) | Retain previous goal; regulatory loop unaffected | FR-47 |
 | Whisper OOM | Exception on load | Speech feature disabled; core control unaffected | NFR-05 |
-| RLS divergence | 3 consecutive projections | `SAFE_HOLD`, coefficients reset to θ₀ | FR-06 |
+| RLS divergence | 3 consecutive rejections | `SAFE_HOLD`, coefficients reset to θ₀ | FR-06 |
 | Unclean restart | Boot sequence | Restore persisted θ, P; if stale > 24 h, reset to θ₀ | FR-07, NFR-07 |
 
 ### 7.2 Degradation Budget
@@ -1181,7 +1220,7 @@ The baseline is deliberately not a straw man: it gets the same deadband, the sam
 
 | Exp | Question | Method | Metric |
 |---|---|---|---|
-| E1 | Does RLS converge to physically plausible coefficients? | 24 h simulated run, known plant parameters | Coefficient error vs. ground truth; `\|a1+a2−1\|` |
+| E1 | Does RLS converge to physically plausible coefficients? | 24 h simulated run, known plant parameters | Coefficient error vs. ground truth, worst case and per coefficient. Not `\|a1+a2−1\|`: since v1.2 that is identically zero and measures nothing (§5.2.1). |
 | E2 | Does self-calibration improve tracking over a fixed model? | Same scenario, adaptation on vs. frozen at θ₀ | RMS setpoint error, overshoot |
 | E3 | Does the system detect all injected fault classes? | 5 fault classes × 10 trials each | Detection rate, false-positive rate, latency |
 | E4 | How long is prediction-based control viable? | Inject sensor fault, run to failure | Prediction error vs. time; validates the 1800 s budget |
@@ -1235,7 +1274,7 @@ Each component runs as a separate `systemd` unit with `Restart=always`. Restart 
 
 | ID | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R-01 | Insufficient excitation in a real room means RLS never identifies `a3` well | Self-calibration claim weakens | Scheduled excitation: brief deliberate setpoint steps during unoccupied periods; report identifiability alongside coefficients |
+| R-01 | Insufficient excitation in a real room means RLS never identifies `a3` well | Self-calibration claim weakens | Scheduled excitation: brief deliberate setpoint steps during unoccupied periods; report identifiability alongside coefficients. E1 confirmed the related hazard for `a1` and it is addressed structurally in §5.2.1 rather than by excitation. |
 | R-02 | AC control via IR is open-loop with no state feedback | Actuator fault detection confounded with command loss | Prefer an ESPHome path with state readback; if unavailable, document D5 as detecting "no thermal response" rather than "actuator failed" |
 | R-03 | Jetson arrives later than Week 4 | Hardware validation compresses | Everything through Week 4 is simulation-only by design; simulation results stand independently |
 | R-04 | Single-room testbed has uncontrolled disturbances (sun, corridor door) | Residuals inflate, D4 false positives | Characterise disturbance magnitude in Week 6; set CUSUM threshold from measured σ, not assumed |
@@ -1280,8 +1319,8 @@ Each component runs as a separate `systemd` unit with `Restart=always`. Restart 
 | `T_out[k]` | Outdoor temperature at step k (°C) |
 | `u[k]` | Normalised actuator command, [0, 1] |
 | `o[k]` | Binary occupancy indicator |
-| `θ` | Parameter vector `[a1, a2, a3, a4]ᵀ` |
-| `φ[k]` | Regressor vector |
+| `θ` | Identified parameter vector `[a2, a3, a4]ᵀ`; `a1` is derived as `1 − a2` |
+| `φ[k]` | Regressor vector `[T_out[k] − T[k], u[k], o[k]]ᵀ` |
 | `P` | Parameter covariance matrix (4×4) |
 | `λ` | Forgetting factor |
 | `e[k]` | One-step prediction residual |

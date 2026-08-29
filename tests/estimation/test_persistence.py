@@ -16,8 +16,8 @@ from src.common.clock import SimClock
 from src.common.config import PersistenceConfig
 from src.estimation.persistence import SCHEMA_VERSION, CoefficientStore
 
-THETA = np.array([0.97, 0.03, -0.08, 0.005])
-COVARIANCE = np.eye(4) * 0.25
+THETA = np.array([0.03, -0.08, 0.005])   # the identified [a2, a3, a4]
+COVARIANCE = np.eye(3) * 0.25
 SAMPLES = 14203
 INTERVAL_S = 300.0
 MAX_AGE_S = 86400.0
@@ -122,7 +122,7 @@ class TestNothingUsable:
     def test_a_non_numeric_theta_yields_nothing(self, store):
         store.save(THETA, COVARIANCE, SAMPLES)
         payload = json.loads(store.path.read_text(encoding="utf-8"))
-        payload["theta"] = ["warm", "cool", "x", "y"]
+        payload["theta"] = ["warm", "cool", "x"]
         store.path.write_text(json.dumps(payload), encoding="utf-8")
         assert store.load() is None
 

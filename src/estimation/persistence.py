@@ -5,6 +5,11 @@ would mean the first hours after every restart are run on the prior, which
 is exactly the period the self-calibration claim is about. So theta and P
 are written periodically and read back on startup.
 
+What is stored is the *identified* vector [a2, a3, a4] and its 3x3
+covariance, not the four coefficients the model is described by. a1 is
+derived on load like everywhere else, so a stored file can never disagree
+with the steady-state identity.
+
 Two rules make that safe rather than merely convenient:
 
 * **A stale estimate is discarded.** Section 7.1 puts the horizon at a day.
@@ -34,13 +39,15 @@ import numpy as np
 
 from src.common.clock import Clock
 from src.common.config import PersistenceConfig
-from src.estimation.rc_model import COEFFICIENT_COUNT
+from src.estimation.rc_model import IDENTIFIED_COUNT
 
 LOGGER = logging.getLogger(__name__)
 
 #: Bumped when the stored shape changes, so an old file is discarded rather
-#: than misread into the current structure.
-SCHEMA_VERSION = 1
+#: than misread into the current structure. Version 2 stores the three
+#: identified parameters; version 1 stored four, and reading one of those as
+#: the current vector would silently mean something else entirely.
+SCHEMA_VERSION = 2
 
 _ENCODING = "utf-8"
 _TEMPORARY_SUFFIX = ".tmp"
@@ -128,9 +135,9 @@ class CoefficientStore:
             LOGGER.warning("persisted estimate at %s is malformed: %s", self._path, exc)
             return None
 
-        if theta.shape != (COEFFICIENT_COUNT,) or covariance.shape != (
-            COEFFICIENT_COUNT,
-            COEFFICIENT_COUNT,
+        if theta.shape != (IDENTIFIED_COUNT,) or covariance.shape != (
+            IDENTIFIED_COUNT,
+            IDENTIFIED_COUNT,
         ):
             LOGGER.warning("persisted estimate at %s has the wrong shape", self._path)
             return None

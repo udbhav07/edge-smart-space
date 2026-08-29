@@ -21,6 +21,13 @@ Five things can go wrong, and each has a specific answer:
   the regressor is faulted (FR-29). Prediction continues; learning does not.
   Never adapt to bad data.
 
+Three parameters are identified -- ``a2``, ``a3``, ``a4`` -- and ``a1`` is
+recovered as ``1 - a2`` (section 5.2.2). That is what makes steady-state
+consistency structural rather than something to check afterwards, and it is
+why the plausibility test runs on the derived four rather than the fitted
+three: an ``a2`` that drags ``a1`` out of range is implausible even when
+``a2`` itself is not.
+
 The estimator owns ``theta`` and ``P`` privately and hands out immutable
 snapshots. That is the resolution of the one place where the coding standard
 (prefer immutable state) and the algorithm (inherently recursive) pull
@@ -41,8 +48,9 @@ from src.common.clock import Clock
 from src.common.config import EstimatorConfig
 from src.common.schemas import AdaptationState, Coefficients
 from src.estimation.rc_model import (
-    COEFFICIENT_COUNT,
+    IDENTIFIED_COUNT,
     Regressor,
+    full_coefficients,
     implausible_coefficients,
     is_plausible,
     predict,
@@ -98,7 +106,7 @@ class ThermalEstimator:
         self._config = config
         self._clock = clock
         self._theta = np.array(config.initial_theta, dtype=float)
-        self._covariance = np.eye(COEFFICIENT_COUNT) * config.initial_covariance
+        self._covariance = np.eye(IDENTIFIED_COUNT) * config.initial_covariance
         self._frozen = False
         self._consecutive_rejections = 0
         self._samples_since_reset = 0
@@ -113,8 +121,21 @@ class ThermalEstimator:
 
     @property
     def theta(self) -> np.ndarray:
-        """A copy. The caller must not be able to move the estimate."""
+        """The identified vector [a2, a3, a4], as a copy.
+
+        A copy because the caller must not be able to move the estimate.
+        """
         return self._theta.copy()
+
+    @property
+    def coefficients(self) -> np.ndarray:
+        """The four coefficients the model is described by, a1 derived.
+
+        This is what to compare against ground truth and against the
+        plausibility box. The three fitted parameters are an internal detail
+        of how they were obtained.
+        """
+        return full_coefficients(self._theta)
 
     @property
     def covariance(self) -> np.ndarray:
@@ -172,7 +193,7 @@ class ThermalEstimator:
         MODEL_DIVERGENCE forces a fresh start (section 7.1).
         """
         self._theta = np.array(self._config.initial_theta, dtype=float)
-        self._covariance = np.eye(COEFFICIENT_COUNT) * self._config.initial_covariance
+        self._covariance = np.eye(IDENTIFIED_COUNT) * self._config.initial_covariance
         self._consecutive_rejections = 0
         self._samples_since_reset = 0
         self._magnitudes.clear()
@@ -184,9 +205,9 @@ class ThermalEstimator:
         """One-step-ahead prediction (FR-05)."""
         return predict(self._theta, regressor)
 
-    def project(self, theta: np.ndarray) -> np.ndarray:
-        """Clamp a parameter vector into the plausible box (section 5.1)."""
-        return project(theta, self._config.coefficient_bounds)
+    def project(self, coefficients: np.ndarray) -> np.ndarray:
+        """Clamp the four coefficients into the plausible box (section 5.1)."""
+        return project(coefficients, self._config.coefficient_bounds)
 
     def update(self, regressor: Regressor, measured_c: float) -> UpdateResult:
         """Fold one observation into the estimate.
@@ -324,12 +345,13 @@ class ThermalEstimator:
 
     def snapshot(self) -> Coefficients:
         """An immutable view of the estimate, ready for the blackboard."""
+        coefficients = self.coefficients
         return Coefficients(
             ts=self._clock.now(),
-            a1=float(self._theta[0]),
-            a2=float(self._theta[1]),
-            a3=float(self._theta[2]),
-            a4=float(self._theta[3]),
+            a1=float(coefficients[0]),
+            a2=float(coefficients[1]),
+            a3=float(coefficients[2]),
+            a4=float(coefficients[3]),
             trace_p=self.trace,
             steady_state_residual=steady_state_residual(self._theta),
             samples_since_reset=self._samples_since_reset,
@@ -342,11 +364,11 @@ class ThermalEstimator:
             outside the plausible box. A stored vector that would be rejected
             on its first update must not be adopted on startup either.
         """
-        if theta.shape != (COEFFICIENT_COUNT,):
-            raise ValueError(f"theta must have {COEFFICIENT_COUNT} entries")
-        if covariance.shape != (COEFFICIENT_COUNT, COEFFICIENT_COUNT):
+        if theta.shape != (IDENTIFIED_COUNT,):
+            raise ValueError(f"theta must have {IDENTIFIED_COUNT} entries")
+        if covariance.shape != (IDENTIFIED_COUNT, IDENTIFIED_COUNT):
             raise ValueError(
-                f"covariance must be {COEFFICIENT_COUNT}x{COEFFICIENT_COUNT}"
+                f"covariance must be {IDENTIFIED_COUNT}x{IDENTIFIED_COUNT}"
             )
         if not is_plausible(theta, self._config.coefficient_bounds):
             offenders = implausible_coefficients(

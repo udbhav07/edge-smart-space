@@ -84,11 +84,17 @@ def _reading(clock, sensor_id: str, value: float, unit: Unit = Unit.CELSIUS):
     )
 
 
+#: Ambient for the fed readings. The room drifts toward it, which is what a
+#: room with nothing commanded actually does; feeding the opposite would be
+#: physically impossible data and the estimator would rightly reject it.
+FED_OUTDOOR_C = 31.0
+
+
 def _feed(service, board, clock, samples: int, period_s: float, start_c: float = 29.0):
-    """Deliver a run of well-spaced readings."""
+    """Deliver a run of well-spaced, physically coherent readings."""
     board.dispatch(
         topics.SENSOR_STATE.format(sensor_id=OUTDOOR),
-        _reading(clock, OUTDOOR, 31.0).model_dump_json().encode(),
+        _reading(clock, OUTDOOR, FED_OUTDOOR_C).model_dump_json().encode(),
     )
     temperature = start_c
     for index in range(samples):
@@ -96,7 +102,7 @@ def _feed(service, board, clock, samples: int, period_s: float, start_c: float =
             topics.SENSOR_STATE.format(sensor_id=INDOOR),
             _reading(clock, INDOOR, temperature).model_dump_json().encode(),
         )
-        temperature -= 0.05
+        temperature += 0.002 * (FED_OUTDOOR_C - temperature)
         clock.advance(period_s)
 
 

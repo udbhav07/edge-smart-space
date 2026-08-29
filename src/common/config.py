@@ -90,8 +90,11 @@ class EstimatorConfig(_Section):
     initial_covariance: float = Field(
         gt=0.0, description="P0 diagonal; large means a weak prior"
     )
-    initial_theta: tuple[float, float, float, float] = Field(
-        description="Coarse physical guess so early control is not wild"
+    initial_theta: tuple[float, float, float] = Field(
+        description=(
+            "Coarse physical guess for the identified vector [a2, a3, a4], so "
+            "early control is not wild. a1 follows as 1 - a2 (section 5.2.2)"
+        )
     )
     max_covariance_trace: float = Field(
         gt=0.0, description="Trace bound against windup during low excitation"
@@ -134,13 +137,19 @@ class EstimatorConfig(_Section):
 
     @model_validator(mode="after")
     def _initial_theta_lies_inside_the_plausibility_box(self) -> EstimatorConfig:
-        for index, (value, bounds) in enumerate(
-            zip(self.initial_theta, self.coefficient_bounds), start=1
+        """Check the four coefficients the prior implies, a1 included.
+
+        a1 is derived rather than configured, so a prior that looks fine as
+        [a2, a3, a4] can still imply an a1 outside its range.
+        """
+        derived = (1.0 - self.initial_theta[0],) + self.initial_theta
+        for name, value, bounds in zip(
+            ("a1", "a2", "a3", "a4"), derived, self.coefficient_bounds
         ):
             if not bounds.contains(value):
                 raise ValueError(
-                    f"initial_theta a{index} = {value!r} is outside its bounds "
-                    f"[{bounds.low}, {bounds.high}]"
+                    f"initial_theta implies {name} = {value!r}, outside its "
+                    f"bounds [{bounds.low}, {bounds.high}]"
                 )
         return self
 

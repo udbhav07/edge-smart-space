@@ -23,7 +23,7 @@ loop:
 estimator:
   forgetting_factor: 0.995
   initial_covariance: 100.0
-  initial_theta: [0.98, 0.02, -0.05, 0.01]
+  initial_theta: [0.02, -0.05, 0.01]   # [a2, a3, a4]; a1 = 1 - a2 = 0.98
   max_covariance_trace: 1000.0
   min_excitation: 0.001
   max_consecutive_rejections: 3
@@ -38,7 +38,10 @@ estimator:
   bounds_a1: {low: 0.0, high: 1.0}
   bounds_a2: {low: 0.0, high: 1.0}
   bounds_a3: {low: -2.0, high: 0.0}
-  bounds_a4: {low: 0.0, high: 1.0}
+  # a4 admits small negative excursions: occupancy gain is ~0.0008 for one
+  # person, far below the noise floor, and rejecting every dip below zero
+  # would raise MODEL_DIVERGENCE constantly (section 5.2.1).
+  bounds_a4: {low: -0.05, high: 1.0}
 
 # FR-07 and section 7.1: restore on restart, discard if older than a day.
 persistence:
