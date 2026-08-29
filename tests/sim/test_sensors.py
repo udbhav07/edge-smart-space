@@ -8,12 +8,8 @@ import pytest
 from src.common.clock import SimClock
 from src.common.config import SensorNoiseConfig, load_config
 from src.common.schemas import Unit
-from sim.sensors import (
-    BinarySensor,
-    FaultInjection,
-    InjectedFault,
-    SimulatedSensor,
-)
+from src.common.injection import FaultInjection, InjectedFault
+from sim.sensors import BinarySensor, SimulatedSensor
 
 SENSOR_ID = "temp_01"
 TRUE_VALUE_C = 27.4

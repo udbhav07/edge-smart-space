@@ -14,43 +14,21 @@ fault was injected rather than suffered.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
-from enum import Enum
 
 from src.common.clock import Clock
 from src.common.config import SensorNoiseConfig
+from src.common.injection import (
+    BINARY_SUPPORTED_FAULTS,
+    NO_FAULT,
+    FaultInjection,
+    InjectedFault,
+)
 from src.common.schemas import Quality, SensorReading, Unit
 
 #: A dropped sample produces no reading at all, which is what D1 detects.
 NO_READING: None = None
 
 _NO_DRIFT_C = 0.0
-
-
-class InjectedFault(str, Enum):
-    """Fault classes injectable at Layer 1 (FR-31, matching D1 to D3)."""
-
-    NONE = "NONE"
-    STUCK_AT = "STUCK_AT"
-    DROPOUT = "DROPOUT"
-    OUT_OF_RANGE = "OUT_OF_RANGE"
-    DRIFT = "DRIFT"
-
-
-@dataclass(frozen=True)
-class FaultInjection:
-    """What to inject and how hard.
-
-    ``magnitude`` is interpreted per fault: the frozen reading for STUCK_AT,
-    the reported value for OUT_OF_RANGE, and degrees per second for DRIFT.
-    It is ignored for NONE and DROPOUT.
-    """
-
-    kind: InjectedFault
-    magnitude: float = 0.0
-
-
-NO_FAULT = FaultInjection(kind=InjectedFault.NONE)
 
 
 class SimulatedSensor:
@@ -169,10 +147,7 @@ class BinarySensor:
     missed detection when in fact no fault was ever present.
     """
 
-    #: Faults that mean something for a two-valued signal.
-    SUPPORTED_FAULTS = frozenset(
-        {InjectedFault.NONE, InjectedFault.DROPOUT, InjectedFault.STUCK_AT}
-    )
+    SUPPORTED_FAULTS = BINARY_SUPPORTED_FAULTS
 
     def __init__(
         self,
