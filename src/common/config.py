@@ -19,6 +19,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.common.schemas import Unit
+
 #: Number of coefficients in the RC model (DESIGN.md section 5.2.1).
 COEFFICIENT_COUNT = 4
 
@@ -200,6 +202,45 @@ class ModeConfig(_Section):
     )
 
 
+class SensorConfig(_Section):
+    """One sensor's identity and physical limits (DESIGN.md section 5.1).
+
+    ``limits`` are what the instrument can physically report, and the adapter
+    uses them to flag a reading as suspect. It never suppresses one: D3's job
+    is to detect an out-of-range reading (FR-22), and a reading filtered at
+    Layer 1 could never reach the detector that exists to find it.
+    """
+
+    sensor_id: str = Field(min_length=1)
+    unit: Unit
+    limits: Bounds
+    description: str = Field(default="", description="What this instrument is")
+
+
+class SensorsConfig(_Section):
+    """Every sensor the system expects to hear from."""
+
+    adapters: tuple[SensorConfig, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _sensor_ids_are_unique(self) -> SensorsConfig:
+        seen = [adapter.sensor_id for adapter in self.adapters]
+        duplicates = {name for name in seen if seen.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate sensor ids: {sorted(duplicates)}")
+        return self
+
+    def by_id(self, sensor_id: str) -> SensorConfig:
+        """Look one up.
+
+        :raises KeyError: if no adapter is configured under that id.
+        """
+        for adapter in self.adapters:
+            if adapter.sensor_id == sensor_id:
+                return adapter
+        raise KeyError(f"no sensor configured with id {sensor_id!r}")
+
+
 class SpeechConfig(_Section):
     """Speech pipeline settings (DESIGN.md section 5.8).
 
@@ -346,6 +387,7 @@ class Config(_Section):
     validator: ValidatorConfig
     detectors: DetectorsConfig
     mode: ModeConfig
+    sensors: SensorsConfig
     speech: SpeechConfig
     reasoning: ReasoningConfig
     sim: SimConfig

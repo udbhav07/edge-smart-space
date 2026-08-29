@@ -65,6 +65,28 @@ mode:
   fault_clear_confirm_s: 120.0
   transition_deadline_s: 2.0         # FR-26
 
+# Section 5.1. Limits are what the instrument can physically report; the
+# adapter flags a reading outside them as suspect but never suppresses it,
+# because D3 exists to detect exactly that (FR-22).
+sensors:
+  adapters:
+    - sensor_id: temp_01
+      unit: C
+      limits: {low: -10.0, high: 60.0}
+      description: Indoor temperature
+    - sensor_id: hum_01
+      unit: "%RH"
+      limits: {low: 0.0, high: 100.0}
+      description: Indoor relative humidity
+    - sensor_id: outdoor_01
+      unit: C
+      limits: {low: -20.0, high: 60.0}
+      description: Ambient temperature
+    - sensor_id: pir_01
+      unit: bool
+      limits: {low: 0.0, high: 1.0}
+      description: Occupancy from PIR and door reed switch
+
 # Section 5.8. Capture opens only after the wake word and closes at end of
 # utterance or the hard timeout (FR-50).
 speech:
