@@ -102,6 +102,21 @@ class EstimatorConfig(_Section):
     max_consecutive_rejections: int = Field(
         gt=0, description="Projections in a row before MODEL_DIVERGENCE (FR-06)"
     )
+    excitation_window_samples: int = Field(
+        gt=1, description="Samples over which regressor variation is judged"
+    )
+    residual_sigma_window_samples: int = Field(
+        gt=1, description="Samples backing the published residual_sigma"
+    )
+    sample_interval_tolerance: float = Field(
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Allowed deviation from the nominal period, as a fraction. A-02's "
+            "uniform sampling will not survive WiFi, and the ARX form assumes "
+            "a fixed step, so a pair spanning a wrong interval is skipped"
+        ),
+    )
     bounds_a1: Bounds
     bounds_a2: Bounds
     bounds_a3: Bounds
@@ -123,6 +138,17 @@ class EstimatorConfig(_Section):
                     f"[{bounds.low}, {bounds.high}]"
                 )
         return self
+
+
+class PersistenceConfig(_Section):
+    """Coefficient persistence across restarts (FR-07, section 7.1)."""
+
+    path: str = Field(min_length=1, description="Where theta and P are written")
+    interval_s: float = Field(gt=0.0, description="How often state is written")
+    max_age_s: float = Field(
+        gt=0.0,
+        description="Older than this on restart and the estimate is discarded",
+    )
 
 
 class ControllerConfig(_Section):
@@ -383,6 +409,7 @@ class Config(_Section):
     mqtt: MqttConfig
     loop: LoopConfig
     estimator: EstimatorConfig
+    persistence: PersistenceConfig
     controller: ControllerConfig
     validator: ValidatorConfig
     detectors: DetectorsConfig

@@ -27,12 +27,21 @@ estimator:
   max_covariance_trace: 1000.0
   min_excitation: 0.001
   max_consecutive_rejections: 3
+  excitation_window_samples: 20
+  residual_sigma_window_samples: 60
+  sample_interval_tolerance: 0.4   # +/-40% of the nominal period (A-02)
   # Plausibility box, section 5.2.1. a3 stays negative: an estimate crossing
   # zero claims the air conditioner heats the room.
   bounds_a1: {low: 0.0, high: 1.0}
   bounds_a2: {low: 0.0, high: 1.0}
   bounds_a3: {low: -2.0, high: 0.0}
   bounds_a4: {low: 0.0, high: 1.0}
+
+# FR-07 and section 7.1: restore on restart, discard if older than a day.
+persistence:
+  path: state/coefficients.json
+  interval_s: 300.0
+  max_age_s: 86400.0
 
 controller:
   deadband_c: 0.5
