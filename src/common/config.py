@@ -102,6 +102,11 @@ class EstimatorConfig(_Section):
     max_consecutive_rejections: int = Field(
         gt=0, description="Projections in a row before MODEL_DIVERGENCE (FR-06)"
     )
+    indoor_sensor_id: str = Field(
+        min_length=1, description="Feeds T[k], the regressor's first entry"
+    )
+    outdoor_sensor_id: str = Field(min_length=1, description="Feeds T_out[k]")
+    occupancy_sensor_id: str = Field(min_length=1, description="Feeds o[k]")
     excitation_window_samples: int = Field(
         gt=1, description="Samples over which regressor variation is judged"
     )

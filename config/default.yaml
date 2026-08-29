@@ -27,6 +27,9 @@ estimator:
   max_covariance_trace: 1000.0
   min_excitation: 0.001
   max_consecutive_rejections: 3
+  indoor_sensor_id: temp_01
+  outdoor_sensor_id: outdoor_01
+  occupancy_sensor_id: pir_01
   excitation_window_samples: 20
   residual_sigma_window_samples: 60
   sample_interval_tolerance: 0.4   # +/-40% of the nominal period (A-02)

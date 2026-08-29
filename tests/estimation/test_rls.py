@@ -203,9 +203,14 @@ class TestCovarianceSafeguards:
             estimator.update(phi, 0.0)
         assert estimator.trace <= config.max_covariance_trace * 1.0001
 
+    def test_the_covariance_is_handed_out_as_a_copy(self, estimator):
+        covariance = estimator.covariance
+        covariance[0, 0] = 99.0
+        assert estimator.covariance[0, 0] != 99.0
+
     def test_the_covariance_stays_symmetric(self, estimator):
         _identify(estimator, steps=300)
-        covariance = estimator._covariance
+        covariance = estimator.covariance
         assert np.allclose(covariance, covariance.T)
 
     def test_confidence_is_bounded_to_the_unit_interval(self, estimator):

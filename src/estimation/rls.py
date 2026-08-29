@@ -117,6 +117,11 @@ class ThermalEstimator:
         return self._theta.copy()
 
     @property
+    def covariance(self) -> np.ndarray:
+        """A copy of P, for persistence. The caller must not be able to move it."""
+        return self._covariance.copy()
+
+    @property
     def trace(self) -> float:
         """trace(P): how unsupported the current estimate is."""
         return float(np.trace(self._covariance))
