@@ -1,0 +1,127 @@
+# Default configuration.
+#
+# Every value here is policy, not code. Detector thresholds are placeholders
+# until Week 6 characterises the real room's disturbance magnitude and the
+# CUSUM threshold is set from measured sigma rather than assumed (R-04).
+#
+# Sources: DESIGN.md sections 5.2.2, 5.3, 5.4, 5.5, 5.6, 7.2.
+
+mqtt:
+  host: localhost
+  port: 1883
+  keepalive_s: 60.0
+  reconnect_min_s: 1.0
+  reconnect_max_s: 30.0
+
+loop:
+  regulatory_period_s: 5.0      # NFR-01
+  sensor_period_s: 5.0          # FR-01, A-02
+  outdoor_period_s: 60.0        # FR-03, A-04
+
+# Section 5.2.2. Effective memory is 1/(1-lambda) = 200 samples, about 17 min
+# at a 5 s interval: tracks daily variation without chasing noise.
+estimator:
+  forgetting_factor: 0.995
+  initial_covariance: 100.0
+  initial_theta: [0.98, 0.02, -0.05, 0.01]
+  max_covariance_trace: 1000.0
+  min_excitation: 0.001
+  max_consecutive_rejections: 3
+  # Plausibility box, section 5.2.1. a3 stays negative: an estimate crossing
+  # zero claims the air conditioner heats the room.
+  bounds_a1: {low: 0.0, high: 1.0}
+  bounds_a2: {low: 0.0, high: 1.0}
+  bounds_a3: {low: -2.0, high: 0.0}
+  bounds_a4: {low: 0.0, high: 1.0}
+
+controller:
+  deadband_c: 0.5
+  min_off_s: 180.0
+  default_setpoint_c: 24.0
+
+# Rules V-1 to V-6, section 5.4.
+validator:
+  setpoint_bounds_c: {low: 18.0, high: 30.0}
+  max_step_c: 2.0
+  min_off_s: 180.0
+  min_command_interval_s: 30.0
+  goal_max_age_s: 600.0
+
+# Section 5.5. Latency targets: D1 under 20 s, D2 under 60 s, D3 under 10 s.
+detectors:
+  dropout:
+    timeout_periods: 3.0
+  stuck_at:
+    window_samples: 60
+    variance_epsilon: 0.001
+    consecutive_windows: 2
+  out_of_range:
+    temperature_c: {low: -10.0, high: 60.0}
+    humidity_pct: {low: 0.0, high: 100.0}
+    debounce_samples: 2
+
+mode:
+  degraded_sensor_budget_s: 1800.0   # Section 7.2; E4 tests whether this is right
+  fault_clear_confirm_s: 120.0
+  transition_deadline_s: 2.0         # FR-26
+
+# Section 5.8. Capture opens only after the wake word and closes at end of
+# utterance or the hard timeout (FR-50).
+speech:
+  sample_rate_hz: 16000
+  channels: 1
+  chunk_samples: 512            # Required size for Silero VAD
+  device_index: null            # null selects the system default
+  queue_seconds: 5.0
+  wake_word: hey_jarvis
+  # Measured, not chosen. The openWakeWord hey_jarvis model is trained on
+  # American-accented speech and does not fire reliably for this team at 0.5;
+  # 0.1 detects consistently. That is a finding about the model, not a tuning
+  # knob, and it has a cost: the capture window opens more readily on
+  # background noise. FR-50 still holds structurally, since capture only ever
+  # follows a detection, but the false-wake rate is higher than the section
+  # 5.8 privacy claim implies. Retrain or swap the model to raise this.
+  wake_word_threshold: 0.1
+  vad_silence_ms: 1000
+  no_speech_timeout_s: 3.0
+  command_timeout_s: 15.0
+  asr_model: base.en
+  # GPU first. 'auto' prefers CUDA and falls back to CPU so a laptop still
+  # runs (NFR-09); 'cuda' demands it and fails loudly if absent, which is what
+  # you want on the Jetson where a silent CPU fallback looks like slow code
+  # rather than a broken build (section 9.2).
+  asr_device: auto
+  asr_compute_type: auto
+
+# Section 5.7.5. One server serves every call site.
+reasoning:
+  base_url: http://localhost:11434/v1
+  model: qwen2.5:7b
+  timeout_s: 30.0
+  max_history_turns: 20
+
+# Adversarial by default. Every value here is switched on, not off: a kind
+# simulator makes simulated success predict nothing about hardware.
+sim:
+  room:
+    thermal_capacitance_j_per_k: 600000.0   # ~35 m3 room plus furnishings
+    thermal_resistance_k_per_w: 0.0035
+    cooling_power_w: 2500.0
+    occupant_gain_w: 100.0
+    initial_temperature_c: 29.0
+    solar_gain_amplitude_w: 300.0           # Estimator has no regressor for this
+    solar_gain_period_s: 14400.0
+  sensor_noise:
+    sigma_c: 0.15
+    quantisation_c: 0.1
+    jitter_s: 0.5                           # A-02's stated jitter, always on
+    dropout_probability: 0.01
+    bias_c: 0.0
+  actuator:
+    dead_time_s: 30.0
+    command_loss_probability: 0.02
+    acknowledges: false                     # R-02: open-loop IR cannot confirm
+  outdoor_mean_c: 31.0
+  outdoor_amplitude_c: 4.0
+  outdoor_period_s: 86400.0
+  random_seed: 20260825
