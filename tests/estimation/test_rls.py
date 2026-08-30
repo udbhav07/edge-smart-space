@@ -266,16 +266,65 @@ class TestImplausibleEstimates:
         if result.status is UpdateStatus.REJECTED:
             assert result.rejected_coefficients
 
-    def test_repeated_rejections_raise_divergence(self, config, clock):
+    def test_a_short_run_of_rejections_is_not_divergence(self, config, clock):
+        """a2 and a4 both sit on a box edge, so runs happen by chance."""
         estimator = ThermalEstimator(config, clock)
         diverged = any(
             estimator.update(
                 Regressor(indoor_c=25.0, outdoor_c=25.0, command=1.0, occupancy=0.0),
                 900.0,
             ).diverged
-            for _ in range(config.max_consecutive_rejections + 2)
+            for _ in range(5)
         )
-        assert diverged
+        assert diverged is False
+
+    def test_a_sustained_rejection_rate_raises_divergence(self, config, clock):
+        """A plant told its air conditioner heats the room really is wrong."""
+        estimator = ThermalEstimator(config, clock)
+        indoor_c = 25.0
+        diverged = False
+        for _ in range(config.divergence_window_samples + 5):
+            phi = Regressor(
+                indoor_c=indoor_c, outdoor_c=25.0, command=1.0, occupancy=0.0
+            )
+            indoor_c += 0.5
+            diverged |= estimator.update(phi, indoor_c + 5.0).diverged
+        assert diverged is True
+
+    def test_divergence_waits_for_a_full_window(self, config, clock):
+        """Half a window of rejections is not yet a verdict."""
+        estimator = ThermalEstimator(config, clock)
+        indoor_c = 25.0
+        for _ in range(config.divergence_window_samples // 2):
+            phi = Regressor(
+                indoor_c=indoor_c, outdoor_c=25.0, command=1.0, occupancy=0.0
+            )
+            indoor_c += 0.5
+            assert estimator.update(phi, indoor_c + 5.0).diverged is False
+
+    def test_occupancy_noise_alone_never_diverges(self, config, clock):
+        """a4 is unidentifiable at this signal level (section 5.2.1), so
+        rejecting it is right and calling it divergence is not."""
+        import random
+
+        rng = random.Random(1)
+        estimator = ThermalEstimator(config, clock)
+        for step in range(config.divergence_window_samples * 2):
+            phi = Regressor(
+                indoor_c=25.0,
+                outdoor_c=25.02,
+                command=0.0,
+                occupancy=1.0 if step % 2 else 0.0,
+            )
+            assert estimator.update(phi, 25.0 + rng.gauss(0, 0.0005)).diverged is False
+
+    def test_a_healthy_plant_never_diverges(self, estimator):
+        _identify(estimator, steps=2000)
+        assert estimator.diverged is False
+
+    def test_the_rejection_rate_is_reported(self, estimator):
+        _identify(estimator, steps=500)
+        assert 0.0 <= estimator.rejection_rate <= 1.0
 
     def test_an_accepted_update_clears_the_rejection_count(self, estimator):
         phi = Regressor(indoor_c=25.0, outdoor_c=25.0, command=1.0, occupancy=0.0)

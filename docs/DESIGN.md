@@ -17,6 +17,7 @@
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.3 | §5.2.3 separates rejection from divergence. `MODEL_DIVERGENCE` was raised after three consecutive rejections and fired 252 times an hour against a healthy plant, because `a2` and `a4` both have true values on a box edge and noise crosses it constantly. It is now a sustained rate over a window, with `a4`-only rejections excluded; a healthy plant produces none, and a genuinely wrong model still diverges. |
 | 1.2 | §5.2.1 gains an identification form: the model is fitted on the temperature *change* against `T_out − T`, three parameters instead of four, with `a1` derived as `1 − a2`. E1 measured the previous form's `a1` settling at 0.754 against a truth of 0.998 — errors-in-variables attenuation, since `T[k]` is a noisy regressor — and the reformulation drops `a1`'s error by a factor of 220 and the worst coefficient error from 0.243 to 0.036, at the cost of `a4`. Steady-state consistency becomes structural, so `\|a1+a2−1\|` is retired as a diagnostic (§8.3) and `a4`'s plausible range widens to admit noise-driven excursions below zero. |
 | 1.1 | Reconciled with the implementation after Weeks 1–4. Wake-word threshold lowered to a measured value and the always-listening claim in §5.8 qualified accordingly; §4.6 memory budget restated for the models actually loaded; §5.7.5 model selection changed to the served 7B; §5.10 layout updated; `PreferenceHint` added to §6.2. |
 
@@ -585,8 +586,21 @@ These implement FR-06 and are the difference between "we ran RLS" and "we ran RL
 | Covariance windup | Trace bound: if `trace(P) > P_max`, rescale `P ← P · P_max/trace(P)`. Prevents blow-up during periods of low excitation (e.g. AC off overnight). |
 | Symmetry loss | After each update, symmetrise: `P ← (P + Pᵀ)/2`. |
 | Insufficient excitation | Skip the update when `‖φ[k]‖` variation over the last window falls below a threshold. A constant regressor carries no information and only degrades `P`. |
-| Implausible parameters | Test `θ` against the box in §5.2.1, `a1` included after deriving it. An estimate outside the box is **reverted**, not clamped: a projected vector is a point the data never supported, and adopting it would let one bad update park the estimate on a box edge and stay there. Log the rejection with the coefficient that broke; three consecutive rejections raise a `MODEL_DIVERGENCE` fault. |
+| Implausible parameters | Test `θ` against the box in §5.2.1, `a1` included after deriving it. An estimate outside the box is **reverted**, not clamped: a projected vector is a point the data never supported, and adopting it would let one bad update park the estimate on a box edge and stay there. Log the rejection with the coefficient that broke. |
+| Model divergence | A *sustained rate* of meaningful rejections, not a run of them: `MODEL_DIVERGENCE` is raised when at least `divergence_rejection_fraction` of a full `divergence_window_samples` window was rejected. See below. |
 | Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). Never adapt to bad data. |
+
+##### Why divergence is a rate and not a run
+
+The first version of this rule raised `MODEL_DIVERGENCE` after three consecutive rejections. In simulation against a healthy plant it fired 252 times an hour — roughly once every fourteen seconds, for a model that was in fact converging to within 0.0011 of ground truth.
+
+The cause is that two of the four coefficients have true values sitting essentially on a box edge. `a2` is 0.0024 against a lower bound of 0, and `a4` is 0.0008 against a bound just below it. Noise pushes both across constantly. Refusing those updates is right — an unphysical estimate should never be adopted — but three of them landing in a row is ordinary chance, not evidence of anything. Measured over an hour, `a4` alone accounted for 201 of 312 rejections and `a1`/`a2` together for a further 102.
+
+So rejection and divergence are separated. Every implausible estimate is still reverted and logged. Divergence is judged only on a sustained rate across a full window, and rejections attributable to `a4` alone are excluded from that judgement entirely, since §5.2.1 already records that coefficient as unidentifiable at this signal level.
+
+With the window at 120 updates and the threshold at half of them, a healthy plant produces **zero** false positives over an hour, while a plant told that its air conditioner heats the room diverges as soon as the window fills.
+
+One honest limit: frozen and insufficiently-excited updates are excluded from the window, so a model cannot be declared divergent while nothing is exciting it. That is deliberate — no conclusion is available from data that carries no information — but it means divergence detection inherits R-01's dependence on excitation.
 
 ```mermaid
 flowchart TB
@@ -601,7 +615,7 @@ flowchart TB
     G --> H{"theta inside<br/>plausible box?"}
     H -->|No| I["Revert theta,<br/>log rejection,<br/>increment counter"]
     H -->|Yes| J["Commit, reset counter,<br/>publish coefficients"]
-    I --> K{"3 consecutive<br/>rejections?"}
+    I --> K{"Rejection rate over<br/>a full window<br/>above threshold?"}
     K -->|Yes| L["Raise MODEL_DIVERGENCE"]
     K -->|No| M["Continue"]
 ```
@@ -1187,7 +1201,7 @@ prompt that generates it forbids claiming anything was changed (FR-45).
 | MQTT broker down | Client disconnect callback | Each process holds last state; controller holds last setpoint | FR-11 |
 | LLM server down or slow | Invocation timeout (30 s) | Retain previous goal; regulatory loop unaffected | FR-47 |
 | Whisper OOM | Exception on load | Speech feature disabled; core control unaffected | NFR-05 |
-| RLS divergence | 3 consecutive rejections | `SAFE_HOLD`, coefficients reset to θ₀ | FR-06 |
+| RLS divergence | Sustained rejection rate over a window | `SAFE_HOLD`, coefficients reset to θ₀ | FR-06 |
 | Unclean restart | Boot sequence | Restore persisted θ, P; if stale > 24 h, reset to θ₀ | FR-07, NFR-07 |
 
 ### 7.2 Degradation Budget

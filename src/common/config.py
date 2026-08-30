@@ -102,8 +102,20 @@ class EstimatorConfig(_Section):
     min_excitation: float = Field(
         ge=0.0, description="Regressor variation below this skips the update"
     )
-    max_consecutive_rejections: int = Field(
-        gt=0, description="Projections in a row before MODEL_DIVERGENCE (FR-06)"
+    divergence_window_samples: int = Field(
+        gt=1,
+        description=(
+            "Updates the divergence judgement is made over. Must be long "
+            "enough that ordinary noise cannot fill it (FR-06)"
+        ),
+    )
+    divergence_rejection_fraction: float = Field(
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Share of a full window that must be rejected before "
+            "MODEL_DIVERGENCE is raised"
+        ),
     )
     indoor_sensor_id: str = Field(
         min_length=1, description="Feeds T[k], the regressor's first entry"

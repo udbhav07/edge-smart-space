@@ -15,8 +15,10 @@ Five things can go wrong, and each has a specific answer:
 * **Insufficient excitation.** A constant regressor carries no information.
   Updating on it only degrades ``P``, so the update is skipped.
 * **Implausible parameters.** An estimate outside the physical box in
-  section 5.2.1 is rejected, not accepted-and-clamped, and three in a row
-  raise MODEL_DIVERGENCE (FR-06).
+  section 5.2.1 is rejected, not accepted-and-clamped. Divergence is a
+  separate judgement: a sustained rate of rejections over a window, not a
+  run of consecutive ones. a2 and a4 both have true values near a box edge,
+  so short runs of rejections are ordinary noise (FR-06).
 * **Faulted inputs.** Adaptation freezes entirely while any sensor feeding
   the regressor is faulted (FR-29). Prediction continues; learning does not.
   Never adapt to bad data.
@@ -68,6 +70,12 @@ _NO_SPREAD = 0.0
 _NO_CONFIDENCE = 0.0
 _FULL_CONFIDENCE = 1.0
 
+#: Rejections caused by nothing but a4 do not count toward divergence.
+#: Occupancy gain is about 0.0008 for one person, far below the noise floor
+#: (section 5.2.1), so noise pushes it across its bound routinely. That is
+#: worth refusing the update over; it is not evidence the model is wrong.
+_NON_DIAGNOSTIC_REJECTIONS = frozenset({("a4",)})
+
 
 class UpdateStatus(str, Enum):
     """What happened to the parameter vector on one sample."""
@@ -115,6 +123,9 @@ class ThermalEstimator:
         )
         self._residuals: deque[float] = deque(
             maxlen=config.residual_sigma_window_samples
+        )
+        self._recent_rejections: deque[bool] = deque(
+            maxlen=config.divergence_window_samples
         )
 
     # --- state a reader may see ---------------------------------------
@@ -198,6 +209,7 @@ class ThermalEstimator:
         self._samples_since_reset = 0
         self._magnitudes.clear()
         self._residuals.clear()
+        self._recent_rejections.clear()
 
     # --- the model ----------------------------------------------------
 
@@ -322,6 +334,43 @@ class ThermalEstimator:
         if trace > limit:
             self._covariance *= limit / trace
 
+    def _record_outcome(
+        self, status: UpdateStatus, rejected_coefficients: tuple[str, ...]
+    ) -> None:
+        """Remember whether this update told us anything about divergence.
+
+        Frozen and skipped updates say nothing either way and are left out
+        entirely, so a quiet night cannot dilute the window into silence.
+        """
+        if status in (UpdateStatus.FROZEN, UpdateStatus.INSUFFICIENT_EXCITATION):
+            return
+        diagnostic = (
+            status is UpdateStatus.REJECTED
+            and rejected_coefficients not in _NON_DIAGNOSTIC_REJECTIONS
+        )
+        self._recent_rejections.append(diagnostic)
+
+    @property
+    def rejection_rate(self) -> float:
+        """Share of recent updates rejected for a reason that matters."""
+        if not self._recent_rejections:
+            return 0.0
+        return sum(self._recent_rejections) / len(self._recent_rejections)
+
+    @property
+    def diverged(self) -> bool:
+        """Whether the model has genuinely stopped tracking the room.
+
+        Judged on a sustained rate over a full window rather than on a run of
+        consecutive rejections. Two of the four coefficients have true values
+        sitting essentially on a box edge, so short runs happen by chance
+        constantly; a rate this high for this long does not.
+        """
+        window = self._recent_rejections
+        if len(window) < window.maxlen:
+            return False
+        return self.rejection_rate >= self._config.divergence_rejection_fraction
+
     def _result(
         self,
         status: UpdateStatus,
@@ -329,15 +378,13 @@ class ThermalEstimator:
         residual_c: float,
         rejected_coefficients: tuple[str, ...] = (),
     ) -> UpdateResult:
-        diverged = (
-            self._consecutive_rejections >= self._config.max_consecutive_rejections
-        )
+        self._record_outcome(status, rejected_coefficients)
         return UpdateResult(
             status=status,
             prediction_c=prediction_c,
             residual_c=residual_c,
             consecutive_rejections=self._consecutive_rejections,
-            diverged=diverged,
+            diverged=self.diverged,
             rejected_coefficients=rejected_coefficients,
         )
 

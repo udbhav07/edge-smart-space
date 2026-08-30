@@ -26,7 +26,11 @@ estimator:
   initial_theta: [0.02, -0.05, 0.01]   # [a2, a3, a4]; a1 = 1 - a2 = 0.98
   max_covariance_trace: 1000.0
   min_excitation: 0.001
-  max_consecutive_rejections: 3
+  # Divergence is a sustained rate, not a run. a2 and a4 both sit near a box
+  # edge, so short runs of rejections are ordinary noise; half a window of
+  # them for ten minutes is not (section 5.2.3).
+  divergence_window_samples: 120
+  divergence_rejection_fraction: 0.5
   indoor_sensor_id: temp_01
   outdoor_sensor_id: outdoor_01
   occupancy_sensor_id: pir_01

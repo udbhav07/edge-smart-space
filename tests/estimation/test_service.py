@@ -368,7 +368,7 @@ class TestDivergence:
         board.dispatch("space/actuator/ac/state", state.model_dump_json().encode())
 
         temperature = 25.0
-        for _ in range(12):
+        for _ in range(config.estimator.divergence_window_samples + 10):
             board.dispatch(
                 topics.SENSOR_STATE.format(sensor_id=INDOOR),
                 _reading(clock, INDOOR, temperature).model_dump_json().encode(),
@@ -388,7 +388,7 @@ class TestDivergence:
             _reading(clock, OUTDOOR, 25.0).model_dump_json().encode(),
         )
         temperature = 25.0
-        for _ in range(12):
+        for _ in range(config.estimator.divergence_window_samples + 10):
             board.dispatch(
                 topics.SENSOR_STATE.format(sensor_id=INDOOR),
                 _reading(clock, INDOOR, temperature).model_dump_json().encode(),
