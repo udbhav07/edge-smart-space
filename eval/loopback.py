@@ -33,8 +33,14 @@ class LoopbackTransport:
         self.delivered = 0
 
     def attach(self, blackboard: Blackboard) -> None:
-        """Register a client to receive what anyone publishes."""
+        """Register a client to receive what anyone publishes.
+
+        Tells the client it is connected, so it issues its subscriptions the
+        way it would against a broker. Skipping that would let an experiment
+        pass while the same wiring received nothing in production.
+        """
         self._blackboards.append(blackboard)
+        blackboard.on_connected()
 
     def connect(self, host: str, port: int, keepalive: int) -> None: ...
 
