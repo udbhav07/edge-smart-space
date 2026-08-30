@@ -94,6 +94,11 @@ SERVICES = (
         description="Room plant, sensors and actuator (simulation mode)",
     ),
     Service(
+        name="estimator",
+        module="src.estimation",
+        description="Online RC identification: coefficients, prediction, residual",
+    ),
+    Service(
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",

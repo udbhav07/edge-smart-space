@@ -19,6 +19,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.common.schemas import Unit
+
 #: Number of coefficients in the RC model (DESIGN.md section 5.2.1).
 COEFFICIENT_COUNT = 4
 
@@ -88,8 +90,11 @@ class EstimatorConfig(_Section):
     initial_covariance: float = Field(
         gt=0.0, description="P0 diagonal; large means a weak prior"
     )
-    initial_theta: tuple[float, float, float, float] = Field(
-        description="Coarse physical guess so early control is not wild"
+    initial_theta: tuple[float, float, float] = Field(
+        description=(
+            "Coarse physical guess for the identified vector [a2, a3, a4], so "
+            "early control is not wild. a1 follows as 1 - a2 (section 5.2.2)"
+        )
     )
     max_covariance_trace: float = Field(
         gt=0.0, description="Trace bound against windup during low excitation"
@@ -97,8 +102,40 @@ class EstimatorConfig(_Section):
     min_excitation: float = Field(
         ge=0.0, description="Regressor variation below this skips the update"
     )
-    max_consecutive_rejections: int = Field(
-        gt=0, description="Projections in a row before MODEL_DIVERGENCE (FR-06)"
+    divergence_window_samples: int = Field(
+        gt=1,
+        description=(
+            "Updates the divergence judgement is made over. Must be long "
+            "enough that ordinary noise cannot fill it (FR-06)"
+        ),
+    )
+    divergence_rejection_fraction: float = Field(
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Share of a full window that must be rejected before "
+            "MODEL_DIVERGENCE is raised"
+        ),
+    )
+    indoor_sensor_id: str = Field(
+        min_length=1, description="Feeds T[k], the regressor's first entry"
+    )
+    outdoor_sensor_id: str = Field(min_length=1, description="Feeds T_out[k]")
+    occupancy_sensor_id: str = Field(min_length=1, description="Feeds o[k]")
+    excitation_window_samples: int = Field(
+        gt=1, description="Samples over which regressor variation is judged"
+    )
+    residual_sigma_window_samples: int = Field(
+        gt=1, description="Samples backing the published residual_sigma"
+    )
+    sample_interval_tolerance: float = Field(
+        gt=0.0,
+        le=1.0,
+        description=(
+            "Allowed deviation from the nominal period, as a fraction. A-02's "
+            "uniform sampling will not survive WiFi, and the ARX form assumes "
+            "a fixed step, so a pair spanning a wrong interval is skipped"
+        ),
     )
     bounds_a1: Bounds
     bounds_a2: Bounds
@@ -112,15 +149,32 @@ class EstimatorConfig(_Section):
 
     @model_validator(mode="after")
     def _initial_theta_lies_inside_the_plausibility_box(self) -> EstimatorConfig:
-        for index, (value, bounds) in enumerate(
-            zip(self.initial_theta, self.coefficient_bounds), start=1
+        """Check the four coefficients the prior implies, a1 included.
+
+        a1 is derived rather than configured, so a prior that looks fine as
+        [a2, a3, a4] can still imply an a1 outside its range.
+        """
+        derived = (1.0 - self.initial_theta[0],) + self.initial_theta
+        for name, value, bounds in zip(
+            ("a1", "a2", "a3", "a4"), derived, self.coefficient_bounds
         ):
             if not bounds.contains(value):
                 raise ValueError(
-                    f"initial_theta a{index} = {value!r} is outside its bounds "
-                    f"[{bounds.low}, {bounds.high}]"
+                    f"initial_theta implies {name} = {value!r}, outside its "
+                    f"bounds [{bounds.low}, {bounds.high}]"
                 )
         return self
+
+
+class PersistenceConfig(_Section):
+    """Coefficient persistence across restarts (FR-07, section 7.1)."""
+
+    path: str = Field(min_length=1, description="Where theta and P are written")
+    interval_s: float = Field(gt=0.0, description="How often state is written")
+    max_age_s: float = Field(
+        gt=0.0,
+        description="Older than this on restart and the estimate is discarded",
+    )
 
 
 class ControllerConfig(_Section):
@@ -198,6 +252,45 @@ class ModeConfig(_Section):
     transition_deadline_s: float = Field(
         gt=0.0, description="FR-26 budget from confirmation to published mode"
     )
+
+
+class SensorConfig(_Section):
+    """One sensor's identity and physical limits (DESIGN.md section 5.1).
+
+    ``limits`` are what the instrument can physically report, and the adapter
+    uses them to flag a reading as suspect. It never suppresses one: D3's job
+    is to detect an out-of-range reading (FR-22), and a reading filtered at
+    Layer 1 could never reach the detector that exists to find it.
+    """
+
+    sensor_id: str = Field(min_length=1)
+    unit: Unit
+    limits: Bounds
+    description: str = Field(default="", description="What this instrument is")
+
+
+class SensorsConfig(_Section):
+    """Every sensor the system expects to hear from."""
+
+    adapters: tuple[SensorConfig, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _sensor_ids_are_unique(self) -> SensorsConfig:
+        seen = [adapter.sensor_id for adapter in self.adapters]
+        duplicates = {name for name in seen if seen.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate sensor ids: {sorted(duplicates)}")
+        return self
+
+    def by_id(self, sensor_id: str) -> SensorConfig:
+        """Look one up.
+
+        :raises KeyError: if no adapter is configured under that id.
+        """
+        for adapter in self.adapters:
+            if adapter.sensor_id == sensor_id:
+                return adapter
+        raise KeyError(f"no sensor configured with id {sensor_id!r}")
 
 
 class SpeechConfig(_Section):
@@ -342,10 +435,12 @@ class Config(_Section):
     mqtt: MqttConfig
     loop: LoopConfig
     estimator: EstimatorConfig
+    persistence: PersistenceConfig
     controller: ControllerConfig
     validator: ValidatorConfig
     detectors: DetectorsConfig
     mode: ModeConfig
+    sensors: SensorsConfig
     speech: SpeechConfig
     reasoning: ReasoningConfig
     sim: SimConfig

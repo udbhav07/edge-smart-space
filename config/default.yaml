@@ -23,16 +23,35 @@ loop:
 estimator:
   forgetting_factor: 0.995
   initial_covariance: 100.0
-  initial_theta: [0.98, 0.02, -0.05, 0.01]
+  initial_theta: [0.02, -0.05, 0.01]   # [a2, a3, a4]; a1 = 1 - a2 = 0.98
   max_covariance_trace: 1000.0
   min_excitation: 0.001
-  max_consecutive_rejections: 3
+  # Divergence is a sustained rate, not a run. a2 and a4 both sit near a box
+  # edge, so short runs of rejections are ordinary noise; half a window of
+  # them for ten minutes is not (section 5.2.3).
+  divergence_window_samples: 120
+  divergence_rejection_fraction: 0.5
+  indoor_sensor_id: temp_01
+  outdoor_sensor_id: outdoor_01
+  occupancy_sensor_id: pir_01
+  excitation_window_samples: 20
+  residual_sigma_window_samples: 60
+  sample_interval_tolerance: 0.4   # +/-40% of the nominal period (A-02)
   # Plausibility box, section 5.2.1. a3 stays negative: an estimate crossing
   # zero claims the air conditioner heats the room.
   bounds_a1: {low: 0.0, high: 1.0}
   bounds_a2: {low: 0.0, high: 1.0}
   bounds_a3: {low: -2.0, high: 0.0}
-  bounds_a4: {low: 0.0, high: 1.0}
+  # a4 admits small negative excursions: occupancy gain is ~0.0008 for one
+  # person, far below the noise floor, and rejecting every dip below zero
+  # would raise MODEL_DIVERGENCE constantly (section 5.2.1).
+  bounds_a4: {low: -0.05, high: 1.0}
+
+# FR-07 and section 7.1: restore on restart, discard if older than a day.
+persistence:
+  path: state/coefficients.json
+  interval_s: 300.0
+  max_age_s: 86400.0
 
 controller:
   deadband_c: 0.5
@@ -64,6 +83,28 @@ mode:
   degraded_sensor_budget_s: 1800.0   # Section 7.2; E4 tests whether this is right
   fault_clear_confirm_s: 120.0
   transition_deadline_s: 2.0         # FR-26
+
+# Section 5.1. Limits are what the instrument can physically report; the
+# adapter flags a reading outside them as suspect but never suppresses it,
+# because D3 exists to detect exactly that (FR-22).
+sensors:
+  adapters:
+    - sensor_id: temp_01
+      unit: C
+      limits: {low: -10.0, high: 60.0}
+      description: Indoor temperature
+    - sensor_id: hum_01
+      unit: "%RH"
+      limits: {low: 0.0, high: 100.0}
+      description: Indoor relative humidity
+    - sensor_id: outdoor_01
+      unit: C
+      limits: {low: -20.0, high: 60.0}
+      description: Ambient temperature
+    - sensor_id: pir_01
+      unit: bool
+      limits: {low: 0.0, high: 1.0}
+      description: Occupancy from PIR and door reed switch
 
 # Section 5.8. Capture opens only after the wake word and closes at end of
 # utterance or the hard timeout (FR-50).

@@ -102,12 +102,69 @@ class TestSubscribing:
     def test_subscribes_with_the_wildcard_form(self, config):
         board, transport = _blackboard(config)
         board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        board.on_connected()
         assert transport.subscribed[0][0] == "space/sensor/+/state"
 
     def test_subscribes_at_the_topic_quality_of_service(self, config):
         board, transport = _blackboard(config)
         board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        board.on_connected()
         assert transport.subscribed[0][1] == topics.SENSOR_STATE.qos.value
+
+
+class TestSubscriptionLifecycle:
+    """MQTT drops subscriptions on disconnect and refuses them before connect.
+
+    These are the tests for the bug that made the estimator connect, sit
+    there looking healthy, and never receive a single reading.
+    """
+
+    def test_registering_before_connect_does_not_reach_the_broker(self, config):
+        """paho returns MQTT_ERR_NO_CONN and the subscription is lost."""
+        board, transport = _blackboard(config)
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        assert transport.subscribed == []
+
+    def test_connecting_issues_every_registered_subscription(self, config):
+        board, transport = _blackboard(config)
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        board.on_connected()
+        assert transport.subscribed == [
+            ("space/sensor/+/state", topics.SENSOR_STATE.qos.value)
+        ]
+
+    def test_reconnecting_issues_them_again(self, config):
+        """A fresh session starts with no subscriptions at all. Without this
+        a component keeps running, looks healthy, and silently stops
+        receiving anything after the first blip."""
+        board, transport = _blackboard(config)
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        board.on_connected()
+        board.on_disconnected()
+        board.on_connected()
+        assert len(transport.subscribed) == 2
+
+    def test_subscribing_while_already_connected_takes_effect_at_once(self, config):
+        board, transport = _blackboard(config)
+        board.on_connected()
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        assert transport.subscribed
+
+    def test_every_registered_pattern_is_reported(self, config):
+        board, _ = _blackboard(config)
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        board.subscribe(topics.SYSTEM_MODE, SensorReading, lambda t, m: None)
+        assert set(board.subscriptions) == {
+            "space/sensor/+/state",
+            "space/system/mode",
+        }
+
+    def test_the_same_topic_is_not_subscribed_twice(self, config):
+        board, transport = _blackboard(config)
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        board.on_connected()
+        assert len(transport.subscribed) == 1
 
 
 class TestDispatch:

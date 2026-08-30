@@ -101,7 +101,8 @@ class TestTopicsAreObservable:
         assert "space/actuator/ac/state" in transport.topics_seen()
 
     def test_the_simulator_listens_for_commands_like_a_real_driver(self, quiet_config):
-        _, transport, _, _ = _running(quiet_config)
+        _, transport, _, blackboard = _running(quiet_config)
+        blackboard.on_connected()
         assert ("space/actuator/+/command", topics.ACTUATOR_COMMAND.qos.value) in (
             transport.subscribed
         )

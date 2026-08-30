@@ -54,7 +54,11 @@ class TestDefaultConfig:
         assert default_config.estimator.forgetting_factor == 0.995
 
     def test_initial_theta_matches_section_5_2_2(self, default_config):
-        assert default_config.estimator.initial_theta == (0.98, 0.02, -0.05, 0.01)
+        """The identified vector is [a2, a3, a4]; a1 follows as 1 - a2."""
+        assert default_config.estimator.initial_theta == (0.02, -0.05, 0.01)
+
+    def test_the_prior_implies_the_documented_thermal_inertia(self, default_config):
+        assert 1.0 - default_config.estimator.initial_theta[0] == pytest.approx(0.98)
 
     def test_regulatory_period_matches_nfr_01(self, default_config):
         assert default_config.loop.regulatory_period_s == 5.0
@@ -124,8 +128,19 @@ class TestCrossSectionConsistency:
 
     def test_initial_theta_outside_its_own_bounds_is_rejected(self, tmp_path):
         text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
-            "initial_theta: [0.98, 0.02, -0.05, 0.01]",
-            "initial_theta: [0.98, 0.02, 0.05, 0.01]",
+            "initial_theta: [0.02, -0.05, 0.01]",
+            "initial_theta: [0.02, 0.05, 0.01]",
+        )
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_config(path)
+
+    def test_a_prior_implying_an_impossible_a1_is_rejected(self, tmp_path):
+        """a1 is derived, so a2 can look fine while what it implies does not."""
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
+            "initial_theta: [0.02, -0.05, 0.01]",
+            "initial_theta: [1.6, -0.05, 0.01]",
         )
         path = tmp_path / "config.yaml"
         path.write_text(text, encoding="utf-8")

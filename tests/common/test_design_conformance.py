@@ -51,12 +51,12 @@ THERMAL_ESTIMATE_PAYLOAD = {
 
 COEFFICIENTS_PAYLOAD = {
     "ts": 1756032000.123,
-    "a1": 0.9812,
+    "a1": 0.9827,
     "a2": 0.0173,
     "a3": -0.0421,
     "a4": 0.0094,
     "trace_p": 0.0031,
-    "steady_state_residual": 0.0015,
+    "steady_state_residual": 0.0,
     "samples_since_reset": 14203,
 }
 
@@ -169,6 +169,13 @@ class TestSection62Payloads:
 
     def test_coefficients_carry_only_the_documented_fields(self):
         assert set(Coefficients.model_fields) == set(COEFFICIENTS_PAYLOAD)
+
+    def test_the_documented_coefficients_satisfy_steady_state_consistency(self):
+        """Since v1.2 a1 is derived as 1 - a2, so any published pair sums to
+        one exactly. An example that did not would be unreachable."""
+        payload = COEFFICIENTS_PAYLOAD
+        assert payload["a1"] + payload["a2"] == pytest.approx(1.0)
+        assert payload["steady_state_residual"] == 0.0
 
     def test_a_preference_hint_carries_more_than_a_temperature(self):
         """Section 6.4: a request about anything else must be representable."""
