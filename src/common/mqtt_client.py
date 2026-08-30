@@ -176,12 +176,12 @@ class Blackboard:
     def _match(self, topic: str) -> tuple[type[BlackboardMessage], Callable] | None:
         """Find the handler whose pattern matches, honouring MQTT wildcards."""
         for pattern, registration in self._handlers.items():
-            if _topic_matches(pattern, topic):
+            if topic_matches(pattern, topic):
                 return registration
         return None
 
 
-def _topic_matches(pattern: str, topic: str) -> bool:
+def topic_matches(pattern: str, topic: str) -> bool:
     """MQTT topic matching for ``+`` and a trailing ``#``."""
     if pattern == topic:
         return True
