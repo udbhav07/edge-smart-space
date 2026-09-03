@@ -141,6 +141,14 @@ reasoning:
   timeout_s: 30.0
   max_history_turns: 20
 
+# Section 5.7.6. The tool surface itself is a declaration in code; the only
+# policy number in it is how long an occupant has to answer.
+assistance:
+  # Seconds a proposed invocation stays confirmable. A confirmation arriving
+  # after this is refused rather than run late: agreeing to a booking is
+  # agreeing to the one that was described, not to whatever is still pending.
+  confirmation_window_s: 300.0
+
 # Adversarial by default. Every value here is switched on, not off: a kind
 # simulator makes simulated success predict nothing about hardware.
 sim:

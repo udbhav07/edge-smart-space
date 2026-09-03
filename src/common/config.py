@@ -358,6 +358,20 @@ class ReasoningConfig(_Section):
     )
 
 
+class AssistanceConfig(_Section):
+    """Assistance tool invocation (DESIGN.md section 5.7.6).
+
+    The tool surface is declared in ``src/common/tools.py`` rather than here:
+    a parameter list is an interface, not a tunable, and a tool that could be
+    redefined in a YAML file could not be validated against.
+    """
+
+    confirmation_window_s: float = Field(
+        gt=0.0,
+        description="Seconds a proposed invocation stays confirmable (FR-74)",
+    )
+
+
 class SensorNoiseConfig(_Section):
     """Adversarial-by-default sensor imperfection.
 
@@ -443,6 +457,7 @@ class Config(_Section):
     sensors: SensorsConfig
     speech: SpeechConfig
     reasoning: ReasoningConfig
+    assistance: AssistanceConfig
     sim: SimConfig
 
     @model_validator(mode="after")
