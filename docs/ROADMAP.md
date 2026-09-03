@@ -38,46 +38,10 @@ not identify itself at our sensor's precision. §5.2 changed as a result
 | **5–6** | 16–29 Sep | The reasoning layer proposes goals in plain language and the gate refuses the unsafe ones — demonstrably, not by trust. |
 | **7** | 30 Sep – 6 Oct | Runs on real sensors and a real air conditioner, not a simulation. |
 | **8** | 7–13 Oct | **Buffer.** Hardware overruns, and every detector threshold gets re-derived from measured noise rather than the placeholders currently in config. |
-| **9–10** | 14–27 Oct | **Proof it beats a thermostat.** The same faults injected into both; ours holds the comfort bound where the baseline does not. Every experiment replayable offline. |
+| **9** | 14–20 Oct | **A person can use it without a terminal.** A local page carries the comfort band, standing prompts, confirmations, and a calendar. Asking to book a flight produces a prompt and nothing happens until it is answered; asking to schedule a meeting writes a real entry to our own calendar. Same page shows the live view. |
+| **10** | 21–27 Oct | **Proof it beats a thermostat.** The same faults injected into both; ours holds the comfort bound where the baseline does not. Every experiment replayable offline. |
 | **11–12** | 28 Oct – 10 Nov | The three demonstration scenarios run end to end without intervention, and the report explains why. |
 
 ---
 
-## Two changes from §9.1's ordering
 
-**Fault tolerance moves from Weeks 7–8 to Week 4.** It was scheduled late
-because it needed the thermal model, and that model now exists. It is also the
-half of the project carrying the stronger argument — a threshold controller
-cannot detect a drifting sensor or a dead compressor *at all*, because it has
-no expectation to compare against — so it should not be the half that gets
-squeezed if anything slips.
-
-**Week 8 becomes an explicit buffer** rather than more work. That is where the
-1.5 weeks of slack goes. Hardware bring-up is the one phase that cannot be
-estimated honestly: WiFi will not deliver uniform sampling (A-02), the IR path
-cannot confirm anything (R-02), and thresholds tuned in simulation will need
-redoing against a real room (R-04).
-
-Speech was built early, so Weeks 8–9 of §9.1 are already behind us.
-
----
-
-## Two things that gate everything after them
-
-**Order the Jetson this week.** Nothing past Week 6 can start without it and no
-amount of code substitutes for it. A-05 assumes it arrives on time; R-03 is
-what happens if it does not.
-
-**Put one real ESP32 sensor on the bus in Week 3 or 4.** It does not need the
-Jetson — it publishes to mosquitto on a laptop, and the sensor adapter is
-already written and tested. A day's work that answers now whether our sampling
-assumptions survive WiFi, rather than in Week 7 when there is no room to react.
-
----
-
-## If something has to be cut
-
-The mock booking endpoint and its confirmation step (FR-54, FR-55). R-05
-already names speech as the cuttable feature set, and the expensive half of it
-is built, so dropping the last mile costs almost nothing and touches none of
-the success criteria in §8.4.

@@ -17,6 +17,7 @@
 | Version | Change |
 |---|---|
 | 1.0 | Initial specification. |
+| 1.4 | Adds the local console (FR-56 to FR-58): comfort band, standing prompts, confirmations, and a first-party calendar. Scheduling writes to that calendar rather than to a hosted one, which keeps NFR-06 intact and credentials off the node; flights and hotels remain mocks. §5.8's unnamed "Confirmation UI" is now this console. Priority S throughout: R-05 already names assistance as the cuttable feature set. |
 | 1.3 | §5.2.3 separates rejection from divergence. `MODEL_DIVERGENCE` was raised after three consecutive rejections and fired 252 times an hour against a healthy plant, because `a2` and `a4` both have true values on a box edge and noise crosses it constantly. It is now a sustained rate over a window, with `a4`-only rejections excluded; a healthy plant produces none, and a genuinely wrong model still diverges. |
 | 1.2 | §5.2.1 gains an identification form: the model is fitted on the temperature *change* against `T_out − T`, three parameters instead of four, with `a1` derived as `1 − a2`. E1 measured the previous form's `a1` settling at 0.754 against a truth of 0.998 — errors-in-variables attenuation, since `T[k]` is a noisy regressor — and the reformulation drops `a1`'s error by a factor of 220 and the worst coefficient error from 0.243 to 0.036, at the cost of `a4`. Steady-state consistency becomes structural, so `\|a1+a2−1\|` is retired as a diagnostic (§8.3) and `a4`'s plausible range widens to admit noise-driven excursions below zero. |
 | 1.1 | Reconciled with the implementation after Weeks 1–4. Wake-word threshold lowered to a measured value and the always-listening claim in §5.8 qualified accordingly; §4.6 memory budget restated for the models actually loaded; §5.7.5 model selection changed to the served 7B; §5.10 layout updated; `PreferenceHint` added to §6.2. |
@@ -97,7 +98,9 @@ This is a supervisory control architecture. It is chosen deliberately: an LLM ca
 - One tool-using LLM agent (Environmental Supervisor) plus two single-shot LLM calls.
 - Wake-word-gated speech input with on-device transcription and intent extraction.
 - A tariff-aware setpoint policy that shifts the comfort band under peak pricing.
-- One mock external booking endpoint to demonstrate the confirmation gate.
+- One mock external booking endpoint (flights, hotels) to demonstrate the confirmation gate.
+- A local web console for the comfort band, standing prompts, and confirmations.
+- A first-party calendar held on that console, so scheduling is a real action rather than a mock one.
 
 ### 2.2 Explicitly Out of Scope
 
@@ -108,7 +111,8 @@ This is a supervisory control architecture. It is chosen deliberately: an LLM ca
 | Air quality as a controlled variable | Nothing in the system can influence CO2 or particulate levels. It is not sensed and not controlled. |
 | Occupant counting | PIR plus reed switch yields presence, not headcount. All logic downstream assumes a binary signal. |
 | Speaker-based authorisation | Speaker verification selects a personalisation profile. It is not a security control and grants no privileges. |
-| Live third-party bookings | The booking endpoint is a local mock. No real reservation is ever made. |
+| Live third-party bookings | Flights and hotels reach a local mock. No real reservation is ever made, and the node has no outbound connection to make one with (NFR-06). |
+| Third-party calendar integration | Scheduling writes to the system's own calendar, not to Google Calendar or any hosted service. That keeps NFR-06 intact and keeps credentials off the node. A first-party calendar is not a third-party booking. |
 | Multi-room or multi-occupant conflict resolution | Single-room, single-occupant testbed. |
 | Neural network thermal models | The thermal model is a linear grey-box. This is a design choice, not a limitation to be worked around. |
 
@@ -193,6 +197,9 @@ Verification: **T** = automated test, **D** = demonstration, **A** = analysis/in
 | FR-53 | Recognised intents that map to an environmental preference shall be forwarded as a supervisory input, not as a direct actuator command. | M | T |
 | FR-54 | Any intent mapping to an external service action shall require explicit user confirmation before the mock endpoint is invoked. | M | D |
 | FR-55 | The mock booking endpoint shall be clearly identified as a mock in all logs and user-facing output. | M | A |
+| FR-56 | The system shall serve a local console for occupant settings and confirmations. It shall be reachable on the local network only and shall make no outbound connection. | S | D |
+| FR-57 | A comfort band or standing prompt set in the console shall be published as supervisory input and gated by the safety validator, exactly as a spoken preference is (FR-45, FR-53). The console shall not command an actuator. | S | T |
+| FR-58 | A calendar entry shall be created only after explicit confirmation and shall be stored locally. The gate is required for the same reason as FR-54's: what needs confirming is the reasoning layer acting on a person's behalf, not where the data ends up. | S | D |
 
 ### 3.6 Functional Requirements — Observability
 
@@ -823,7 +830,7 @@ sequenceDiagram
     participant SV as Speaker verification
     participant PC as Personal Context call
     participant GM as Goal Manager
-    participant UI as Confirmation UI
+    participant UI as Local console (FR-56)
 
     Note over WW: Always resident, ~0.1 GB.<br/>No audio retained pre-trigger.
     U->>WW: wake word spoken
@@ -843,7 +850,11 @@ sequenceDiagram
         PC->>UI: proposed action
         UI->>U: explicit confirmation prompt
         U->>UI: confirm
-        UI->>UI: invoke MOCK endpoint (FR-54, FR-55)
+        alt flight or hotel
+            UI->>UI: invoke MOCK endpoint (FR-54, FR-55)
+        else calendar
+            UI->>UI: write to the local calendar (FR-58)
+        end
     else no actionable intent
         PC->>PC: log and drop
     end
