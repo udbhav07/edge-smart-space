@@ -23,6 +23,7 @@ This is the single rule that makes hardware transfer cheap. Nothing else on this
 |---|---|---|
 | `src/common/` | — | stdlib, pydantic, paho only |
 | `src/io/`, `src/speech/` | L1 | `src/common/` |
+| `src/assistance/` | L1 | `src/common/` |
 | `src/estimation/` | L2 | `src/common/` |
 | `src/control/`, `src/faults/` | L2/L3 | `src/common/` |
 | `src/reasoning/` | L4 | `src/common/` |
@@ -31,7 +32,7 @@ This is the single rule that makes hardware transfer cheap. Nothing else on this
 
 **Forbidden, without exception:**
 
-- Anything in `estimation/`, `control/`, `faults/`, `reasoning/` importing from `src/io/` or `sim/`. These layers reach the world through MQTT topics and nothing else. A direct import is what turns a config change in Week 6 into a rewrite.
+- Anything in `estimation/`, `control/`, `faults/`, `reasoning/` importing from `src/io/`, `src/assistance/` or `sim/`. `src/assistance/` holds the calendar and booking providers; the reasoning layer reaches a tool through `space/assist/proposed` and the registry's gates, never by calling a provider (FR-71, FR-73, FR-74). These layers reach the world through MQTT topics and nothing else. A direct import is what turns a config change in Week 6 into a rewrite.
 - `sim/room_model.py` importing `src/estimation/` (DESIGN.md §5.10). The ground-truth plant and the estimator's model must be independently parameterised or every experiment result is vacuous.
 - Any component holding a reference to another component. They share the blackboard, not objects.
 
@@ -109,7 +110,7 @@ grep -rnE "\b(time\.(time|monotonic)|datetime\.now)\s*\(" src/ sim/ --include=*.
   | grep -v "^src/common/clock.py"
 
 # 2. Layer 2-4 reaching into Layer 1 or the simulator
-grep -rnE "^\s*(from|import)\s+(src\.io|sim)\b" --include=*.py \
+grep -rnE "^\s*(from|import)\s+(src\.io|src\.assistance|sim)\b" --include=*.py \
   src/estimation src/control src/faults src/reasoning
 
 # 3. the plant importing the estimator (section 5.10)
