@@ -17,11 +17,11 @@ both are the point rather than a side effect:
   FR-72). :class:`ToolProvider` is a Protocol declared here and implemented
   elsewhere; a provider change is a wiring change in the process that binds
   it. The prompt, the schemas, and the topics are untouched.
-* **Selecting a tool is not executing it.** The model names a tool; the
-  registry validates the arguments, checks the confirmation gate, and only
-  then reaches a provider. This is the same shape as ``propose_setpoint``
-  going through the safety validator: the LLM's output is a request, and a
-  deterministic component decides whether it happens (FR-73, FR-74).
+* **The model runs its own tools, up to a line it cannot cross.** Reading a
+  calendar and writing to it are things it does; committing the occupant to a
+  flight is not. That line is a declared property of each tool
+  (:class:`ToolEffect`), not a judgement made at the call site, so it cannot
+  be forgotten at one of them (FR-73, FR-74).
 
 Where the pieces live, and why here:
 
@@ -96,16 +96,32 @@ class ParameterType(str, Enum):
 
 
 class ToolEffect(str, Enum):
-    """Whether running a tool changes anything outside the system.
+    """How far the consequences of running a tool reach.
 
     This is what the confirmation gate is decided on (FR-74), so it is a
     declared property of the tool rather than a judgement made at the call
-    site. Reading a calendar to answer a question must not require a
-    confirmation prompt; writing to one must.
+    site. The line is not "does it change anything" -- it is **whose** it is
+    to undo:
+
+    ``READ``
+        Observes and changes nothing. Listing what is in the calendar.
+    ``WRITE``
+        Changes something the system itself owns. A local calendar entry is
+        visible in the console, published like everything else (FR-75), and
+        deletable by the person who did not want it. The model runs these.
+    ``COMMIT``
+        Commits the occupant to a party outside the system -- a flight, a
+        hotel, money, a seat somebody else cannot have. Nothing here is ours
+        to reverse, so nothing here runs without being asked (FR-54, FR-74).
+
+    A tool declaring the wrong one of these is the single most consequential
+    mistake available in this module, which is why the value is required and
+    has no default.
     """
 
     READ = "read"
     WRITE = "write"
+    COMMIT = "commit"
 
 
 class ToolStatus(str, Enum):
@@ -166,7 +182,7 @@ class ToolArgumentError(ToolError):
 
 
 class ConfirmationRequiredError(ToolError):
-    """A state-changing tool was invoked without confirmation (FR-74)."""
+    """A COMMIT tool was invoked without confirmation (FR-74)."""
 
     status = ToolStatus.CONFIRMATION_REQUIRED
 
@@ -321,8 +337,14 @@ class ToolSpec(BaseModel):
 
     @property
     def requires_confirmation(self) -> bool:
-        """Whether FR-74's gate applies to this tool."""
-        return self.effect is ToolEffect.WRITE
+        """Whether FR-74's gate applies to this tool.
+
+        Only ``COMMIT`` tools. Prompting for everything is the failure mode
+        that looks like caution: a person asked to approve each calendar
+        entry learns to approve without reading, and then the one prompt that
+        mattered gets the same reflex.
+        """
+        return self.effect is ToolEffect.COMMIT
 
     def as_schema(self) -> dict[str, object]:
         """The tool in OpenAI-compatible function-calling form.
@@ -385,13 +407,19 @@ class ToolSpec(BaseModel):
 
 
 class ToolInvocation(TimestampedMessage):
-    """A request to run one tool. Not the running of it.
+    """One tool call, on its way to the executor.
 
-    Published to ``space/assist/proposed`` by whatever selected the tool, and
-    republished verbatim to ``space/assist/confirmed`` once an occupant has
-    agreed to it (FR-74). The two topics carry the same schema on purpose:
-    confirmation is an act by a person, and encoding it as a field would let
-    a publisher assert its own approval.
+    Everything is published to ``space/assist/proposed``, including the calls
+    the model is entitled to make on its own: the executor owns the providers,
+    so nothing reaches a calendar without crossing the blackboard, and the
+    audit trail is a consequence of the architecture rather than a thing each
+    call site remembers to write (FR-75).
+
+    A ``COMMIT`` invocation is the only kind that stops there. It is
+    republished verbatim to ``space/assist/confirmed`` once the occupant has
+    agreed (FR-74). The two topics carry the same schema on purpose:
+    confirmation is an act by a person, and encoding it as a field would let a
+    publisher assert its own approval.
 
     ``expires_ts`` is the same idea as ``Goal.expires_ts``. A confirmation
     that arrives an hour after the question was asked must not book anything,
@@ -552,7 +580,9 @@ SCHEDULE_EVENT = ToolSpec(
     name="schedule_event",
     purpose=(
         "Put an entry in the occupant's calendar. Use this when they ask to "
-        "schedule, book or add a meeting, reminder or appointment."
+        "schedule or add a meeting, reminder or appointment. It is their own "
+        "calendar and the entry can be removed again, so do it rather than "
+        "asking whether to."
     ),
     effect=ToolEffect.WRITE,
     parameters=(
@@ -602,10 +632,12 @@ GET_EVENTS = ToolSpec(
 BOOK_TRAVEL = ToolSpec(
     name="book_travel",
     purpose=(
-        "Request a flight or a hotel. Every booking reaches a mock endpoint "
-        "and no real reservation is ever made; say so when reporting back."
+        "Request a flight or a hotel. You cannot complete this yourself: it "
+        "is put to the occupant for confirmation first. Every booking reaches "
+        "a mock endpoint and no real reservation is ever made; say so when "
+        "reporting back."
     ),
-    effect=ToolEffect.WRITE,
+    effect=ToolEffect.COMMIT,
     parameters=(
         ToolParameter(
             name="kind",
@@ -724,7 +756,8 @@ class ToolRegistry:
 
         :param confirmed: whether an occupant has agreed to this. Derived
             from the topic it arrived on, not from the message: a publisher
-            must not be able to assert its own approval.
+            must not be able to assert its own approval. Ignored for anything
+            but a ``COMMIT`` tool, which is the only kind that asks.
         """
         try:
             return self._run(invocation, confirmed=confirmed)
@@ -752,7 +785,8 @@ class ToolRegistry:
 
         if spec.requires_confirmation and not confirmed:
             raise ConfirmationRequiredError(
-                f"{invocation.tool!r} changes something and needs confirming"
+                f"{invocation.tool!r} commits you to something outside the "
+                f"system and needs confirming"
             )
 
         provider = self._providers.get(invocation.tool)

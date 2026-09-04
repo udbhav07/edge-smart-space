@@ -6,8 +6,9 @@ Three properties carry the design and are tested hardest:
   transport, no confirmation flow (FR-70, FR-71).
 * Adding a tool, or swapping the implementation behind one, changes nothing
   else (FR-72).
-* Nothing state-changing runs without confirmation, and nothing at all runs
-  on arguments that do not satisfy the declaration (FR-73, FR-74).
+* The model runs its own tools, except the ones that commit the occupant to
+  an outside party; and nothing at all runs on arguments that do not satisfy
+  the declaration (FR-73, FR-74).
 
 The registry is tested through fake providers. A real one is a calendar
 client, which belongs nowhere near ``src/common/``.
@@ -262,11 +263,22 @@ class TestArgumentValidation:
 
 
 class TestDeclaration:
-    def test_a_write_tool_requires_confirmation(self):
-        assert SCHEDULE_EVENT.requires_confirmation
+    def test_a_commit_tool_requires_confirmation(self):
+        """Booking a flight is not ours to undo (FR-54)."""
+        assert BOOK_TRAVEL.requires_confirmation
 
-    def test_a_read_tool_does_not(self):
+    def test_a_write_tool_does_not(self):
+        """A calendar entry is the occupant's own and can be deleted again."""
+        assert not SCHEDULE_EVENT.requires_confirmation
+
+    def test_a_read_tool_does_not_either(self):
         assert not GET_EVENTS.requires_confirmation
+
+    def test_only_a_commit_tool_asks(self):
+        """The whole gate, stated once: prompting for everything trains
+        someone to approve without reading."""
+        for spec in ASSISTANCE_TOOLS:
+            assert spec.requires_confirmation == (spec.effect is ToolEffect.COMMIT)
 
     def test_a_tool_cannot_declare_one_parameter_twice(self):
         parameter = ToolParameter(
@@ -298,20 +310,37 @@ class TestDeclaration:
             SCHEDULE_EVENT.name = "something_else"
 
 
+def _booking(clock) -> ToolInvocation:
+    return _invocation(
+        clock,
+        "book_travel",
+        kind="flight",
+        destination="Hyderabad",
+        depart_on="2026-09-10T08:00:00",
+    )
+
+
 class TestConfirmationGate:
     """FR-74. The gate is decided on the declared effect, not on the caller."""
 
-    def test_a_write_tool_is_not_run_without_confirmation(self, registry, clock):
-        provider = FakeProvider()
-        registry.bind("schedule_event", provider)
-        result = registry.invoke(_invocation(clock), confirmed=False)
+    def test_a_commit_tool_is_not_run_without_confirmation(self, registry, clock):
+        provider = FakeProvider(name="mock_travel", simulated=True)
+        registry.bind("book_travel", provider)
+        result = registry.invoke(_booking(clock), confirmed=False)
         assert result.status is ToolStatus.CONFIRMATION_REQUIRED
         assert provider.calls == []
 
-    def test_the_same_call_runs_once_confirmed(self, registry, clock):
+    def test_the_same_booking_runs_once_confirmed(self, registry, clock):
+        registry.bind("book_travel", FakeProvider(name="mock_travel", simulated=True))
+        assert registry.invoke(_booking(clock), confirmed=True).status is ToolStatus.OK
+
+    def test_a_write_tool_runs_without_confirmation(self, registry, clock):
+        """The model puts the entry in the calendar itself. It is the
+        occupant's own calendar and the entry can be removed again."""
         registry.bind("schedule_event", FakeProvider())
-        result = registry.invoke(_invocation(clock), confirmed=True)
-        assert result.status is ToolStatus.OK
+        assert registry.invoke(_invocation(clock), confirmed=False).status is (
+            ToolStatus.OK
+        )
 
     def test_a_read_tool_runs_without_confirmation(self, registry, clock):
         registry.bind("get_events", FakeProvider())
@@ -327,26 +356,44 @@ class TestConfirmationGate:
         self, registry, clock
     ):
         """Nobody should be asked to approve a malformed request."""
-        registry.bind("schedule_event", FakeProvider())
-        invocation = _invocation(clock, "schedule_event", subject="standup")
+        registry.bind("book_travel", FakeProvider())
+        invocation = _invocation(clock, "book_travel", kind="flight")
         result = registry.invoke(invocation, confirmed=False)
         assert result.status is ToolStatus.BAD_ARGUMENTS
 
-    def test_an_expired_invocation_is_refused_even_when_confirmed(
-        self, registry, clock
-    ):
-        invocation = _invocation(clock)
+    def test_an_expired_booking_is_refused_even_when_confirmed(self, registry, clock):
+        invocation = _booking(clock)
         clock.advance(WINDOW_S + 1.0)
-        result = registry.invoke(invocation, confirmed=True)
-        assert result.status is ToolStatus.EXPIRED
+        assert registry.invoke(invocation, confirmed=True).status is ToolStatus.EXPIRED
 
-    def test_an_invocation_confirmed_inside_the_window_still_runs(
-        self, registry, clock
-    ):
-        registry.bind("schedule_event", FakeProvider())
-        invocation = _invocation(clock)
+    def test_a_booking_confirmed_inside_the_window_still_runs(self, registry, clock):
+        registry.bind("book_travel", FakeProvider(name="mock_travel", simulated=True))
+        invocation = _booking(clock)
         clock.advance(WINDOW_S - 1.0)
         assert registry.invoke(invocation, confirmed=True).status is ToolStatus.OK
+
+    def test_a_new_commit_tool_is_gated_without_anyone_wiring_it(self, registry, clock):
+        """The gate follows the declaration, so a tool added later is covered
+        by having declared what it does."""
+        registry.declare(
+            ToolSpec(
+                name="buy_tickets",
+                purpose="Buy concert tickets.",
+                effect=ToolEffect.COMMIT,
+                parameters=(
+                    ToolParameter(
+                        name="event",
+                        type=ParameterType.STRING,
+                        description="Which one.",
+                    ),
+                ),
+            )
+        )
+        registry.bind("buy_tickets", FakeProvider(name="mock_tickets", simulated=True))
+        result = registry.invoke(
+            _invocation(clock, "buy_tickets", event="something"), confirmed=False
+        )
+        assert result.status is ToolStatus.CONFIRMATION_REQUIRED
 
 
 class TestInvocationOutcomes:
@@ -436,7 +483,7 @@ class TestExtensibility:
             ToolSpec(
                 name="order_groceries",
                 purpose="Order a grocery delivery.",
-                effect=ToolEffect.WRITE,
+                effect=ToolEffect.COMMIT,
                 parameters=(
                     ToolParameter(
                         name="items",
@@ -451,6 +498,29 @@ class TestExtensibility:
             _invocation(clock, "order_groceries", items="milk, coffee"), confirmed=True
         )
         assert result.status is ToolStatus.OK
+
+    def test_a_new_tool_declaring_commit_needs_no_extra_wiring_to_be_gated(
+        self, registry, clock
+    ):
+        registry.declare(
+            ToolSpec(
+                name="hire_a_car",
+                purpose="Hire a car.",
+                effect=ToolEffect.COMMIT,
+                parameters=(
+                    ToolParameter(
+                        name="city",
+                        type=ParameterType.STRING,
+                        description="Where to collect it.",
+                    ),
+                ),
+            )
+        )
+        registry.bind("hire_a_car", FakeProvider(name="mock_cars", simulated=True))
+        result = registry.invoke(
+            _invocation(clock, "hire_a_car", city="Hyderabad"), confirmed=False
+        )
+        assert result.status is ToolStatus.CONFIRMATION_REQUIRED
 
     def test_a_new_tool_appears_in_what_the_model_is_shown(self, registry):
         before = len(registry.schemas())

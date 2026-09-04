@@ -368,7 +368,14 @@ class AssistanceConfig(_Section):
 
     confirmation_window_s: float = Field(
         gt=0.0,
-        description="Seconds a proposed invocation stays confirmable (FR-74)",
+        description="Seconds a COMMIT invocation stays confirmable (FR-74)",
+    )
+    max_tool_rounds: int = Field(
+        gt=0,
+        description="Tool-call rounds one reasoning call may make before answering",
+    )
+    result_timeout_s: float = Field(
+        gt=0.0, description="Seconds to wait for a tool result before answering without"
     )
 
 

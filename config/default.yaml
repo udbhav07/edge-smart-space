@@ -148,6 +148,14 @@ assistance:
   # after this is refused rather than run late: agreeing to a booking is
   # agreeing to the one that was described, not to whatever is still pending.
   confirmation_window_s: 300.0
+  # Rounds of tool calls one reasoning call may make before it must answer.
+  # One is enough to look something up and reply about it, and it is what
+  # keeps Personal Context a bounded call rather than an open-ended agent.
+  max_tool_rounds: 1
+  # Seconds to wait for a result on space/assist/result before giving up and
+  # answering without it. A calendar that has stopped responding must not hold
+  # a reply to the occupant open indefinitely.
+  result_timeout_s: 5.0
 
 # Adversarial by default. Every value here is switched on, not off: a kind
 # simulator makes simulated success predict nothing about hardware.

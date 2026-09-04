@@ -16,12 +16,12 @@
 
 | Version | Change |
 |---|---|
-| 1.0 | Initial specification. |
-| 1.5 | Adds an assistance tool surface (§5.7.6, FR-70 to FR-75). The reasoning layer could propose a setpoint and nothing else, so "put that in my calendar" had no representation at all. A tool is now a declaration — name, purpose, typed parameters, and whether it changes anything — and the model is shown that and nothing more, so which service fulfils it is a wiring choice rather than a prompt change. FR-42 is amended: Personal Context may name a tool invocation; it still executes nothing. |
+| 1.5 | Adds an assistance tool surface (§5.7.6, FR-70 to FR-75). The reasoning layer could propose a setpoint and nothing else, so "put that in my calendar" had no representation at all. A tool is now a declaration — name, purpose, typed parameters, and how far its consequences reach — and the model is shown that and nothing more, so which service fulfils it is a wiring choice rather than a prompt change. The reasoning layer *runs* its own tools; the confirmation gate narrows to actions that commit the occupant to an outside party, which is what FR-54 was always about. FR-42 and FR-58 are amended accordingly. |
 | 1.4 | Adds the local console (FR-56 to FR-58): comfort band, standing prompts, confirmations, and a first-party calendar. Scheduling writes to that calendar rather than to a hosted one, which keeps NFR-06 intact and credentials off the node; flights and hotels remain mocks. §5.8's unnamed "Confirmation UI" is now this console. Priority S throughout: R-05 already names assistance as the cuttable feature set. |
 | 1.3 | §5.2.3 separates rejection from divergence. `MODEL_DIVERGENCE` was raised after three consecutive rejections and fired 252 times an hour against a healthy plant, because `a2` and `a4` both have true values on a box edge and noise crosses it constantly. It is now a sustained rate over a window, with `a4`-only rejections excluded; a healthy plant produces none, and a genuinely wrong model still diverges. |
 | 1.2 | §5.2.1 gains an identification form: the model is fitted on the temperature *change* against `T_out − T`, three parameters instead of four, with `a1` derived as `1 − a2`. E1 measured the previous form's `a1` settling at 0.754 against a truth of 0.998 — errors-in-variables attenuation, since `T[k]` is a noisy regressor — and the reformulation drops `a1`'s error by a factor of 220 and the worst coefficient error from 0.243 to 0.036, at the cost of `a4`. Steady-state consistency becomes structural, so `\|a1+a2−1\|` is retired as a diagnostic (§8.3) and `a4`'s plausible range widens to admit noise-driven excursions below zero. |
 | 1.1 | Reconciled with the implementation after Weeks 1–4. Wake-word threshold lowered to a measured value and the always-listening claim in §5.8 qualified accordingly; §4.6 memory budget restated for the models actually loaded; §5.7.5 model selection changed to the served 7B; §5.10 layout updated; `PreferenceHint` added to §6.2. |
+| 1.0 | Initial specification. |
 
 Where this document and the code disagree, that is a defect in one of them.
 `tests/common/test_design_conformance.py` validates every payload in §6.2
@@ -83,6 +83,8 @@ This is a supervisory control architecture. It is chosen deliberately: an LLM ca
 | Blackboard | Shared state store realised as a set of retained MQTT topics. |
 | Residual | Difference between measured temperature and the thermal model's one-step prediction. |
 | Self-calibration | Online estimation of the room's thermal coefficients from operating data. |
+| Tool | A declared action the reasoning layer may invoke: a name, a purpose, typed parameters, and how far its consequences reach (§5.7.6). |
+| Provider | The implementation that fulfils a tool. Interchangeable, and unknown to whatever invoked it. |
 | Real actuator | A physical device the system commands. Only the air conditioner qualifies. |
 | Simulated actuator | A software stand-in with a documented model; commanded identically but has no physical effect. |
 
@@ -96,7 +98,8 @@ This is a supervisory control architecture. It is chosen deliberately: an LLM ca
 - Online identification of a four-coefficient RC thermal model via recursive least squares.
 - Binary occupancy detection from a PIR sensor and a door reed switch.
 - Detection, diagnosis, and compensation of injected sensor and actuator faults.
-- One tool-using LLM agent (Environmental Supervisor) plus two single-shot LLM calls.
+- One tool-using LLM agent (Environmental Supervisor), one bounded tool-using call (Personal Context), and one single-shot call (Fault Diagnosis).
+- A provider-agnostic tool surface through which the reasoning layer performs assistance actions: calendar entries directly, bookings only once confirmed.
 - Wake-word-gated speech input with on-device transcription and intent extraction.
 - A tariff-aware setpoint policy that shifts the comfort band under peak pricing.
 - One mock external booking endpoint (flights, hotels) to demonstrate the confirmation gate.
@@ -181,7 +184,7 @@ Verification: **T** = automated test, **D** = demonstration, **A** = analysis/in
 |---|---|---|---|
 | FR-40 | The Environmental Supervisor shall run as a tool-using agent that reads blackboard state through defined tools and emits a setpoint goal and operating mode. | M | T |
 | FR-41 | The Environmental Supervisor shall be invoked on a fixed cadence (default 300 s) and on defined event triggers (occupancy transition, tariff transition, fault confirmation). | M | T |
-| FR-42 | Personal Context extraction shall be a single-shot LLM call producing a schema-constrained structured output. It may name one assistance tool invocation in that output (FR-70). It shall not be given a tool loop and shall not execute anything. | M | A |
+| FR-42 | Personal Context extraction shall be an LLM call producing a schema-constrained structured output. It may invoke assistance tools (FR-70) within a bounded number of rounds, default one, after which it shall answer. It shall not be given the supervisor's read tools and shall not run an open-ended tool loop. | M | A |
 | FR-43 | Fault Diagnosis shall be a single-shot LLM call producing a schema-constrained structured output. It shall not be given tools. | M | A |
 | FR-44 | All LLM outputs shall be constrained to a declared schema at decode time. Outputs failing post-decode semantic validation shall be discarded and the previous goal retained. | M | T |
 | FR-45 | The reasoning layer shall never write directly to an actuator topic. All influence is exerted through the setpoint goal, which the validator gates. | M | A |
@@ -196,11 +199,11 @@ Verification: **T** = automated test, **D** = demonstration, **A** = analysis/in
 | FR-51 | The system shall transcribe captured audio on-device. No audio shall leave the edge node. | M | A |
 | FR-52 | Speaker verification shall select a personalisation profile only. It shall not gate any action, and this shall be stated in user-facing output. | M | A |
 | FR-53 | Recognised intents that map to an environmental preference shall be forwarded as a supervisory input, not as a direct actuator command. | M | T |
-| FR-54 | Any intent mapping to an external service action shall require explicit user confirmation before the mock endpoint is invoked. | M | D |
+| FR-54 | Any action that commits the occupant to a party outside the system — a booking, a payment, a reservation — shall require explicit user confirmation before the mock endpoint is invoked. Declared as a `commit` tool (FR-74). | M | D |
 | FR-55 | The mock booking endpoint shall be clearly identified as a mock in all logs and user-facing output. | M | A |
 | FR-56 | The system shall serve a local console for occupant settings and confirmations. It shall be reachable on the local network only and shall make no outbound connection. | S | D |
 | FR-57 | A comfort band or standing prompt set in the console shall be published as supervisory input and gated by the safety validator, exactly as a spoken preference is (FR-45, FR-53). The console shall not command an actuator. | S | T |
-| FR-58 | A calendar entry shall be created only after explicit confirmation and shall be stored locally. The gate is required for the same reason as FR-54's: what needs confirming is the reasoning layer acting on a person's behalf, not where the data ends up. | S | D |
+| FR-58 | A calendar entry shall be stored locally, shall be published like every other action (FR-75), and shall be removable from the console. It requires no confirmation: it is the occupant's own calendar and an unwanted entry is deleted, not undone with a third party. Amended in v1.5; the v1.4 form required confirmation and §5.7.6 records why that changed. | S | D |
 
 ### 3.6 Functional Requirements — Assistance Tool Invocation
 
@@ -210,11 +213,11 @@ feature safe to ship at all.
 
 | ID | Requirement | Pri | Ver |
 |---|---|---|---|
-| FR-70 | The system shall expose assistance actions to the reasoning layer as a declared set of tools, each carrying a name, a stated purpose, a typed parameter list, and whether it changes state. The declaration shall be the only thing a model is told about a tool. | M | T |
+| FR-70 | The system shall expose assistance actions to the reasoning layer as a declared set of tools, each carrying a name, a stated purpose, a typed parameter list, and how far its consequences reach (`read`, `write`, `commit`). The declaration shall be the only thing a model is told about a tool. | M | T |
 | FR-71 | A tool shall be invoked by name and arguments alone. Nothing that requests an invocation shall be able to determine which provider fulfils it. | M | A |
 | FR-72 | Adding a tool, or changing the provider that fulfils an existing one, shall require no change to the reasoning layer, its prompts, the message schemas, or the topic table. | M | T |
 | FR-73 | An invocation whose arguments do not satisfy the declared parameter list shall be refused before any provider is reached, and the refusal shall be published with the parameter at fault. | M | T |
-| FR-74 | A tool declared as changing state shall be executed only after explicit occupant confirmation (FR-54, FR-58). A tool declared as read-only shall be executed without it. | M | D |
+| FR-74 | A tool declared `commit` shall be executed only after explicit occupant confirmation (FR-54). A tool declared `read` or `write` shall be executed on the reasoning layer's own authority. The gate shall follow the declaration, so that a tool added later is covered by having declared what it does. | M | D |
 | FR-75 | Every invocation and every outcome shall be published to the blackboard, refusals and provider failures included. | M | T |
 
 ### 3.7 Functional Requirements — Observability
@@ -289,7 +292,7 @@ Note the dashed edge: simulated actuators are commanded and their state is publi
 flowchart TB
     subgraph L4["Layer 4 — Reasoning (minute cadence, non-deterministic)"]
         ES["Environmental Supervisor<br/>tool-using agent"]
-        PC["Personal Context<br/>single-shot call"]
+        PC["Personal Context<br/>bounded tool-using call"]
         FD["Fault Diagnosis<br/>single-shot call"]
     end
 
@@ -309,6 +312,7 @@ flowchart TB
         SDRV["Sensor Adapters"]
         ADRV["Actuator Driver"]
         SPEECH["Speech Pipeline<br/>wake word, ASR"]
+        ASSIST["Assistance Executor<br/>calendar, mock booking"]
     end
 
     subgraph L0["Layer 0 — Blackboard (MQTT broker, retained topics)"]
@@ -322,6 +326,7 @@ flowchart TB
 
     ES -.->|"proposes goal"| GOAL
     PC -.->|"preference hint"| GOAL
+    PC -.->|"tool invocation"| ASSIST
     FDET -.->|"fault event"| MODE
     MODE -.->|"triggers"| FD
     FD -.->|"hypothesis + recommended mode"| MODE
@@ -389,6 +394,10 @@ flowchart TB
     CTRL -->|pub| BROKER
     BROKER -->|sub| ADRV["Actuator Driver"]
     SPEECH["Speech Pipeline"] -->|pub| BROKER
+    BROKER -->|sub| ASSIST["Assistance Executor"]
+    ASSIST -->|pub| BROKER
+    BROKER -->|sub| UI["Local Console"]
+    UI -->|pub| BROKER
     BROKER -->|sub| LOG["Recorder / Audit"]
 ```
 
@@ -497,6 +506,18 @@ classDiagram
         +is_simulated: bool
         +send(Command) Ack
     }
+    class ToolRegistry {
+        -specs: dict
+        -providers: dict
+        +schemas() list
+        +invoke(ToolInvocation, confirmed) ToolResult
+    }
+    class ToolProvider {
+        <<interface>>
+        +name: str
+        +simulated: bool
+        +invoke(tool, arguments) ProviderOutcome
+    }
 
     ThermalEstimator --> RegulatoryController : prediction, residual
     ThermalEstimator --> FaultDetectorBank : residual
@@ -507,6 +528,7 @@ classDiagram
     SafetyValidator --> RegulatoryController : admissible setpoint
     RegulatoryController --> ActuatorDriver : command
     SensorAdapter --> ThermalEstimator : readings
+    ToolRegistry --> ToolProvider : bound by name
 ```
 
 ### 5.2 Thermal Model and Self-Calibration
@@ -772,10 +794,10 @@ Mode transition is driven by the detector bank and completes within 2 s (FR-26).
 | Component | Type | Tools | Cadence | Failure behaviour |
 |---|---|---|---|---|
 | Environmental Supervisor | Tool-using agent | 4 read tools, 1 emit tool | 300 s + events | Retain previous goal |
-| Personal Context | Single-shot, schema-constrained | Assistance surface (§5.7.6); selects, never executes | On transcript | Discard, no preference hint |
+| Personal Context | Schema-constrained, bounded rounds | Assistance surface (§5.7.6); runs everything but `commit` | On transcript | Discard, no preference hint |
 | Fault Diagnosis | Single-shot, schema-constrained | none | On fault confirm | Generic notification text |
 
-Only one component genuinely needs a tool *loop*. Calling the other two "agents" would be a naming convention, not an architecture, so they are specified as what they are: constrained single-shot calls. Personal Context having a tool surface does not change that: it is invoked once on one transcript, and one of the things it may return is the name of an action for something else to perform (§5.7.6).
+Only the Environmental Supervisor needs an *open-ended* tool loop, deciding for itself how many times to look before it proposes. Personal Context runs tools too, but within a bounded number of rounds — default one (`assistance.max_tool_rounds`) — after which it must answer. That is the difference that matters for latency and for what can go wrong, and it is why calling all three "agents" would be a naming convention rather than an architecture. Fault Diagnosis has no tools at all.
 
 #### 5.7.2 Supervisor Tool Surface
 
@@ -787,7 +809,7 @@ Only one component genuinely needs a tool *loop*. Calling the other two "agents"
 | `get_active_faults` | `()` | list of `{fault_id, class, sensor, since_ts, mode_impact}` |
 | `propose_setpoint` | `(setpoint_c: float, mode: str, rationale: str)` | validator verdict |
 
-`propose_setpoint` is the terminal tool. It writes to `space/blackboard/goal/proposed`, never to an actuator topic (FR-45).
+`propose_setpoint` is the terminal tool. It writes to `space/goal/proposed` (§6.1), never to an actuator topic (FR-45).
 
 #### 5.7.3 Decoding Strategy
 
@@ -846,7 +868,35 @@ every one of them would have been wired by hand and the second one would have
 been wired differently from the first.
 
 A tool is therefore a **declaration**: a name, a stated purpose, a typed
-parameter list, and whether it changes anything (FR-70). Nothing else.
+parameter list, and how far its consequences reach (FR-70). Nothing else.
+
+##### Effect, and where the line is
+
+The reasoning layer runs its own tools. The question is not whether a tool
+changes anything — most of them do — but **whose it is to undo**:
+
+| Effect | Consequence | Who runs it |
+|---|---|---|
+| `read` | Observes. Nothing changes. | The reasoning layer. |
+| `write` | Changes something the system itself owns. Visible in the console, published like everything else, and removable by whoever did not want it. | The reasoning layer. |
+| `commit` | Commits the occupant to a party outside the system: a booking, a payment, a seat somebody else cannot have. Not ours to reverse. | Nobody, until the occupant says so (FR-54, FR-74). |
+
+This is the amendment to v1.4 worth stating plainly, because it loosens a
+gate. FR-58 previously required confirmation before a calendar entry, on the
+grounds that what needs confirming is the reasoning layer acting on someone's
+behalf. That reasoning proves too much: it applies equally to every setpoint
+the supervisor proposes, and those are gated by a validator rather than by a
+person. The line that survives scrutiny is reversibility. A wrong calendar
+entry is deleted in a second from the console. A wrong flight is not.
+
+The cost is real and is not hidden: a misheard utterance now writes an entry
+nobody asked for, with no prompt. Three things bound it — every invocation and
+result is published (FR-75), the console lists what was written, and the entry
+is removable — and none of them would help with a booking, which is exactly
+why bookings stay gated.
+
+Declaring the wrong effect on a tool is the most consequential mistake
+available in this design, so the field is required and has no default.
 
 ##### Declared surface
 
@@ -854,7 +904,7 @@ parameter list, and whether it changes anything (FR-70). Nothing else.
 |---|---|---|---|
 | `schedule_event` | write | `starts_at`, `subject`, `duration_min?` | the local calendar (FR-58) |
 | `get_events` | read | `from_time`, `to_time` | the local calendar |
-| `book_travel` | write | `kind`, `destination`, `depart_on`, `origin?`, `nights?` | the mock endpoint (FR-55) |
+| `book_travel` | commit | `kind`, `destination`, `depart_on`, `origin?`, `nights?` | the mock endpoint (FR-55) |
 
 Timestamps in a tool argument are ISO-8601 strings rather than the epoch
 seconds every message in §6.2 carries. The inconsistency is deliberate and is
@@ -876,42 +926,62 @@ connection NFR-06 forbids (§2.2). The interface admits one; the system does
 not contain one. That distinction is the honest claim and is the one to make
 in the report.
 
-##### Selecting a tool is not executing one
+##### What the reasoning layer may do on its own
 
-FR-42 is amended here rather than contradicted. Personal Context remains a
-single-shot call with no tool loop — one transcript in, one value out — and
-that value may now name an invocation. It still performs nothing. The shape is
-the one FR-45 already establishes for setpoints:
+FR-42 is amended. Personal Context invokes tools itself, within a bounded
+number of rounds — default one (`assistance.max_tool_rounds`) — after which it
+must answer. One round is enough to look something up and reply about it,
+which is the whole of what a preference extraction needs, and the bound is
+what keeps it a call rather than an open-ended agent. It still has no access
+to the supervisor's read tools of §5.7.2.
 
-| | Proposed by | Gated by | Performed by |
+Three paths out of the reasoning layer, gated three different ways:
+
+| | Requested by | Gated by | Performed by |
 |---|---|---|---|
-| Setpoint | reasoning layer | safety validator | regulatory controller |
-| Assistance action | Personal Context | argument check, then the occupant | the bound provider |
+| Setpoint | reasoning layer | safety validator, always | regulatory controller |
+| `read` / `write` tool | reasoning layer | argument check only | the bound provider |
+| `commit` tool | reasoning layer | argument check, then the occupant | the bound provider |
+
+FR-45 is untouched by any of this. No declared tool takes a temperature, a
+setpoint or a command, and a tool that did would be a second route to the
+plant past the validator. The tool surface is how the system does things
+*for* an occupant; the setpoint path remains the only way anything reaches the
+room.
 
 ##### Flow
 
-Three topics, mirroring `space/goal/proposed` → `space/goal/active`:
+Every call crosses the blackboard, including the ones the reasoning layer is
+entitled to make on its own. It would be shorter to let Personal Context hold
+the providers and call them in-process, and that is the wrong trade: the
+executor owning them means provider wiring happens once instead of in every
+process that reasons, and the audit trail is then a consequence of the
+architecture rather than something each call site remembers to write (FR-75).
 
-1. Whatever selected the tool publishes a `ToolInvocation` to
-   `space/assist/proposed`.
-2. The console presents it and, on explicit agreement, republishes it verbatim
-   to `space/assist/confirmed` (FR-74). Confirmation is carried by the *topic*
+1. The caller publishes a `ToolInvocation` to `space/assist/proposed` and waits
+   for the correlated `ToolResult`, up to `assistance.result_timeout_s`
+   (default 5 s). A calendar that has stopped answering must not hold a reply
+   to the occupant open indefinitely; the call answers without it.
+2. The executor validates the arguments against the declaration. A `read` or
+   `write` invocation it runs immediately; a `commit` invocation it refuses
+   with `CONFIRMATION_REQUIRED` and goes no further.
+3. For a `commit`, the console presents the refusal and, on explicit
+   agreement, republishes the invocation verbatim to
+   `space/assist/confirmed` (FR-74). Confirmation is carried by the *topic*
    and not by a field, because a field is something a publisher can set for
    itself.
-3. The executor validates the arguments against the declaration, applies the
-   gate, reaches the bound provider, and publishes a `ToolResult` — for every
-   outcome, refusals included (FR-73, FR-75).
-
-A read-only tool skips step 2: the executor runs a `read` invocation directly
-off `space/assist/proposed`. Asking someone to approve reading their own
-calendar teaches them to approve without reading, which is how a confirmation
-gate stops being one.
+4. Every outcome is published to `space/assist/result`, refusals included
+   (FR-73, FR-75).
 
 An invocation expires (`expires_ts`, from `assistance.confirmation_window_s`,
 default 300 s) and a confirmation arriving after that is refused rather than
 run late. Agreeing to a booking is agreeing to the one that was described, not
 to whatever is still pending. This is validator rule V-6 applied to a
 different kind of stale request.
+
+None of the three invocation topics is retained, deliberately. A retained
+invocation would be replayed to a restarting executor, which is how a booking
+someone confirmed yesterday gets made again today.
 
 The declared surface is published retained to `space/assist/catalogue`, so what
 the model is permitted to ask for can be read off the blackboard instead of out
@@ -928,7 +998,7 @@ the write" are different findings and only one of them is the model's fault.
 | `OK` | The provider performed it. |
 | `UNKNOWN_TOOL` | The name is not in the catalogue. |
 | `BAD_ARGUMENTS` | The arguments failed the declaration (FR-73). |
-| `CONFIRMATION_REQUIRED` | A write tool, not yet confirmed (FR-74). |
+| `CONFIRMATION_REQUIRED` | A `commit` tool, not yet confirmed (FR-74). |
 | `EXPIRED` | Confirmed after the window closed. |
 | `UNAVAILABLE` | Declared, but nothing is bound to it. |
 | `FAILED` | The provider was reached and did not complete. |
@@ -975,14 +1045,21 @@ sequenceDiagram
     alt environmental preference
         PC->>GM: preference hint (supervisory input)
         Note over GM: Not a direct command (FR-53)
-    else external service intent
+    else tool intent
         PC->>EX: ToolInvocation on space/assist/proposed (§5.7.6)
-        EX->>UI: CONFIRMATION_REQUIRED
-        UI->>U: explicit confirmation prompt
-        U->>UI: confirm
-        UI->>EX: same invocation on space/assist/confirmed
-        EX->>EX: bound provider performs it (FR-74)
-        Note over EX: Mock or local calendar;<br/>the result names which (FR-55)
+        EX->>EX: arguments checked against the declaration (FR-73)
+        alt read or write
+            EX->>EX: bound provider performs it
+            EX->>PC: ToolResult
+            PC->>U: spoken reply naming what was done
+        else commit
+            EX->>UI: CONFIRMATION_REQUIRED, nothing performed
+            UI->>U: explicit confirmation prompt
+            U->>UI: confirm
+            UI->>EX: same invocation on space/assist/confirmed
+            EX->>EX: bound provider performs it (FR-54, FR-74)
+            Note over EX: Mock endpoint;<br/>the result says so (FR-55)
+        end
     else no actionable intent
         PC->>PC: log and drop
     end
@@ -1187,8 +1264,8 @@ edge-smart-space/
 Written as of v1.1 and revised at v1.5, the following are specified above but
 **not yet implemented**: everything under `src/faults/`, `goal_manager.py`,
 `supervisor_agent.py`, `supervisor_tools.py`, `speaker_profile.py` (FR-52),
-`simulated_actuators.py`, the whole of `src/assistance/`, and the whole of
-`deploy/`. They are listed because they are the design, and named here so the
+`simulated_actuators.py`, the whole of `src/assistance/`, `docs/adr/`, and the
+whole of `deploy/`. They are listed because they are the design, and named here so the
 gap between the document and the tree is explicit rather than discovered.
 
 `src/common/tools.py` exists as of v1.5; the providers it declares a Protocol
@@ -1198,7 +1275,7 @@ the calendar can then be written without renegotiating anything.
 
 **`src/reasoning/` must not import `src/assistance/`.** It is the same rule
 that keeps Layer 2 out of `src/io/`, for the same reason: the moment the
-reasoning layer can reach a provider directly, FR-71's confirmation gate and
+reasoning layer can reach a provider directly, FR-74's confirmation gate and
 FR-73's argument check are optional, and a change of calendar becomes a change
 to the reasoning layer.
 
@@ -1386,6 +1463,8 @@ prompt that generates it forbids claiming anything was changed (FR-45).
 | Air conditioner no response | D5 | `DEGRADED_ACTUATOR`, hold, alert | FR-24, FR-28 |
 | MQTT broker down | Client disconnect callback | Each process holds last state; controller holds last setpoint | FR-11 |
 | LLM server down or slow | Invocation timeout (30 s) | Retain previous goal; regulatory loop unaffected | FR-47 |
+| Calendar or booking provider unreachable | Provider raises | `FAILED` result published and spoken back; nothing retried silently, nothing else affected | FR-75 |
+| Assistance executor down | No result before `result_timeout_s` | Reasoning call answers without the tool; the invocation is on the blackboard and unhonoured rather than lost | FR-75 |
 | Whisper OOM | Exception on load | Speech feature disabled; core control unaffected | NFR-05 |
 | RLS divergence | Sustained rejection rate over a window | `SAFE_HOLD`, coefficients reset to θ₀ | FR-06 |
 | Unclean restart | Boot sequence | Restore persisted θ, P; if stale > 24 h, reset to θ₀ | FR-07, NFR-07 |
@@ -1459,10 +1538,10 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 | 2–3 | RC model + RLS; unit tests; E1 in simulation | Coefficients converge on synthetic data |
 | 3–4 | Regulatory controller, validator, detector bank D1–D3 | E3 partial in simulation |
 | **4** | **Jetson AGX Orin acquisition** | JetPack flashed, `llama.cpp` CUDA build verified |
-| 5–6 | Model server, supervisor agent, tool surface | E6 in simulation |
+| 5–6 | Model server, supervisor agent, supervisor read tools (§5.7.2) | E6 in simulation |
 | 6–7 | ESPHome nodes, real sensors, AC driver | Hardware-in-loop control closes |
 | 7–8 | D4, D5, mode manager, fault injector on hardware | E3 complete |
-| 8–9 | Speech pipeline, single-shot calls, mock endpoint | Demo scenarios rehearsed |
+| 8–9 | Speech pipeline, reasoning calls, assistance executor and providers (§5.7.6), mock endpoint | Demo scenarios rehearsed |
 | 9–10 | E1–E7 execution, baseline comparison | Results collected |
 | 11–12 | Documentation, report, final demonstration | — |
 
@@ -1487,7 +1566,7 @@ Each component runs as a separate `systemd` unit with `Restart=always`. Restart 
 | R-02 | AC control via IR is open-loop with no state feedback | Actuator fault detection confounded with command loss | Prefer an ESPHome path with state readback; if unavailable, document D5 as detecting "no thermal response" rather than "actuator failed" |
 | R-03 | Jetson arrives later than Week 4 | Hardware validation compresses | Everything through Week 4 is simulation-only by design; simulation results stand independently |
 | R-04 | Single-room testbed has uncontrolled disturbances (sun, corridor door) | Residuals inflate, D4 false positives | Characterise disturbance magnitude in Week 6; set CUSUM threshold from measured σ, not assumed |
-| R-05 | 12 weeks is tight for both contributions plus speech | Scope overrun | Speech is explicitly the lowest-priority feature set; FR-50 to FR-55 are cuttable without affecting success criteria 1–5 |
+| R-05 | 12 weeks is tight for both contributions plus speech | Scope overrun | Speech and assistance are explicitly the lowest-priority feature sets; FR-50 to FR-58 and FR-70 to FR-75 are cuttable without affecting success criteria 1–5 |
 | R-06 | Two-person team, no redundancy | Illness or exam load stalls a workstream | Interfaces frozen at Week 2 so both members can work against contracts rather than each other's code |
 
 ---
@@ -1503,8 +1582,8 @@ Each component runs as a separate `systemd` unit with `Restart=always`. Restart 
 | FR-25 to FR-31 | §5.6, §7 | E3, E4, E5 |
 | FR-40 to FR-47 | §5.7 | E6, fault-injection of the LLM process itself |
 | FR-50 to FR-55 | §5.8 | Demonstration |
-| FR-70 to FR-75 | §5.7.6, §6.1, §6.2 | Unit + demonstration |
 | FR-60 to FR-63 | §4.4, §6.1 | Inspection + E7 |
+| FR-70 to FR-75 | §5.7.6, §6.1, §6.2 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 
@@ -1520,6 +1599,7 @@ Each component runs as a separate `systemd` unit with `Restart=always`. Restart 
 | 0002 | Grey-box RC model, not a neural network | Four coefficients with physical meaning are inspectable, converge on hours of data rather than months, and make implausible estimates detectable. A network gives none of that. |
 | 0003 | Binary occupancy from PIR + reed switch | CO2-based inference and IR beam counting were evaluated and rejected: NDIR sensors have minutes-scale response and beam counting fails on simultaneous passage. Binary presence is what the control law actually consumes. |
 | 0004 | One real actuator, rest simulated | Honest scoping. Multi-actuator coordination cannot be validated without multi-actuator hardware, so it is not claimed. |
+| 0005 | Confirmation gated on reversibility, not on state change | The reasoning layer acting on someone's behalf is not by itself grounds for a prompt — setpoints are gated by a validator, not by a person. What cannot be gated any other way is an action a third party holds: a booking, a payment. Prompting for everything else trains the occupant to approve without reading (§5.7.6). |
 
 ### 12.2 Notation
 
@@ -1543,6 +1623,7 @@ Recorded so they are visible as deliberate deferrals rather than omissions:
 - Multi-zone thermal coupling.
 - Predictive control using a forecast of `T_out` (the model supports it; the horizon logic is not in scope).
 - Occupant-specific comfort models beyond the profile-selection hint.
+- A hosted calendar or booking provider. §5.7.6's surface is provider-agnostic and one could be bound to it, but NFR-06 forbids the outbound connection it would need, so none is written and none is claimed.
 - Any formal optimisation formulation over comfort and cost. If one is added later, it requires a written objective function and a named solver before the word "optimal" appears anywhere in the report.
 
 ---

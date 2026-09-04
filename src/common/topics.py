@@ -166,11 +166,12 @@ CONTEXT_PREFERENCE = TopicSpec(
 
 # --- Assistance tools (FR-70 to FR-75) -------------------------------------
 
-#: What something selected. Advisory until confirmed, exactly as a proposed
-#: goal is advisory until validated.
+#: Every tool call the reasoning layer makes, including the ones it is
+#: entitled to run on its own: the executor owns the providers, so nothing
+#: reaches a calendar without crossing the blackboard first.
 ASSIST_PROPOSED = TopicSpec("space/assist/proposed", Qos.AT_LEAST_ONCE, retain=False)
 
-#: The same invocation, republished by whoever obtained the occupant's
+#: A COMMIT invocation, republished by whoever obtained the occupant's
 #: agreement (FR-74). Confirmation is an act by a person, so it is carried by
 #: the topic rather than by a field a publisher could set for itself.
 ASSIST_CONFIRMED = TopicSpec("space/assist/confirmed", Qos.AT_LEAST_ONCE, retain=False)
