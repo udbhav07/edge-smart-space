@@ -28,6 +28,7 @@ from src.common.schemas import (
     ThermalEstimate,
     ValidationVerdict,
 )
+from src.common.tools import ToolInvocation, ToolResult, ToolStatus
 
 # --- Section 6.2 payloads, verbatim ----------------------------------------
 
@@ -98,6 +99,30 @@ PREFERENCE_HINT_PAYLOAD = {
     "spoken_reply": "I have passed that on.",
 }
 
+TOOL_INVOCATION_PAYLOAD = {
+    "ts": 1756032000.0,
+    "invocation_id": "inv_1756032000_0",
+    "tool": "schedule_event",
+    "arguments": {
+        "starts_at": "2026-09-04T15:00:00",
+        "subject": "design review",
+    },
+    "requester": "personal_context",
+    "rationale": "put the design review in my calendar at three",
+    "expires_ts": 1756032300.0,
+}
+
+TOOL_RESULT_PAYLOAD = {
+    "ts": 1756032042.0,
+    "invocation_id": "inv_1756032000_0",
+    "tool": "schedule_event",
+    "status": "OK",
+    "message": "Added design review at 15:00 on 4 September.",
+    "detail": {"event_id": "ev_0007"},
+    "provider": "local_calendar",
+    "simulated": False,
+}
+
 DOCUMENTED_PAYLOADS = [
     (SensorReading, SENSOR_READING_PAYLOAD),
     (ThermalEstimate, THERMAL_ESTIMATE_PAYLOAD),
@@ -106,6 +131,8 @@ DOCUMENTED_PAYLOADS = [
     (Goal, GOAL_PAYLOAD),
     (ValidationVerdict, VALIDATION_VERDICT_PAYLOAD),
     (PreferenceHint, PREFERENCE_HINT_PAYLOAD),
+    (ToolInvocation, TOOL_INVOCATION_PAYLOAD),
+    (ToolResult, TOOL_RESULT_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -123,6 +150,10 @@ DOCUMENTED_TOPICS = frozenset(
         "space/actuator/{actuator_id}/command",
         "space/actuator/{actuator_id}/state",
         "space/context/preference",
+        "space/assist/proposed",
+        "space/assist/confirmed",
+        "space/assist/result",
+        "space/assist/catalogue",
         "space/audit/validation",
         "space/audit/reasoning",
     }
@@ -140,6 +171,14 @@ def _defined_topics() -> frozenset[str]:
         _normalise(value.pattern)
         for value in vars(topics).values()
         if isinstance(value, topics.TopicSpec)
+    )
+
+
+def _retained_in_the_code(pattern: str) -> bool:
+    return any(
+        value.retain
+        for value in vars(topics).values()
+        if isinstance(value, topics.TopicSpec) and _normalise(value.pattern) == pattern
     )
 
 
@@ -183,6 +222,17 @@ class TestSection62Payloads:
         assert hint.subject == "temperature"
         assert hint.spoken_reply
 
+    def test_an_invocation_carries_no_field_asserting_its_own_approval(self):
+        """Section 5.7.6: confirmation is carried by the topic, because a
+        field is something the publisher can set for itself."""
+        assert "confirmed" not in ToolInvocation.model_fields
+
+    def test_the_documented_result_names_the_provider_that_ran_it(self):
+        """FR-55: identifying a mock must not depend on remembering to say so."""
+        result = ToolResult.model_validate(TOOL_RESULT_PAYLOAD)
+        assert result.status is ToolStatus.OK
+        assert result.provider == "local_calendar" and not result.simulated
+
     def test_a_verdict_nests_its_decision_objects(self):
         """The nesting is what lets one verdict schema carry both the setpoint
         rules (V-1, V-2, V-6) and the command rules (V-3, V-4, V-5), which
@@ -200,6 +250,18 @@ class TestSection61Topics:
         """An extra topic is a deviation too: a component publishing where the
         document does not describe is invisible to anyone reading it."""
         assert _defined_topics() - DOCUMENTED_TOPICS == frozenset()
+
+    def test_the_tool_catalogue_is_the_only_retained_assistance_topic(self):
+        """Section 5.7.6: the declared surface must be readable by a late
+        subscriber (FR-60); an invocation must not be, or a restarted executor
+        would replay a booking someone confirmed yesterday."""
+        assert _retained_in_the_code("space/assist/catalogue")
+        for pattern in (
+            "space/assist/proposed",
+            "space/assist/confirmed",
+            "space/assist/result",
+        ):
+            assert not _retained_in_the_code(pattern)
 
     def test_the_real_actuator_topics_resolve_to_the_documented_strings(self):
         assert (

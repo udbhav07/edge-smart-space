@@ -12,7 +12,7 @@ import pytest
 
 from src.common import topics
 from src.common.config import MqttConfig, load_config
-from src.common.mqtt_client import Blackboard, _topic_matches
+from src.common.mqtt_client import Blackboard, topic_matches
 from src.common.schemas import SensorReading, Unit
 from src.common.topics import TopicParameterError
 
@@ -253,7 +253,7 @@ class TestTopicMatching:
         ],
     )
     def test_matching_topics(self, pattern, topic):
-        assert _topic_matches(pattern, topic) is True
+        assert topic_matches(pattern, topic) is True
 
     @pytest.mark.parametrize(
         ("pattern", "topic"),
@@ -266,4 +266,4 @@ class TestTopicMatching:
         ],
     )
     def test_non_matching_topics(self, pattern, topic):
-        assert _topic_matches(pattern, topic) is False
+        assert topic_matches(pattern, topic) is False

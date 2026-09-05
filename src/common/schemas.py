@@ -17,6 +17,11 @@ Design rules applied throughout:
   out-of-box estimate, or FR-06's rejection logging could not describe what it
   rejected.
 
+The assistance tool messages live in ``tools.py`` rather than here, with the
+contract they belong to: a registry that returns a ``ToolResult`` cannot sit in
+one module while the message sits in another that imports it back (section
+5.7.6).
+
 Payload examples: DESIGN.md section 6.2.
 """
 

@@ -1,15 +1,15 @@
-"""Single-shot, schema-constrained LLM calls (DESIGN.md section 5.7.1).
+"""Schema-constrained reasoning calls (DESIGN.md section 5.7.1).
 
-Two of the three reasoning call sites are not agents and are specified as
-what they are: constrained single-shot calls with no tool loop. Personal
-Context is one of them (FR-42). Calling it an agent would be a naming
-convention rather than an architecture.
+Neither call site here is an agent. Fault Diagnosis is single-shot with no
+tools at all; Personal Context may invoke assistance tools, but within a
+bounded number of rounds rather than an open-ended loop (FR-42). Calling
+either an agent would be a naming convention rather than an architecture.
 
-Two properties matter more than the wording:
+Two properties hold whatever tools are attached:
 
-* **No tools.** Nothing here can be invoked to do anything. The call reads a
-  transcript and returns a value. Its output reaches the plant only if the
-  goal path proposes a setpoint from it and the safety validator admits that
+* **No route to the plant.** A tool can put something in a calendar; nothing
+  here can move an actuator. The output reaches the room only if the goal
+  path proposes a setpoint from it and the safety validator admits that
   setpoint (FR-45, FR-53).
 * **Schema-constrained, then checked again.** The decoder is asked for JSON,
   and the result is validated afterwards regardless (FR-44). Constraining
@@ -17,6 +17,12 @@ Two properties matter more than the wording:
   the values are sensible. An output failing the second stage is discarded
   and nothing is published, which is the specified behaviour rather than a
   fallback.
+
+**Not yet wired:** section 5.7.6's tool surface exists in
+``src/common/tools.py``, and this module does not yet call it. The extraction
+below is the v1.4 behaviour -- a transcript in, a PreferenceHint out -- and a
+SERVICE intent is still only reported. Stated here rather than left to be
+discovered, because FR-42 now permits more than this does.
 """
 
 from __future__ import annotations
@@ -87,12 +93,15 @@ class ReasoningUnavailableError(RuntimeError):
 
 
 class PersonalContext:
-    """Extracts a preference from a transcript. Holds no tools, drives nothing.
+    """Extracts a preference from a transcript.
 
     Stateless between calls by design. Personal Context is invoked on a
     transcript (section 5.7.1), and carrying conversation across utterances
-    would make one call's output depend on an earlier one, which is not what
-    a single-shot extraction is.
+    would make one call's output depend on an earlier one, which an
+    extraction is not.
+
+    Holds no tool registry yet; see the module docstring for what that
+    changes when it does.
     """
 
     def __init__(

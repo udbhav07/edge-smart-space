@@ -164,6 +164,25 @@ CONTEXT_PREFERENCE = TopicSpec(
     "space/context/preference", Qos.AT_LEAST_ONCE, retain=False
 )
 
+# --- Assistance tools (FR-70 to FR-75) -------------------------------------
+
+#: Every tool call the reasoning layer makes, including the ones it is
+#: entitled to run on its own: the executor owns the providers, so nothing
+#: reaches a calendar without crossing the blackboard first.
+ASSIST_PROPOSED = TopicSpec("space/assist/proposed", Qos.AT_LEAST_ONCE, retain=False)
+
+#: A COMMIT invocation, republished by whoever obtained the occupant's
+#: agreement (FR-74). Confirmation is an act by a person, so it is carried by
+#: the topic rather than by a field a publisher could set for itself.
+ASSIST_CONFIRMED = TopicSpec("space/assist/confirmed", Qos.AT_LEAST_ONCE, retain=False)
+
+#: Every outcome, refusals included (FR-75).
+ASSIST_RESULT = TopicSpec("space/assist/result", Qos.AT_LEAST_ONCE, retain=False)
+
+#: The declared surface, retained so a late subscriber -- or an examiner --
+#: can read what the reasoning layer is allowed to ask for (FR-60, FR-70).
+ASSIST_CATALOGUE = TopicSpec("space/assist/catalogue", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Audit (FR-46, FR-62) --------------------------------------------------
 
 AUDIT_VALIDATION = TopicSpec("space/audit/validation", Qos.AT_LEAST_ONCE, retain=False)
