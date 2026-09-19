@@ -137,6 +137,8 @@ them all. `python start.py --help` lists what can currently be started.
 
 ```bash
 python -m sim.run_sim --steps 100     # room plant, sensors, actuator
+python -m src.estimation              # online RC identification
+python -m src.faults                  # fault detector bank (D1-D3)
 python -m src.speech                  # wake word, transcription, reasoning
 ```
 
@@ -207,6 +209,8 @@ simulated success predict nothing about real hardware.
 ```
 src/common/      clock, config, schemas, topics, MQTT blackboard, device
 src/control/     safety validator, regulatory controller
+src/estimation/  RC model, RLS, persistence          (python -m src.estimation)
+src/faults/      detector bank, aggregator           (python -m src.faults)
 src/speech/      wake word, capture, ASR, pipeline  (python -m src.speech)
 src/reasoning/   single-shot LLM calls
 src/io/          actuator driver contracts
@@ -226,8 +230,8 @@ evaluation degenerates into the model predicting itself.
 
 Honest about the gaps, so nobody hunts for something that isn't there:
 
-- `src/estimation/` — the RC model and the recursive least squares identifier
-- `src/faults/` — the detector bank, aggregator and mode manager
+- `src/faults/detectors/` — D4 drift and D5 actuator-response are not written
+- `src/faults/mode_manager.py` — degraded modes and control on prediction
 - `deploy/systemd/` — the unit files that supervise this on the Jetson
 - `eval/` — the baseline thermostat and the experiment harness
 

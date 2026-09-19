@@ -99,6 +99,11 @@ SERVICES = (
         description="Online RC identification: coefficients, prediction, residual",
     ),
     Service(
+        name="detectors",
+        module="src.faults",
+        description="Fault detector bank: dropout, stuck-at, out-of-range",
+    ),
+    Service(
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",
