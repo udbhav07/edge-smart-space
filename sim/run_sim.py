@@ -25,12 +25,14 @@ from pathlib import Path
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, load_config
+from src.common.injection import FaultInjection, InjectedFault
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.schemas import (
     AckStatus,
     ActuatorState,
     Command,
     CommandKind,
+    InjectionCommand,
     SensorReading,
     Unit,
 )
@@ -104,15 +106,56 @@ class RoomSimulator:
         self._occupied = value
 
     def subscribe(self) -> None:
-        """Listen for actuator commands, exactly as a real driver would."""
+        """Listen for actuator commands and injections, as an adapter would."""
         self._blackboard.subscribe(
             topics.ACTUATOR_COMMAND, Command, self._on_command
+        )
+        self._blackboard.subscribe(
+            topics.INJECT, InjectionCommand, self._on_injection
         )
 
     def _on_command(self, topic: str, command: Command) -> None:
         LOGGER.debug("command on %s: %s", topic, command.kind.value)
         self._last_kind = command.kind
         self._last_ack = self._actuator.command(command.kind, command.setpoint_c)
+
+    def _on_injection(self, _topic: str, command: InjectionCommand) -> None:
+        """Obey an injection (FR-31).
+
+        Injection is a Layer 1 concern, so it is applied at the sensor and
+        nothing above can tell an injected fault from a suffered one. A
+        request a sensor cannot honour -- drift on a PIR -- is refused and
+        logged rather than ignored: an injection that appears to work and does
+        nothing turns a detection trial into a phantom missed detection.
+        """
+        sensor = self._sensors_by_id().get(command.subject)
+        if sensor is None:
+            LOGGER.warning(
+                "injection for unknown subject %s ignored", command.subject
+            )
+            return
+        if command.kind is InjectedFault.NONE:
+            sensor.clear()
+            LOGGER.info("cleared injection on %s", command.subject)
+            return
+        try:
+            sensor.inject(
+                FaultInjection(kind=command.kind, magnitude=command.magnitude)
+            )
+        except ValueError as exc:
+            LOGGER.warning("injection on %s refused: %s", command.subject, exc)
+            return
+        LOGGER.info(
+            "injecting %s on %s at the sensor",
+            command.kind.value,
+            command.subject,
+        )
+
+    def _sensors_by_id(self) -> dict[str, SimulatedSensor | BinarySensor]:
+        return {
+            sensor.sensor_id: sensor
+            for sensor in (self._indoor, self._outdoor, self._occupancy)
+        }
 
     def outdoor_temperature_c(self) -> float:
         """Ambient, as a daily cycle around the configured mean."""
