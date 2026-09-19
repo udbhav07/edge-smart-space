@@ -165,6 +165,36 @@ A clamped setpoint appearing in `space/audit/validation` is the gate working,
 not a failure. Every verdict carries the proposal, the reason code, and the
 value actually applied.
 
+### Breaking it on purpose
+
+Every fault the detector bank can find is triggerable from a terminal while
+the system runs — no code edit, no restart:
+
+```bash
+python -m tools.inject --list                # what can be injected, and where
+python -m tools.inject temp_01 stuck 27.0    # freeze the indoor sensor
+python -m tools.inject temp_01 dropout       # make it go quiet
+python -m tools.inject temp_01 range 999.0   # report something impossible
+python -m tools.inject temp_01 clear         # stop injecting
+```
+
+Then watch what the detectors make of it:
+
+```bash
+mosquitto_sub -t 'space/fault/#' -v             # faults, with their evidence
+mosquitto_sub -t 'space/sensor/+/health' -v     # what is still trusted
+```
+
+The fault is applied at the sensor, so nothing above Layer 1 can tell an
+injected fault from a real one — which is the only way the detection means
+anything. `space/inject/{subject}` is retained, so it always answers what is
+being injected right now.
+
+Detection is not instant, and the delays are honest ones: a dropout takes
+15 s (three missed samples), an implausible reading 10 s (two samples), and a
+stuck sensor about five minutes, because that is how long the variance window
+is. A shorter window would report a settled room as broken.
+
 ---
 
 ## Tests
