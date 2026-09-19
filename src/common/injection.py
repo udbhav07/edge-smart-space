@@ -52,6 +52,14 @@ class FaultInjection:
     magnitude: float = 0.0
 
 
+#: Faults whose magnitude field carries their whole content. Injecting one of
+#: these without saying how hard is a request nobody can act on, and injecting
+#: a magnitude with any other kind is a value that would be silently ignored --
+#: which looks exactly like a fault that failed to take effect.
+FAULTS_REQUIRING_MAGNITUDE = frozenset(
+    {InjectedFault.STUCK_AT, InjectedFault.OUT_OF_RANGE, InjectedFault.DRIFT}
+)
+
 #: The absence of an injected fault. A sensor in this state still exhibits
 #: whatever nominal imperfection its implementation models.
 NO_FAULT = FaultInjection(kind=InjectedFault.NONE)
