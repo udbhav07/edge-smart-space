@@ -19,11 +19,13 @@ a test pass: change the code, or change the document and then this file.
 import pytest
 
 from src.common import topics
+from src.common.injection import InjectedFault
 from src.common.schemas import (
     Coefficients,
     PreferenceHint,
     FaultEvent,
     Goal,
+    InjectionCommand,
     SensorReading,
     ThermalEstimate,
     ValidationVerdict,
@@ -70,6 +72,14 @@ FAULT_EVENT_PAYLOAD = {
     "detected_ts": 1756032300.0,
     "evidence": {"window_s": 300, "variance": 0.0002},
     "mode_impact": "DEGRADED_SENSOR",
+}
+
+INJECTION_COMMAND_PAYLOAD = {
+    "ts": 1756032000.0,
+    "subject": "temp_01",
+    "kind": "STUCK_AT",
+    "magnitude": 27.0,
+    "requester": "operator",
 }
 
 GOAL_PAYLOAD = {
@@ -128,6 +138,7 @@ DOCUMENTED_PAYLOADS = [
     (ThermalEstimate, THERMAL_ESTIMATE_PAYLOAD),
     (Coefficients, COEFFICIENTS_PAYLOAD),
     (FaultEvent, FAULT_EVENT_PAYLOAD),
+    (InjectionCommand, INJECTION_COMMAND_PAYLOAD),
     (Goal, GOAL_PAYLOAD),
     (ValidationVerdict, VALIDATION_VERDICT_PAYLOAD),
     (PreferenceHint, PREFERENCE_HINT_PAYLOAD),
@@ -145,6 +156,7 @@ DOCUMENTED_TOPICS = frozenset(
         "space/estimate/coefficients",
         "space/fault/{fault_id}",
         "space/system/mode",
+        "space/inject/{subject}",
         "space/goal/proposed",
         "space/goal/active",
         "space/actuator/{actuator_id}/command",
@@ -240,6 +252,26 @@ class TestSection62Payloads:
         verdict = ValidationVerdict.model_validate(VALIDATION_VERDICT_PAYLOAD)
         assert verdict.proposed["setpoint_c"] == 23.0
         assert verdict.applied["setpoint_c"] == 25.5
+
+
+class TestInjectionChannel:
+    """FR-31: the one message that travels down into Layer 1."""
+
+    def test_the_injection_topic_is_retained(self):
+        """It answers what is injected right now, and a restarted adapter
+        resumes the state the operator asked for."""
+        assert _retained_in_the_code("space/inject/{subject}")
+
+    def test_clearing_an_injection_carries_no_magnitude(self):
+        """Otherwise the retained message would still describe the fault it
+        just cleared, and the topic would stop answering its one question."""
+        with pytest.raises(ValueError):
+            InjectionCommand(
+                ts=1756032000.0,
+                subject="temp_01",
+                kind=InjectedFault.NONE,
+                magnitude=27.0,
+            )
 
 
 class TestSection61Topics:

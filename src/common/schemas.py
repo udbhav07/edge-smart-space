@@ -41,6 +41,8 @@ from pydantic import (
     model_validator,
 )
 
+from src.common.injection import InjectedFault
+
 #: Absolute tolerance when checking a field against the inputs it is derived
 #: from. Two orders of magnitude below the resolution of any sensor in the
 #: system, so it catches a genuinely wrong value without rejecting ordinary
@@ -530,3 +532,50 @@ class ActuatorState(TimestampedMessage):
     setpoint_c: float | None = None
     ack: AckStatus
     last_command_ts: float | None = None
+
+
+# --- Fault injection -------------------------------------------------------
+
+
+class InjectionCommand(TimestampedMessage):
+    """An instruction to a Layer 1 adapter to misbehave (FR-31).
+
+    This is the only message that travels *down* into Layer 1. It exists
+    because FR-31 requires every fault class to be triggerable without
+    editing code or restarting anything: an examiner asks for a stuck sensor
+    mid-demonstration and it happens.
+
+    The fault is injected at the adapter, not simulated further up, so no
+    consumer can tell an injected fault from a suffered one -- which is the
+    only way a detection trial means anything (section 5.9.2).
+
+    ``kind`` of NONE is how a fault is cleared. There is deliberately no
+    second mechanism: one message type states what Layer 1 should be doing,
+    and the retained topic always answers "what is injected right now".
+    """
+
+    subject: str = Field(min_length=1, description="Sensor or actuator id")
+    kind: InjectedFault
+    magnitude: float = Field(
+        default=0.0,
+        description="Per kind: frozen value for STUCK_AT, reported value for "
+        "OUT_OF_RANGE, degrees per second for DRIFT; ignored otherwise",
+    )
+    requester: str = Field(
+        default="", description="Who asked, for the audit trail (FR-46)"
+    )
+
+    @model_validator(mode="after")
+    def _nothing_injected_carries_no_magnitude(self) -> InjectionCommand:
+        """A cleared injection must not also describe one.
+
+        Without this, clearing a stuck sensor could leave the frozen value in
+        the retained message, and the topic would no longer answer what is
+        being injected -- which is the one question it exists to answer.
+        """
+        if self.kind is InjectedFault.NONE and self.magnitude != 0.0:
+            raise ValueError(
+                f"an injection of {InjectedFault.NONE.value} must carry no "
+                f"magnitude, got {self.magnitude!r}"
+            )
+        return self

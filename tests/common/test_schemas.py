@@ -7,6 +7,7 @@ Week 2 (R-06). A failure is an interface change, not a test to edit.
 import pytest
 from pydantic import ValidationError
 
+from src.common.injection import InjectedFault
 from src.common.schemas import (
     SETPOINT_KEY,
     AckStatus,
@@ -21,6 +22,7 @@ from src.common.schemas import (
     FaultEvent,
     Goal,
     GoalSource,
+    InjectionCommand,
     Mode,
     ModeState,
     Quality,
@@ -448,3 +450,54 @@ class TestGoal:
             expires_ts=TS + 600.0,
         )
         assert goal.setpoint_c == 5.0
+
+
+class TestInjectionCommand:
+    """The one message travelling down into Layer 1 (FR-31)."""
+
+    def test_an_injection_names_its_subject_and_kind(self):
+        command = InjectionCommand(
+            ts=TS, subject=SENSOR_ID, kind=InjectedFault.STUCK_AT, magnitude=27.0
+        )
+        assert (command.subject, command.kind) == (SENSOR_ID, InjectedFault.STUCK_AT)
+
+    def test_clearing_is_an_injection_of_none(self):
+        """There is no second mechanism: the retained topic always states
+        what Layer 1 should be doing."""
+        command = InjectionCommand(ts=TS, subject=SENSOR_ID, kind=InjectedFault.NONE)
+        assert command.kind is InjectedFault.NONE
+
+    def test_clearing_must_not_also_describe_a_fault(self):
+        with pytest.raises(ValidationError):
+            InjectionCommand(
+                ts=TS, subject=SENSOR_ID, kind=InjectedFault.NONE, magnitude=27.0
+            )
+
+    def test_a_subject_is_required(self):
+        with pytest.raises(ValidationError):
+            InjectionCommand(ts=TS, subject="", kind=InjectedFault.DROPOUT)
+
+    def test_a_dropout_needs_no_magnitude(self):
+        command = InjectionCommand(ts=TS, subject=SENSOR_ID, kind=InjectedFault.DROPOUT)
+        assert command.magnitude == 0.0
+
+    def test_a_negative_drift_rate_is_representable(self):
+        """A sensor can drift downwards; the schema constrains physics, not
+        plausibility."""
+        command = InjectionCommand(
+            ts=TS, subject=SENSOR_ID, kind=InjectedFault.DRIFT, magnitude=-0.01
+        )
+        assert command.magnitude == -0.01
+
+    def test_an_unknown_kind_is_refused(self):
+        with pytest.raises(ValidationError):
+            InjectionCommand(ts=TS, subject=SENSOR_ID, kind="MELTED")
+
+    def test_the_requester_is_recorded_for_the_audit_trail(self):
+        command = InjectionCommand(
+            ts=TS,
+            subject=SENSOR_ID,
+            kind=InjectedFault.DROPOUT,
+            requester="operator",
+        )
+        assert command.requester == "operator"

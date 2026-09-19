@@ -750,6 +750,20 @@ flowchart LR
 | D4 | Two-sided CUSUM on `e[k]/σ̂` | drift k = 0.5σ, threshold h = 5σ | < 300 s |
 | D5 | `\|ΔT\|` below threshold over evaluation window after sustained COOL | window = 600 s, threshold = 0.3 °C | < 600 s |
 
+**How a fault is triggered (FR-31).** The injector publishes an
+`InjectionCommand` on `space/inject/{subject}` and the Layer 1 adapter for that
+subject obeys it. That is the only message in the system travelling *down* into
+Layer 1, and the direction is deliberate: the fault is produced at the adapter,
+so what reaches the detector bank is an absent, frozen or implausible reading
+and nothing above Layer 1 can distinguish an injected fault from a suffered
+one. A detection trial against a fault the detectors could recognise as
+synthetic would measure nothing.
+
+The topic is retained, so it answers "what is being injected right now" for
+anyone reading the tree, and a restarted adapter resumes the state the operator
+last asked for instead of quietly healing a fault nobody cleared. Clearing is
+an `InjectionCommand` of kind `NONE` rather than a second mechanism.
+
 **On D4 and D5:** these are the two detectors that only exist because the model exists. A threshold thermostat can implement D1–D3 trivially. It cannot implement D4 or D5 at all, because it has no expectation to compare against. That asymmetry is the fault-tolerance argument in one sentence, and it belongs in the evaluation chapter.
 
 **On D5's parameters:** the 600 s window is long because a room's thermal time constant is long. This is an honest limit — actuator faults are detected on the order of ten minutes, not seconds, and NFR-02 deliberately does not promise otherwise.
@@ -1306,6 +1320,8 @@ startup, which NFR-06 forbids.
 | `space/actuator/ac/command` | pub | no | 1 | `Command` |
 | `space/actuator/ac/state` | pub | yes | 1 | `ActuatorState` |
 | `space/actuator/{sim_id}/state` | pub | yes | 1 | `ActuatorState` with `simulated: true` |
+| `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
+
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
@@ -1356,6 +1372,15 @@ startup, which NFR-06 forbids.
   "detected_ts": 1756032300.0,
   "evidence": { "window_s": 300, "variance": 0.0002 },
   "mode_impact": "DEGRADED_SENSOR"
+}
+
+// InjectionCommand  -- the one message that travels down into Layer 1 (FR-31)
+{
+  "ts": 1756032000.0,
+  "subject": "temp_01",
+  "kind": "STUCK_AT",            // NONE | STUCK_AT | DROPOUT | OUT_OF_RANGE | DRIFT
+  "magnitude": 27.0,             // frozen value, reported value, or degrees/second
+  "requester": "operator"
 }
 
 // Goal
