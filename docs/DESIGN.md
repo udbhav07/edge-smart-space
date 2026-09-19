@@ -799,6 +799,20 @@ stateDiagram-v2
 | `DEGRADED_ACTUATOR` | frozen | blocked, hold state | alert + reason |
 | `SAFE_HOLD` | frozen | blocked | alert, manual reset required |
 
+**Where the confirmation period lives.** A fault stays active until its
+detector has judged it clear continuously for `fault_clear_confirm_s` (FR-30),
+and that countdown is held by the aggregator rather than by the mode manager.
+One owner, for two reasons. A detector that flaps -- D3 watching a value
+oscillate across a bound, which is a real failure signature -- would otherwise
+raise and retire repeatedly, minting a new fault id and writing another
+retained topic each time. And the same period in two components is the same
+number in two places, which is how they drift apart. The mode manager therefore
+holds no timer of its own: mode follows the active fault set.
+
+An UNKNOWN judgment does not start the countdown. A stuck sensor that then goes
+silent leaves D2 with an empty window and nothing to say, and that sensor is
+more broken, not less.
+
 Mode transition is driven by the detector bank and completes within 2 s (FR-26). The Fault Diagnosis LLM call runs *in parallel* and enriches the notification — it never sits on the critical path. If the model is unloaded, slow, or produces an invalid output, the transition has already happened.
 
 ### 5.7 Reasoning Layer
@@ -1188,7 +1202,7 @@ sequenceDiagram
     FI->>SA: clear fault
     SA->>FD: variance restored
     FD->>MM: FaultCleared
-    MM->>MM: wait 120 s confirmation
+    FD->>FD: hold clear 120 s (aggregator)
     MM->>EST: unfreeze
     MM->>C: mode = NORMAL
 ```
