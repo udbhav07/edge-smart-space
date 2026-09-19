@@ -17,6 +17,7 @@ from src.common.schemas import SensorReading, Unit
 from src.common.topics import TopicParameterError
 
 SENSOR_ID = "temp_01"
+FAULT_ID = "f_temp01_stuck_1756032"
 TS = 1756032000.123
 
 
@@ -96,6 +97,50 @@ class TestPublishing:
     def test_the_concrete_topic_is_returned(self, config):
         board, _ = _blackboard(config)
         assert board.publish(topics.SYSTEM_MODE, _reading()) == "space/system/mode"
+
+
+class TestClearingRetained:
+    """Withdrawal is how a resolved fault stops being current state (FR-30)."""
+
+    def test_clearing_publishes_an_empty_payload(self, config):
+        board, transport = _blackboard(config)
+        board.clear_retained(topics.FAULT, fault_id=FAULT_ID)
+        assert transport.published[0][1] == b""
+
+    def test_clearing_is_itself_retained(self, config):
+        """A transient empty publish would leave the old message in place."""
+        board, transport = _blackboard(config)
+        board.clear_retained(topics.FAULT, fault_id=FAULT_ID)
+        assert transport.published[0][3] is True
+
+    def test_clearing_targets_the_formatted_topic(self, config):
+        board, transport = _blackboard(config)
+        board.clear_retained(topics.FAULT, fault_id=FAULT_ID)
+        assert transport.published[0][0] == f"space/fault/{FAULT_ID}"
+
+    def test_clearing_keeps_the_topic_quality_of_service(self, config):
+        board, transport = _blackboard(config)
+        board.clear_retained(topics.FAULT, fault_id=FAULT_ID)
+        assert transport.published[0][2] == topics.FAULT.qos.value
+
+    def test_the_cleared_topic_is_returned(self, config):
+        board, _ = _blackboard(config)
+        cleared = board.clear_retained(topics.FAULT, fault_id=FAULT_ID)
+        assert cleared == f"space/fault/{FAULT_ID}"
+
+    def test_a_transient_topic_cannot_be_cleared(self, config):
+        """There is nothing retained to withdraw, and subscribers would see
+        an empty message instead."""
+        board, transport = _blackboard(config)
+        with pytest.raises(ValueError):
+            board.clear_retained(topics.SENSOR_STATE, sensor_id=SENSOR_ID)
+        assert transport.published == []
+
+    def test_a_bad_topic_parameter_is_refused_before_publishing(self, config):
+        board, transport = _blackboard(config)
+        with pytest.raises(TopicParameterError):
+            board.clear_retained(topics.FAULT, fault_id="a/b")
+        assert transport.published == []
 
 
 class TestSubscribing:
@@ -203,6 +248,12 @@ class TestDispatch:
     def test_undecodable_bytes_are_dropped(self, config):
         board, seen = self._received(config)
         board.dispatch(f"space/sensor/{SENSOR_ID}/state", b"\xff\xfe")
+        assert seen == []
+
+    def test_a_withdrawn_retained_message_never_reaches_the_handler(self, config):
+        """An empty payload is the absence of state, not a message about it."""
+        board, seen = self._received(config)
+        board.dispatch(f"space/sensor/{SENSOR_ID}/state", b"")
         assert seen == []
 
     def test_a_message_on_an_unsubscribed_topic_is_ignored(self, config):
