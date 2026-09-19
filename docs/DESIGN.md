@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.6 | Reconciled with the detector bank as built (Week 3). D2's latency target was unreachable by construction and is corrected from 60 s to 310 s, with the reason recorded in §5.5. D2 and D3 no longer apply to the PIR: an unoccupied room reports a constant legitimately, so variance says nothing about a stuck binary sensor, and §7.1's "D1/D2" becomes D1 only. The fault-clear confirmation period is stated as belonging to the aggregator rather than the mode manager, so one number has one owner. Fault injection gains a channel: `space/inject/{subject}` and `InjectionCommand` in §6.1 and §6.2, applied at the Layer 1 adapter so nothing above can tell an injected fault from a suffered one (FR-31). |
 | 1.5 | Adds an assistance tool surface (§5.7.6, FR-70 to FR-75). The reasoning layer could propose a setpoint and nothing else, so "put that in my calendar" had no representation at all. A tool is now a declaration — name, purpose, typed parameters, and how far its consequences reach — and the model is shown that and nothing more, so which service fulfils it is a wiring choice rather than a prompt change. The reasoning layer *runs* its own tools; the confirmation gate narrows to actions that commit the occupant to an outside party, which is what FR-54 was always about. FR-42 and FR-58 are amended accordingly. |
 | 1.4 | Adds the local console (FR-56 to FR-58): comfort band, standing prompts, confirmations, and a first-party calendar. Scheduling writes to that calendar rather than to a hosted one, which keeps NFR-06 intact and credentials off the node; flights and hotels remain mocks. §5.8's unnamed "Confirmation UI" is now this console. Priority S throughout: R-05 already names assistance as the cuttable feature set. |
 | 1.3 | §5.2.3 separates rejection from divergence. `MODEL_DIVERGENCE` was raised after three consecutive rejections and fired 252 times an hour against a healthy plant, because `a2` and `a4` both have true values on a box edge and noise crosses it constantly. It is now a sustained rate over a window, with `a4`-only rejections excluded; a healthy plant produces none, and a genuinely wrong model still diverges. |
@@ -745,7 +746,7 @@ flowchart LR
 | ID | Method | Parameters | Latency target |
 |---|---|---|---|
 | D1 | No message on topic within timeout | 3 × sample interval = 15 s | < 20 s |
-| D2 | `var(window) < ε` for N consecutive windows | window = 60 samples, ε = 0.001 °C² | < 60 s |
+| D2 | `var(window) < ε` for N consecutive windows | window = 60 samples, ε = 0.001 °C² | < 310 s |
 | D3 | Reading outside `[−10, 60] °C` or `[0, 100] %RH` | immediate, 2-sample debounce | < 10 s |
 | D4 | Two-sided CUSUM on `e[k]/σ̂` | drift k = 0.5σ, threshold h = 5σ | < 300 s |
 | D5 | `\|ΔT\|` below threshold over evaluation window after sustained COOL | window = 600 s, threshold = 0.3 °C | < 600 s |
@@ -765,6 +766,17 @@ last asked for instead of quietly healing a fault nobody cleared. Clearing is
 an `InjectionCommand` of kind `NONE` rather than a second mechanism.
 
 **On D4 and D5:** these are the two detectors that only exist because the model exists. A threshold thermostat can implement D1–D3 trivially. It cannot implement D4 or D5 at all, because it has no expectation to compare against. That asymmetry is the fault-tolerance argument in one sentence, and it belongs in the evaluation chapter.
+
+**On D2's latency, corrected at v1.6.** This row read "< 60 s" until the
+detector was built, and that target is unreachable by construction: sixty
+samples at a 5 s interval span 300 s, so the window cannot even be filled
+inside a minute. The window slides and is evaluated on every sample once full,
+which puts real detection at one sample past the first full window -- about
+305 s -- and the target is now stated as 310 s. Shortening the window would
+detect faster at the cost of reporting a settled room as stuck, which is
+exactly the trade R-04 defers until sigma is measured on hardware rather than
+assumed. The number was wrong, not the design; recording it as wrong is worth
+more than a detector quietly missing a target nobody re-derived.
 
 **On D5's parameters:** the 600 s window is long because a room's thermal time constant is long. This is an honest limit — actuator faults are detected on the order of ten minutes, not seconds, and NFR-02 deliberately does not promise otherwise.
 
@@ -1249,10 +1261,11 @@ edge-smart-space/
 │   │   ├── goal_manager.py
 │   │   └── validator.py
 │   ├── faults/
-│   │   ├── detectors/
-│   │   ├── aggregator.py
+│   │   ├── detectors/              # D1-D3 built; D4 and D5 are Week 4
+│   │   ├── aggregator.py           # active fault set, clear confirmation
+│   │   ├── service.py              # the bank as a process (`python -m src.faults`)
 │   │   ├── mode_manager.py
-│   │   └── injector.py
+│   │   └── injector.py             # publishes InjectionCommand (FR-31)
 │   ├── assistance/                # the only place a provider may live
 │   │   ├── executor.py            # gates and runs invocations (§5.7.6)
 │   │   └── providers/
@@ -1277,6 +1290,9 @@ edge-smart-space/
 │   ├── actuator.py                # dead time, command loss, no acknowledgement
 │   ├── scenarios/
 │   └── run_sim.py
+├── tools/
+│   ├── blackboard_view.py         # live terminal view of every topic (FR-60)
+│   └── inject.py                  # triggers any sensor fault (FR-31)
 ├── eval/
 │   ├── baseline_thermostat.py
 │   ├── metrics.py
@@ -1289,8 +1305,9 @@ edge-smart-space/
 └── tests/
 ```
 
-Written as of v1.1 and revised at v1.5, the following are specified above but
-**not yet implemented**: everything under `src/faults/`, `goal_manager.py`,
+Written as of v1.1 and revised at v1.6, the following are specified above but
+**not yet implemented**: `src/faults/detectors/` has D1 to D3 but not D4 or D5,
+and `mode_manager.py` is not written; `goal_manager.py`,
 `supervisor_agent.py`, `supervisor_tools.py`, `speaker_profile.py` (FR-52),
 `simulated_actuators.py`, the whole of `src/assistance/`, `docs/adr/`, and the
 whole of `deploy/`. They are listed because they are the design, and named here so the
@@ -1498,7 +1515,7 @@ prompt that generates it forbids claiming anything was changed (FR-45).
 | Temperature sensor stuck | D2 | `DEGRADED_SENSOR`, freeze RLS | FR-21, FR-29 |
 | Temperature sensor out of range | D3 | `DEGRADED_SENSOR` | FR-22 |
 | Temperature sensor drift | D4 | `DEGRADED_SENSOR`, flag for recalibration | FR-23 |
-| PIR failure | D1/D2 | Occupancy assumed `true` (conservative for comfort) | FR-02 |
+| PIR failure | D1 only | Occupancy assumed `true` (conservative for comfort) | FR-02 |
 | Air conditioner no response | D5 | `DEGRADED_ACTUATOR`, hold, alert | FR-24, FR-28 |
 | MQTT broker down | Client disconnect callback | Each process holds last state; controller holds last setpoint | FR-11 |
 | LLM server down or slow | Invocation timeout (30 s) | Retain previous goal; regulatory loop unaffected | FR-47 |
