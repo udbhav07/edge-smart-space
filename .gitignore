@@ -47,3 +47,7 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Exported documents. The Markdown in docs/ is the source; a PDF of it is a
+# build artefact that goes stale silently and diffs as noise.
+docs/*.pdf
