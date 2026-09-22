@@ -92,6 +92,18 @@ class RoomSimulator:
         self._last_kind = CommandKind.OFF
 
     @property
+    def room_temperature_c(self) -> float:
+        """The plant's true temperature.
+
+        Ground truth, for evaluation only. No component above Layer 1 may read
+        this: the whole point of the sensors is that the rest of the system
+        sees the room through their noise, quantisation and faults, and an
+        experiment that peeked at the truth would measure nothing (section
+        5.10).
+        """
+        return self._room.temperature_c
+
+    @property
     def occupied(self) -> bool:
         """Whether someone is in the room.
 
