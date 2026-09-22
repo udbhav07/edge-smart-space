@@ -482,13 +482,15 @@ class TestActuatorWiring:
     def test_sustained_cooling_with_no_response_raises_a_fault(
         self, wired, clock, config
     ):
+        """The room wobbles but does not fall. It has to wobble: a perfectly
+        constant reading is a stuck sensor, and D2 would rightly say so."""
         service, transport, blackboard = wired
         _deliver(blackboard, _reading(clock, value=29.0))
         _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
 
         window_s = config.detectors.actuator.evaluation_window_s
-        for _ in range(int(window_s / 5.0) + 2):
-            _deliver(blackboard, _reading(clock, value=29.0))
+        for index in range(int(window_s / 5.0) + 2):
+            _deliver(blackboard, _reading(clock, value=29.0 + (index % 2) * 0.2))
             service.tick()
             clock.advance(5.0)
         detectors = {event.detector for event in transport.faults()}
@@ -639,3 +641,96 @@ class TestOperatorReset:
         clock.advance(60.0)
         service.tick()
         assert service.mode is Mode.DEGRADED_SENSOR
+
+
+class TestDerivedDetectorsSuspendOnAnUntrustedSensor:
+    """Regression: a broken sensor must not manufacture a second fault.
+
+    Both of these were found by running the system, not by a unit test. D4 and
+    D5 are derived tests -- one compares the reading with the model's
+    expectation of it, the other asks whether the room responded -- so both
+    read the indoor temperature, and neither has anything worth judging once
+    that sensor is known to be wrong.
+    """
+
+    def _break_the_sensor(self, service, transport, blackboard, clock, config):
+        """Freeze the indoor sensor at a plausible value until D2 raises."""
+        window = config.detectors.stuck_at.window_samples
+        for _ in range(window + config.detectors.stuck_at.consecutive_windows + 2):
+            _deliver(blackboard, _reading(clock, value=STUCK_VALUE))
+            _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert DetectorId.D2_STUCK_AT in {
+            event.detector for event in transport.faults()
+        }
+
+    def test_a_frozen_sensor_does_not_raise_an_actuator_fault(
+        self, wired, clock, config
+    ):
+        """The room looks as though it stopped responding because the number
+        stopped moving. Without the suspension this escalates to SAFE_HOLD and
+        switches off the control-on-prediction the model exists for."""
+        service, transport, blackboard = wired
+        self._break_the_sensor(service, transport, blackboard, clock, config)
+
+        window_s = config.detectors.actuator.evaluation_window_s
+        for _ in range(int(window_s / config.loop.sensor_period_s) + 4):
+            _deliver(blackboard, _reading(clock, value=STUCK_VALUE))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+
+        assert DetectorId.D5_ACTUATOR_NO_RESPONSE not in {
+            event.detector for event in transport.faults()
+        }
+
+    def test_only_the_broken_sensor_is_faulted(self, wired, clock, config):
+        """One broken thing, so the mode may degrade but must not hold."""
+        service, transport, blackboard = wired
+        self._break_the_sensor(service, transport, blackboard, clock, config)
+
+        window_s = config.detectors.actuator.evaluation_window_s
+        for _ in range(int(window_s / config.loop.sensor_period_s) + 4):
+            _deliver(blackboard, _reading(clock, value=STUCK_VALUE))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+
+        assert {event.subject for event in service.active_faults} == {INDOOR}
+
+    def test_drift_does_not_accumulate_on_a_sensor_already_known_broken(
+        self, wired, clock, config
+    ):
+        service, transport, blackboard = wired
+        self._break_the_sensor(service, transport, blackboard, clock, config)
+
+        for _ in range(60):
+            _deliver(blackboard, _reading(clock, value=STUCK_VALUE))
+            _deliver_estimate(blackboard, clock, residual_c=0.5)
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+
+        assert DetectorId.D4_DRIFT not in {
+            event.detector for event in transport.faults()
+        }
+
+    def test_a_repaired_sensor_is_not_immediately_called_drifting(
+        self, wired, clock, config
+    ):
+        """A repaired sensor jumps back to the truth, and that step is one
+        large residual with nothing to do with drift."""
+        service, transport, blackboard = wired
+        self._break_the_sensor(service, transport, blackboard, clock, config)
+
+        # The sensor recovers and reports honestly again.
+        for index in range(int(config.mode.fault_clear_confirm_s / 5.0) + 80):
+            value = 27.4 + (0.2 if index % 2 else -0.2)
+            _deliver(blackboard, _reading(clock, value=value))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+
+        # One large residual arrives as the model catches up with the jump.
+        _deliver_estimate(blackboard, clock, residual_c=-1.2)
+        service.tick()
+        assert DetectorId.D4_DRIFT not in {
+            event.detector for event in transport.faults()
+        }

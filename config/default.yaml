@@ -86,6 +86,10 @@ detectors:
     slack_sigma: 0.5              # k: drift smaller than this is absorbed, not accumulated
     threshold_sigma: 5.0          # h: cumulative sum at which drift is called
     min_residual_sigma_c: 0.02    # Below this the noise floor is not characterised yet
+    # No single sample may carry the test on its own. A cumulative test is
+    # meant to be driven by persistence, not by magnitude; without a cap one
+    # outlier clears h and D4 becomes the threshold alarm it exists to replace.
+    max_sample_sigma: 4.0
   # D5, section 5.5. The room's thermal time constant is long, so an actuator
   # fault is found in about ten minutes rather than seconds. NFR-02 does not
   # promise otherwise.

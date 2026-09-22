@@ -18,6 +18,7 @@ SUBJECT = "temp_01"
 SIGMA_C = 0.15
 SLACK = 0.5
 THRESHOLD = 5.0
+MAX_SAMPLE = 4.0
 TS = 1756032000.0
 
 
@@ -27,6 +28,7 @@ def _config(**overrides) -> DriftDetectorConfig:
             "slack_sigma": SLACK,
             "threshold_sigma": THRESHOLD,
             "min_residual_sigma_c": 0.02,
+            "max_sample_sigma": MAX_SAMPLE,
             **overrides,
         }
     )
@@ -125,16 +127,52 @@ class TestDriftAccumulates:
         fast = DriftDetector(subject=SUBJECT, config=_config())
         _feed(fast, residual_c=SIGMA_C * 3.0, samples=2)
         assert fast.evaluate().judgment is Judgment.FAULTED
+        slow = DriftDetector(subject=SUBJECT, config=_config())
+        _feed(slow, residual_c=SIGMA_C * 0.6, samples=2)
+        assert slow.evaluate().judgment is Judgment.CLEAR
 
     def test_exactly_at_the_threshold_counts_as_drift(self, detector):
-        """One sample of z = 5.5 with slack 0.5 lands the sum on 5.0."""
-        _feed(detector, residual_c=SIGMA_C * 5.5, samples=1)
+        """Two samples of z = 3.0, each contributing 2.5 after slack."""
+        _feed(detector, residual_c=SIGMA_C * 3.0, samples=2)
         assert detector.cusum_high == pytest.approx(THRESHOLD)
         assert detector.evaluate().judgment is Judgment.FAULTED
 
     def test_just_under_the_threshold_does_not(self, detector):
-        _feed(detector, residual_c=SIGMA_C * 5.4, samples=1)
+        _feed(detector, residual_c=SIGMA_C * 2.9, samples=2)
         assert detector.evaluate().judgment is Judgment.CLEAR
+
+
+class TestNoSingleSampleCarriesTheTest:
+    """A cumulative test is tripped by persistence, not by magnitude."""
+
+    def test_one_enormous_residual_is_not_enough(self, detector):
+        """A repaired sensor produces exactly this: the reading steps back to
+        the truth while the frozen model is still predicting from where it
+        was. Uncapped, fixing a sensor would immediately declare it broken."""
+        _feed(detector, residual_c=SIGMA_C * 50.0, samples=1)
+        assert detector.evaluate().judgment is Judgment.CLEAR
+
+    def test_the_contribution_is_capped_not_discarded(self, detector):
+        """A genuinely large error is still evidence, just not the whole
+        case."""
+        _feed(detector, residual_c=SIGMA_C * 50.0, samples=1)
+        assert detector.cusum_high == pytest.approx(MAX_SAMPLE - SLACK)
+
+    def test_a_sustained_large_error_still_accumulates(self, detector):
+        _feed(detector, residual_c=SIGMA_C * 50.0, samples=2)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_the_cap_applies_downwards_too(self, detector):
+        _feed(detector, residual_c=-SIGMA_C * 50.0, samples=1)
+        assert detector.cusum_low == pytest.approx(MAX_SAMPLE - SLACK)
+
+    def test_the_evidence_reports_the_cap_in_force(self, detector):
+        _feed(detector, residual_c=SIGMA_C, samples=1)
+        assert detector.evaluate().evidence["max_sample_sigma"] == MAX_SAMPLE
+
+    def test_a_cap_that_could_carry_the_test_alone_is_refused(self):
+        with pytest.raises(ValueError):
+            _config(max_sample_sigma=6.0)
 
 
 class TestResetting:

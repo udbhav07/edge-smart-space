@@ -18,6 +18,11 @@ integrates the small consistent part and cancels the large random part, which
 is exactly the shape of this fault. The slack term ``k`` is what stops noise
 from accumulating: only the part of each sample beyond k adds to the sum.
 
+**No single sample may carry the test.** Each contribution is capped, because
+a cumulative test is meant to be tripped by persistence rather than by
+magnitude; an uncapped sum lets one outlier clear the threshold and turns D4
+back into the threshold alarm it exists to replace.
+
 **The test runs on the residual divided by its own standard deviation**, so
 both thresholds are in sigma. A sensor with different noise needs no new
 numbers, which is what makes R-04's re-derivation on hardware a config edit.
@@ -92,9 +97,28 @@ class DriftDetector:
 
         self._samples += 1
         self._normalised = estimate.residual / estimate.residual_sigma
+        bounded = self._bounded(self._normalised)
         slack = self._config.slack_sigma
-        self._high = max(_SUM_FLOOR, self._high + self._normalised - slack)
-        self._low = max(_SUM_FLOOR, self._low - self._normalised - slack)
+        self._high = max(_SUM_FLOOR, self._high + bounded - slack)
+        self._low = max(_SUM_FLOOR, self._low - bounded - slack)
+
+    def _bounded(self, normalised: float) -> float:
+        """Limit what one sample may contribute.
+
+        The whole argument for a cumulative test is that it is driven by
+        persistence rather than by magnitude, and an unbounded sum abandons
+        that at the first outlier: a single large residual clears the
+        threshold on its own and D4 becomes the threshold alarm it exists to
+        replace. A repaired sensor produces exactly such a residual -- the
+        reading steps back to the truth while the frozen model is still
+        predicting from where it was -- so without this, fixing a sensor
+        immediately declares it broken.
+
+        Capping rather than discarding: a genuinely large error is still
+        evidence of drift, it simply must not be the whole case.
+        """
+        cap = self._config.max_sample_sigma
+        return max(-cap, min(cap, normalised))
 
     def reset(self) -> None:
         """Forget the accumulated evidence.
@@ -138,6 +162,7 @@ class DriftDetector:
             confidence=self._confidence() if judgment is Judgment.FAULTED else 0.0,
             evidence={
                 "cusum_high": self._high,
+                "max_sample_sigma": self._config.max_sample_sigma,
                 "cusum_low": self._low,
                 "threshold_sigma": self._config.threshold_sigma,
                 "slack_sigma": self._config.slack_sigma,

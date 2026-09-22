@@ -251,6 +251,29 @@ class DriftDetectorConfig(_Section):
         gt=0.0,
         description="Noise floor below which the residual is not normalisable yet",
     )
+    max_sample_sigma: float = Field(
+        gt=0.0,
+        description="Largest contribution one sample may make, in sigma",
+    )
+
+    @model_validator(mode="after")
+    def _one_sample_cannot_carry_the_test(self) -> DriftDetectorConfig:
+        """A cap at or above the threshold is no cap at all.
+
+        The point of a cumulative test is that persistence trips it, not
+        magnitude. If a single sample can contribute the whole threshold, D4
+        degenerates into the noisy threshold alarm it exists to replace --
+        and a sensor being repaired produces exactly such a sample, because
+        the reading steps back to the truth while the frozen model is still
+        predicting from where it was.
+        """
+        if self.max_sample_sigma - self.slack_sigma >= self.threshold_sigma:
+            raise ValueError(
+                f"max_sample_sigma {self.max_sample_sigma!r} less slack "
+                f"{self.slack_sigma!r} must stay below threshold_sigma "
+                f"{self.threshold_sigma!r}, or one sample decides the test"
+            )
+        return self
 
     @model_validator(mode="after")
     def _slack_is_below_the_threshold(self) -> DriftDetectorConfig:

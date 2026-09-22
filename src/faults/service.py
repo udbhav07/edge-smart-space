@@ -36,7 +36,6 @@ from src.common.config import Bounds, Config, SensorConfig
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     Command,
-    DetectorId,
     FaultEvent,
     ModeReset,
     ModeState,
@@ -103,15 +102,15 @@ class SubjectDetectors:
             findings.append(self._drift.evaluate())
         return tuple(findings)
 
-    def reset(self, detector: DetectorId) -> None:
-        """Clear one detector's accumulated evidence after its fault retires.
+    def reset_accumulated(self) -> None:
+        """Clear the evidence that survives across a fault.
 
-        Only D4 accumulates anything across a fault: D1 to D3 recompute from
-        their own inputs every tick, so there is nothing in them to stale.
-        Without this the CUSUM stays above its threshold and re-raises on the
-        next sample, and a recalibrated sensor would be faulted forever.
+        Only D4 accumulates anything: D1 to D3 recompute from their own inputs
+        every tick, so there is nothing in them to go stale. Without this the
+        CUSUM stays above its threshold and re-raises on the next sample, and a
+        recalibrated sensor would be faulted forever.
         """
-        if detector is DetectorId.D4_DRIFT and self._drift is not None:
+        if self._drift is not None:
             self._drift.reset()
 
 
@@ -195,10 +194,16 @@ class DetectorBankService:
             return
         subject.observe(reading)
         self._last_reading_ts[reading.sensor_id] = reading.ts
-        if reading.sensor_id == self._config.estimator.indoor_sensor_id:
-            # D5 judges the actuator by what the room did, so it needs the
-            # room's temperature and no other sensor's.
+
+        if reading.sensor_id != self._config.estimator.indoor_sensor_id:
+            return
+        # D5 judges the actuator by what the room did, so it needs the room's
+        # temperature and no other sensor's -- and only while that temperature
+        # means anything.
+        if self._indoor_is_trusted():
             self._actuator.observe_reading(reading)
+        else:
+            self._actuator.reset()
 
     def _on_estimate(self, _topic: str, estimate: ThermalEstimate) -> None:
         """Route the model's prediction error to D4.
@@ -206,11 +211,34 @@ class DetectorBankService:
         The residual exists only for the sensor the model predicts, so only
         that subject has a drift detector to receive it.
         """
+        if not self._indoor_is_trusted():
+            # The residual is measured against a reading already known to be
+            # wrong, so it says nothing about drift.
+            return
         subject = self._detectors.get(self._config.estimator.indoor_sensor_id)
         if subject is None:
             LOGGER.debug("no detectors for the indoor sensor; estimate ignored")
             return
         subject.observe_estimate(estimate)
+
+    def _indoor_is_trusted(self) -> bool:
+        """Whether the room's temperature currently means anything.
+
+        D4 and D5 are both *derived* tests: D4 compares the reading with the
+        model's expectation of it, and D5 asks whether the room responded to
+        cooling. Both read the indoor temperature, so once that sensor is
+        known to be faulted neither has an input worth judging, and both are
+        suspended until it is trusted again.
+
+        This is not tidiness. A sensor frozen at a plausible value makes the
+        room look as though it has stopped responding to the air conditioner,
+        so D5 raises an actuator fault that is not there; two subjects are then
+        faulted at once, the mode escalates to SAFE_HOLD, and FR-27's
+        control-on-prediction -- the thing the whole model exists for -- is
+        switched off by the very fault it was built to survive.
+        """
+        indoor = self._config.estimator.indoor_sensor_id
+        return not any(event.subject == indoor for event in self._aggregator.active)
 
     def _on_command(self, _topic: str, command: Command) -> None:
         """Route an actuator command to D5."""
@@ -275,11 +303,19 @@ class DetectorBankService:
         LOGGER.warning("mode is %s: %s", state.mode.value, state.reason)
 
     def _reset_detector(self, event: FaultEvent) -> None:
-        """Let a detector that accumulates evidence start afresh (FR-30)."""
+        """Let the detectors that accumulate evidence start afresh (FR-30).
+
+        Every accumulating detector on the subject is reset, not only the one
+        that raised the fault. A repaired sensor jumps from whatever it was
+        reporting back to the truth, and that step produces one large residual
+        which has nothing to do with drift -- enough on its own to push D4's
+        cumulative sum past its threshold and declare the sensor broken the
+        moment it is fixed.
+        """
         subject = self._detectors.get(event.subject)
         if subject is not None:
-            subject.reset(event.detector)
-        elif event.subject == self._actuator.subject:
+            subject.reset_accumulated()
+        if event.subject in (self._actuator.subject, self._config.estimator.indoor_sensor_id):
             self._actuator.reset()
 
     def _publish_fault(self, event: FaultEvent) -> None:
