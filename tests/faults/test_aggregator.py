@@ -288,3 +288,32 @@ class TestOutcome:
             Mode.DEGRADED_SENSOR,
             Mode.DEGRADED_SENSOR,
         ]
+
+
+class TestRetiringOnReset:
+    """An operator reset discards evidence rather than overriding it."""
+
+    def test_every_active_fault_is_retired(self, aggregator):
+        aggregator.ingest([_finding(), _finding(subject=OTHER_SUBJECT)])
+        assert len(aggregator.retire_all()) == 2
+        assert aggregator.active == ()
+
+    def test_the_retired_faults_are_returned_so_they_can_be_withdrawn(
+        self, aggregator
+    ):
+        raised = aggregator.ingest([_finding()]).raised[0]
+        assert aggregator.retire_all()[0].fault_id == raised.fault_id
+
+    def test_retiring_nothing_is_not_an_error(self, aggregator):
+        assert aggregator.retire_all() == ()
+
+    def test_a_fault_still_present_is_raised_again(self, aggregator):
+        """The reset re-tests; it cannot hide anything."""
+        aggregator.ingest([_finding()])
+        aggregator.retire_all()
+        assert len(aggregator.ingest([_finding()]).raised) == 1
+
+    def test_nothing_is_dominant_after_a_reset(self, aggregator):
+        aggregator.ingest([_finding()])
+        aggregator.retire_all()
+        assert aggregator.dominant is None

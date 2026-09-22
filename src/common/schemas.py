@@ -534,6 +534,27 @@ class ActuatorState(TimestampedMessage):
     last_command_ts: float | None = None
 
 
+class ModeReset(TimestampedMessage):
+    """An operator clearing SAFE_HOLD by hand (section 5.6).
+
+    SAFE_HOLD is the one mode the system will not leave on its own. Every
+    other degradation is recoverable by the fault clearing, because the
+    evidence that raised it is the evidence that retires it. SAFE_HOLD is
+    entered when several things are wrong at once or the model itself has
+    diverged, and there is no observation that means "a person has looked at
+    this" -- so a person has to say so.
+
+    Carrying a requester and a reason is the point: a hold cleared with no
+    record of who cleared it or why is an audit trail with a hole exactly where
+    the interesting thing happened (FR-46).
+    """
+
+    requester: str = Field(min_length=1, description="Who cleared the hold")
+    reason: str = Field(
+        default="", description="What they did about it, in their own words"
+    )
+
+
 # --- Fault injection -------------------------------------------------------
 
 

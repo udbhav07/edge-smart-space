@@ -21,6 +21,9 @@ from src.common.schemas import (
     CommandKind,
     DetectorId,
     FaultEvent,
+    Mode,
+    ModeReset,
+    ModeState,
     Quality,
     SensorHealth,
     SensorReading,
@@ -521,3 +524,118 @@ class TestActuatorWiring:
             service.tick()
             clock.advance(5.0)
         assert [entry for entry in transport.health() if entry.sensor_id == "ac"] == []
+
+
+def _deliver_reset(blackboard, clock, requester="operator", reason="fixed it"):
+    reset = ModeReset(ts=clock.now(), requester=requester, reason=reason)
+    blackboard.dispatch("space/system/reset", reset.model_dump_json().encode())
+
+
+class TestModePublishing:
+    def _modes(self, transport) -> list[ModeState]:
+        return [
+            ModeState.model_validate_json(payload)
+            for topic, payload, _, _ in transport.published
+            if topic == "space/system/mode" and payload
+        ]
+
+    def test_nothing_is_published_before_a_sensor_reports(self, wired):
+        """INIT is where a system whose sensors never arrive belongs."""
+        service, transport, _ = wired
+        service.tick()
+        assert self._modes(transport) == []
+
+    def test_a_reporting_system_reaches_normal(self, wired, clock):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        assert self._modes(transport)[-1].mode is Mode.NORMAL
+
+    def test_the_mode_is_retained(self, wired, clock):
+        """FR-61: a late subscriber must be able to read the current mode."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        retained = [
+            entry[3]
+            for entry in transport.published
+            if entry[0] == "space/system/mode"
+        ]
+        assert retained and all(retained)
+
+    def test_a_sensor_fault_degrades_the_mode(self, wired, clock):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        clock.advance(60.0)
+        service.tick()
+        assert self._modes(transport)[-1].mode is Mode.DEGRADED_SENSOR
+
+    def test_the_published_mode_names_the_fault(self, wired, clock):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        clock.advance(60.0)
+        service.tick()
+        state = self._modes(transport)[-1]
+        assert state.active_fault_ids and "D1_DROPOUT" in state.reason
+
+    def test_the_mode_is_not_republished_every_tick(self, wired, clock):
+        service, transport, blackboard = wired
+        for _ in range(4):
+            _deliver(blackboard, _reading(clock))
+            service.tick()
+            clock.advance(5.0)
+        assert len(self._modes(transport)) == 1
+
+    def test_recovery_returns_the_mode_to_normal(self, wired, clock):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        clock.advance(60.0)
+        service.tick()
+
+        _report_healthily(service, blackboard, clock, config_confirm_s() + 10.0)
+        assert self._modes(transport)[-1].mode is Mode.NORMAL
+
+
+class TestOperatorReset:
+    def test_a_reset_withdraws_the_active_faults(self, wired, clock):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        clock.advance(60.0)
+        service.tick()
+        raised = transport.faults()[0]
+
+        _deliver_reset(blackboard, clock)
+        assert f"space/fault/{raised.fault_id}" in transport.withdrawals()
+
+    def test_a_reset_returns_the_system_to_normal(self, wired, clock):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        clock.advance(60.0)
+        service.tick()
+
+        _deliver_reset(blackboard, clock)
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        assert service.mode is Mode.NORMAL
+
+    def test_a_reset_cannot_conceal_a_fault_that_is_still_there(
+        self, wired, clock
+    ):
+        """It re-tests rather than overrides: the sensor is still silent, so
+        the dropout is raised again within its own window."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        service.tick()
+        clock.advance(60.0)
+        service.tick()
+
+        _deliver_reset(blackboard, clock)
+        service.tick()
+        clock.advance(60.0)
+        service.tick()
+        assert service.mode is Mode.DEGRADED_SENSOR

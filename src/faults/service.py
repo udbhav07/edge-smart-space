@@ -38,6 +38,8 @@ from src.common.schemas import (
     Command,
     DetectorId,
     FaultEvent,
+    ModeReset,
+    ModeState,
     Quality,
     SensorHealth,
     SensorReading,
@@ -51,6 +53,7 @@ from src.faults.detectors.drift import DriftDetector
 from src.faults.detectors.dropout import DropoutDetector
 from src.faults.detectors.out_of_range import OutOfRangeDetector
 from src.faults.detectors.stuck_at import StuckAtDetector
+from src.faults.mode_manager import ModeManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +126,7 @@ class DetectorBankService:
         aggregator: FaultAggregator,
         detectors: dict[str, SubjectDetectors],
         actuator: ActuatorResponseDetector,
+        mode_manager: ModeManager,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -130,6 +134,7 @@ class DetectorBankService:
         self._aggregator = aggregator
         self._detectors = detectors
         self._actuator = actuator
+        self._mode_manager = mode_manager
         self._last_reading_ts: dict[str, float] = {}
         self._published_quality: dict[str, Quality] = {}
 
@@ -155,6 +160,9 @@ class DetectorBankService:
         self._blackboard.subscribe(
             topics.ACTUATOR_COMMAND, Command, self._on_command
         )
+        self._blackboard.subscribe(
+            topics.SYSTEM_RESET, ModeReset, self._on_reset
+        )
 
     @property
     def watched_subjects(self) -> frozenset[str]:
@@ -165,6 +173,11 @@ class DetectorBankService:
     def active_faults(self) -> tuple[FaultEvent, ...]:
         """Live faults, most severe first. For the console and for tests."""
         return self._aggregator.active
+
+    @property
+    def mode(self):
+        """The mode currently published. For the console and for tests."""
+        return self._mode_manager.mode
 
     # --- observation --------------------------------------------------
 
@@ -206,6 +219,21 @@ class DetectorBankService:
             return
         self._actuator.observe_command(command.kind)
 
+    def _on_reset(self, _topic: str, reset: ModeReset) -> None:
+        """Take an operator's acknowledgement (section 5.6).
+
+        Retiring the faults is what the reset means: the operator is not
+        asserting the room is fine, but that they have dealt with it, so the
+        accumulated evidence is stale. It cannot conceal anything -- every
+        detector re-gathers from live inputs and a fault still present is
+        raised again within its own window.
+        """
+        for event in self._aggregator.retire_all():
+            self._withdraw_fault(event)
+            self._reset_detector(event)
+        self._published_quality.clear()
+        self._mode_manager.request_reset(reset)
+
     # --- the tick -----------------------------------------------------
 
     def tick(self) -> AggregateOutcome:
@@ -227,7 +255,24 @@ class DetectorBankService:
             self._withdraw_fault(event)
             self._reset_detector(event)
         self._publish_health(findings)
+        self._publish_mode(outcome.active)
         return outcome
+
+    def _publish_mode(self, active: tuple[FaultEvent, ...]) -> None:
+        """Turn the fault set into a mode and publish it (FR-26).
+
+        Published before anything slow is consulted. The Fault Diagnosis call
+        enriches the notification afterwards and never sits on this path, so a
+        model that is unloaded, slow, or wrong cannot delay the transition
+        (section 5.9.2).
+        """
+        state = self._mode_manager.update(
+            active, sensors_reporting=bool(self._last_reading_ts)
+        )
+        if state is None:
+            return
+        self._blackboard.publish(topics.SYSTEM_MODE, state)
+        LOGGER.warning("mode is %s: %s", state.mode.value, state.reason)
 
     def _reset_detector(self, event: FaultEvent) -> None:
         """Let a detector that accumulates evidence start afresh (FR-30)."""
@@ -403,4 +448,5 @@ def build_service(
             config=config.detectors.actuator,
             clock=clock,
         ),
+        mode_manager=ModeManager(config=config.mode, clock=clock),
     )

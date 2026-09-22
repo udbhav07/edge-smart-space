@@ -159,6 +159,35 @@ class FaultAggregator:
             active=self.active,
         )
 
+    def retire_all(self) -> tuple[FaultEvent, ...]:
+        """Discard every active fault, as an operator reset does (section 5.6).
+
+        This is what a manual reset actually means. The operator is not
+        asserting that the room is fine -- they are asserting that they have
+        looked at it and dealt with it, so the accumulated evidence is stale
+        and the question should be asked again from scratch.
+
+        It cannot hide a real fault. Every detector re-gathers from live
+        inputs, so a fault that is still present is raised again within its own
+        window: a reset re-tests rather than overrides. That is also why it is
+        needed at all. D5 reads UNKNOWN whenever cooling is not being
+        commanded, and UNKNOWN never retires a fault, so a DEGRADED_ACTUATOR
+        that blocks actuation could never observe the evidence that would
+        clear it. Without this the system would hold forever.
+
+        :returns: the retired faults, so the caller can withdraw each from the
+            blackboard and reset the detector that raised it.
+        """
+        retired = self.active
+        self._active.clear()
+        if retired:
+            LOGGER.warning(
+                "retired %d fault(s) on reset: %s",
+                len(retired),
+                ", ".join(event.fault_id for event in retired),
+            )
+        return retired
+
     def _raise(
         self, key: tuple[DetectorId, str], finding: Finding, now: float
     ) -> FaultEvent:

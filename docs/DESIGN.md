@@ -1351,6 +1351,7 @@ startup, which NFR-06 forbids.
 | `space/actuator/ac/command` | pub | no | 1 | `Command` |
 | `space/actuator/ac/state` | pub | yes | 1 | `ActuatorState` |
 | `space/actuator/{sim_id}/state` | pub | yes | 1 | `ActuatorState` with `simulated: true` |
+| `space/system/reset` | pub | no | 1 | `ModeReset` |
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
 
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
@@ -1403,6 +1404,13 @@ startup, which NFR-06 forbids.
   "detected_ts": 1756032300.0,
   "evidence": { "window_s": 300, "variance": 0.0002 },
   "mode_impact": "DEGRADED_SENSOR"
+}
+
+// ModeReset -- an operator clearing SAFE_HOLD by hand (section 5.6)
+{
+  "ts": 1756032000.0,
+  "requester": "operator",
+  "reason": "replaced the indoor sensor"
 }
 
 // InjectionCommand  -- the one message that travels down into Layer 1 (FR-31)
