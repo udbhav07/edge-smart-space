@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
 | 1.6 | Reconciled with the detector bank as built (Week 3). D2's latency target was unreachable by construction and is corrected from 60 s to 310 s, with the reason recorded in §5.5. D2 and D3 no longer apply to the PIR: an unoccupied room reports a constant legitimately, so variance says nothing about a stuck binary sensor, and §7.1's "D1/D2" becomes D1 only. The fault-clear confirmation period is stated as belonging to the aggregator rather than the mode manager, so one number has one owner. Fault injection gains a channel: `space/inject/{subject}` and `InjectionCommand` in §6.1 and §6.2, applied at the Layer 1 adapter so nothing above can tell an injected fault from a suffered one (FR-31). |
 | 1.5 | Adds an assistance tool surface (§5.7.6, FR-70 to FR-75). The reasoning layer could propose a setpoint and nothing else, so "put that in my calendar" had no representation at all. A tool is now a declaration — name, purpose, typed parameters, and how far its consequences reach — and the model is shown that and nothing more, so which service fulfils it is a wiring choice rather than a prompt change. The reasoning layer *runs* its own tools; the confirmation gate narrows to actions that commit the occupant to an outside party, which is what FR-54 was always about. FR-42 and FR-58 are amended accordingly. |
 | 1.4 | Adds the local console (FR-56 to FR-58): comfort band, standing prompts, confirmations, and a first-party calendar. Scheduling writes to that calendar rather than to a hosted one, which keeps NFR-06 intact and credentials off the node; flights and hotels remain mocks. §5.8's unnamed "Confirmation UI" is now this console. Priority S throughout: R-05 already names assistance as the cuttable feature set. |
@@ -749,7 +750,7 @@ flowchart LR
 | D2 | `var(window) < ε` for N consecutive windows | window = 60 samples, ε = 0.001 °C² | < 310 s |
 | D3 | Reading outside `[−10, 60] °C` or `[0, 100] %RH` | immediate, 2-sample debounce | < 10 s |
 | D4 | Two-sided CUSUM on `e[k]/σ̂` | drift k = 0.5σ, threshold h = 5σ | < 300 s |
-| D5 | `\|ΔT\|` below threshold over evaluation window after sustained COOL | window = 600 s, threshold = 0.3 °C | < 600 s |
+| D5 | Cooling achieved below threshold over evaluation window after sustained COOL | window = 600 s, threshold = 0.3 °C | < 600 s |
 
 **How a fault is triggered (FR-31).** The injector publishes an
 `InjectionCommand` on `space/inject/{subject}` and the Layer 1 adapter for that
@@ -777,6 +778,19 @@ detect faster at the cost of reporting a settled room as stuck, which is
 exactly the trade R-04 defers until sigma is measured on hardware rather than
 assumed. The number was wrong, not the design; recording it as wrong is worth
 more than a detector quietly missing a target nobody re-derived.
+
+**On D5's test, corrected at v1.7.** This row read `|ΔT|` below a threshold
+until the detector was built. That catches a room which did not move, but not
+one which got *warmer* while the compressor was supposedly running — the more
+certain actuator fault of the two, since a room warming under sustained cooling
+is unambiguous. The test is now signed cooling achieved, `T_start − T_now`,
+which subsumes both cases.
+
+The method has a limit worth stating: a room can fail to cool for reasons that
+are not the air conditioner's fault — a door left open, an unmodelled heat
+load, or an ambient high enough that a working unit is at capacity and holds
+the room level rather than cooling it. R-04 settles the window and the
+threshold against measured data during bring-up.
 
 **On D5's parameters:** the 600 s window is long because a room's thermal time constant is long. This is an honest limit — actuator faults are detected on the order of ten minutes, not seconds, and NFR-02 deliberately does not promise otherwise.
 
@@ -810,6 +824,29 @@ stateDiagram-v2
 | `DEGRADED_SENSOR` | frozen (FR-29) | closed loop on prediction, time-boxed | banner |
 | `DEGRADED_ACTUATOR` | frozen | blocked, hold state | alert + reason |
 | `SAFE_HOLD` | frozen | blocked | alert, manual reset required |
+
+**What counts as "multiple faults".** Distinct *subjects*, not distinct
+findings. A stuck temperature sensor raises D2, and its frozen reading then
+grows the model residual until D4 raises as well: two faults, one broken
+sensor. Counting findings would send every single sensor failure to SAFE_HOLD
+with actuation blocked, and FR-27 — the whole reason for identifying a model —
+would never once be exercised.
+
+**Leaving `DEGRADED_ACTUATOR` as written is unreachable, found at v1.7.** The
+transition above is "actuator ack restored and response observed". On an
+open-loop IR path there is no ack to restore (R-02), and the mode blocks
+actuation, so no cooling can be commanded and no response can be observed.
+D5 also reads UNKNOWN whenever cooling is not being commanded, and an UNKNOWN
+never retires a fault, so the hold would be permanent. The operator reset on
+`space/system/reset` is therefore the route back from `DEGRADED_ACTUATOR` as
+well as from `SAFE_HOLD`.
+
+A reset retires the active faults rather than overriding them. The operator is
+not asserting the room is fine; they are asserting they have looked at it and
+dealt with it, so the accumulated evidence is stale and the question is asked
+again from scratch. It cannot conceal a fault that is still present: every
+detector re-gathers from live inputs, so a real fault is raised again within
+its own window. A reset re-tests rather than overrides.
 
 **Where the confirmation period lives.** A fault stays active until its
 detector has judged it clear continuously for `fault_clear_confirm_s` (FR-30),
@@ -1258,13 +1295,14 @@ edge-smart-space/
 │   │   └── persistence.py
 │   ├── control/
 │   │   ├── regulatory.py
+│   │   ├── service.py              # the loop as a process (`python -m src.control`)
 │   │   ├── goal_manager.py
 │   │   └── validator.py
 │   ├── faults/
-│   │   ├── detectors/              # D1-D3 built; D4 and D5 are Week 4
+│   │   ├── detectors/              # D1 to D5
 │   │   ├── aggregator.py           # active fault set, clear confirmation
 │   │   ├── service.py              # the bank as a process (`python -m src.faults`)
-│   │   ├── mode_manager.py
+│   │   ├── mode_manager.py         # the section 5.6 state machine
 │   │   └── injector.py             # publishes InjectionCommand (FR-31)
 │   ├── assistance/                # the only place a provider may live
 │   │   ├── executor.py            # gates and runs invocations (§5.7.6)
@@ -1305,9 +1343,9 @@ edge-smart-space/
 └── tests/
 ```
 
-Written as of v1.1 and revised at v1.6, the following are specified above but
-**not yet implemented**: `src/faults/detectors/` has D1 to D3 but not D4 or D5,
-and `mode_manager.py` is not written; `goal_manager.py`,
+Written as of v1.1 and revised at v1.7, the following are specified above but
+**not yet implemented**: `goal_manager.py` (the control service gates a
+proposed goal, but nothing arbitrates between several sources yet),
 `supervisor_agent.py`, `supervisor_tools.py`, `speaker_profile.py` (FR-52),
 `simulated_actuators.py`, the whole of `src/assistance/`, `docs/adr/`, and the
 whole of `deploy/`. They are listed because they are the design, and named here so the
@@ -1351,7 +1389,8 @@ startup, which NFR-06 forbids.
 | `space/actuator/ac/command` | pub | no | 1 | `Command` |
 | `space/actuator/ac/state` | pub | yes | 1 | `ActuatorState` |
 | `space/actuator/{sim_id}/state` | pub | yes | 1 | `ActuatorState` with `simulated: true` |
-| `space/system/reset` | pub | no | 1 | `ModeReset` |
+| `space/system/reset` | pub | no | 1 | `ModeReset` |
+
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
 
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |

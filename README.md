@@ -176,6 +176,7 @@ python -m tools.inject --list                # what can be injected, and where
 python -m tools.inject temp_01 stuck 27.0    # freeze the indoor sensor
 python -m tools.inject temp_01 dropout       # make it go quiet
 python -m tools.inject temp_01 range 999.0   # report something impossible
+python -m tools.inject temp_01 drift 0.01    # 0.01 C per second, invisible per sample
 python -m tools.inject temp_01 clear         # stop injecting
 ```
 
@@ -184,6 +185,22 @@ Then watch what the detectors make of it:
 ```bash
 mosquitto_sub -t 'space/fault/#' -v             # faults, with their evidence
 mosquitto_sub -t 'space/sensor/+/health' -v     # what is still trusted
+mosquitto_sub -t 'space/system/mode' -v         # what the system is allowed to do
+mosquitto_sub -t 'space/actuator/ac/command' -v # proof the loop is still closed
+```
+
+The interesting thing to watch is the last two together. When a sensor is
+detected as broken the mode becomes `DEGRADED_SENSOR` — and the commands
+**keep coming**, because the loop switches to the model's prediction instead of
+the reading it no longer trusts. That substitution is the whole point of
+identifying a model, and it is the thing a thermostat cannot do. It is bounded:
+after 30 minutes the system stops rather than treat a stale prediction as a
+measurement, and the mode becomes `SAFE_HOLD`.
+
+`SAFE_HOLD` is the one state the system will not leave on its own:
+
+```bash
+python -m tools.reset --reason "replaced the sensor"
 ```
 
 The fault is applied at the sensor, so nothing above Layer 1 can tell an
@@ -191,10 +208,13 @@ injected fault from a real one — which is the only way the detection means
 anything. `space/inject/{subject}` is retained, so it always answers what is
 being injected right now.
 
-Detection is not instant, and the delays are honest ones: a dropout takes
-15 s (three missed samples), an implausible reading 10 s (two samples), and a
-stuck sensor about five minutes, because that is how long the variance window
-is. A shorter window would report a settled room as broken.
+Detection is not instant, and the delays are honest ones: a dropout takes 15 s
+(three missed samples), an implausible reading 10 s (two samples), a stuck
+sensor about five minutes because that is how long the variance window is, and
+an actuator fault about ten minutes because that is how slowly a room responds.
+Drift is found by accumulating evidence, so how long it takes depends on how
+fast the sensor is drifting — which is the point of using a cumulative test
+rather than a threshold.
 
 ---
 

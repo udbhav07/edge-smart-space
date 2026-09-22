@@ -21,6 +21,7 @@ milestone table in `DESIGN.md` §9.1 stays the reference for that.
 | **The reasoning layer can ask for an action, not just a temperature** — a calendar entry, a booking — through one declared surface that does not know which service fulfils it. Adding a tool, or moving from our calendar to a hosted one, touches nothing else. |
 | The system knows which of its own actions it is allowed to take alone. It writes to a calendar on its own authority and stops dead at anything that would commit you to an outsider. |
 | **The room notices when a sensor is lying to it** — gone quiet, stuck, or reporting nonsense — and says so with the evidence that produced the finding. Any of those is triggerable from a terminal while it runs, so an examiner can break it live; the fault is applied at the sensor, so nothing above can tell an injected one from a real one. Drift and actuator faults are Week 4. |
+| **The room keeps working while a sensor is broken.** It catches a drifting sensor from the model's own expectation and an air conditioner that is not actually cooling from the room failing to respond — the two faults a thermostat cannot detect at all. When a sensor fails it controls on the model's prediction instead of collapsing to open loop, and stops when that has run long enough to stop being trustworthy. *Hardware still to arrive.* |
 
 
 ---
@@ -29,7 +30,6 @@ milestone table in `DESIGN.md` §9.1 stays the reference for that.
 
 | Week | Dates | Goal |
 |---|---|---|
-| **4** | 9–15 Sep | **The room keeps working while a sensor is broken.** It detects a drifting sensor from the model's own expectation, spots an air conditioner that isn't actually cooling, and switches to controlling on prediction instead of collapsing to open loop. This is the whole fault-tolerance claim. *Also: hardware in hand.* |
 | **5** | 16–22 Sep | **It runs on the Jetson Orin, not a laptop.** The stack is provisioned on the Orin and comes up on boot; temperature, humidity and power sensors are wired and publishing to the same topics the simulator already uses, and the air conditioner takes real commands. Simulated and real sources are selectable by config, so every existing test runs unchanged against either. |
 | **6** | 23–29 Sep | **The reasoning layer both proposes and acts.** It proposes goals in plain language and the gate refuses the unsafe ones — demonstrably, not by trust. Asking for a meeting on Thursday puts it in the calendar and it says so; asking about Thursday reads it back. Asking for a flight gets you a question, not a booking. |
 | **7** | 30 Sep – 6 Oct | **Closed loop on real data.** Identification, control and fault detection all run on live sensor readings against a real air conditioner, and every detector threshold is re-derived from measured noise rather than the placeholders currently in config. |
