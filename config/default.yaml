@@ -78,6 +78,20 @@ detectors:
     temperature_c: {low: -10.0, high: 60.0}
     humidity_pct: {low: 0.0, high: 100.0}
     debounce_samples: 2
+  # D4, section 5.5. A two-sided CUSUM on the residual divided by its own
+  # standard deviation, so the thresholds are in sigma and survive a change of
+  # sensor. R-04 re-derives both from measured sigma during bring-up; these are
+  # the textbook starting pair.
+  drift:
+    slack_sigma: 0.5              # k: drift smaller than this is absorbed, not accumulated
+    threshold_sigma: 5.0          # h: cumulative sum at which drift is called
+    min_residual_sigma_c: 0.02    # Below this the noise floor is not characterised yet
+  # D5, section 5.5. The room's thermal time constant is long, so an actuator
+  # fault is found in about ten minutes rather than seconds. NFR-02 does not
+  # promise otherwise.
+  actuator:
+    evaluation_window_s: 600.0    # Sustained cooling before the test is applied
+    min_cooling_c: 0.3            # Cooling the room must have achieved over that window
 
 mode:
   degraded_sensor_budget_s: 1800.0   # Section 7.2; E4 tests whether this is right

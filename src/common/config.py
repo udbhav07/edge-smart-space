@@ -233,10 +233,58 @@ class OutOfRangeDetectorConfig(_Section):
     debounce_samples: int = Field(gt=0, description="Consecutive samples before raising")
 
 
+class DriftDetectorConfig(_Section):
+    """D4: two-sided CUSUM on the normalised model residual (FR-23).
+
+    Both thresholds are in units of the residual's own standard deviation, so
+    they carry over unchanged to a sensor with different noise. R-04 re-derives
+    them from measured sigma during hardware bring-up.
+    """
+
+    slack_sigma: float = Field(
+        gt=0.0, description="k: drift below this is absorbed rather than accumulated"
+    )
+    threshold_sigma: float = Field(
+        gt=0.0, description="h: cumulative sum at which drift is declared"
+    )
+    min_residual_sigma_c: float = Field(
+        gt=0.0,
+        description="Noise floor below which the residual is not normalisable yet",
+    )
+
+    @model_validator(mode="after")
+    def _slack_is_below_the_threshold(self) -> DriftDetectorConfig:
+        """Slack at or above the threshold can never accumulate to it.
+
+        The CUSUM adds ``z - k`` per sample, so a k no smaller than h makes a
+        single sample the whole test and turns the detector into a noisy
+        threshold alarm. Silently, which is the problem.
+        """
+        if self.slack_sigma >= self.threshold_sigma:
+            raise ValueError(
+                f"slack_sigma {self.slack_sigma!r} must be below threshold_sigma "
+                f"{self.threshold_sigma!r}, or drift can never accumulate"
+            )
+        return self
+
+
+class ActuatorDetectorConfig(_Section):
+    """D5: no thermal response to sustained cooling (FR-24)."""
+
+    evaluation_window_s: float = Field(
+        gt=0.0, description="Sustained cooling required before the test applies"
+    )
+    min_cooling_c: float = Field(
+        gt=0.0, description="Cooling the room must have achieved over that window"
+    )
+
+
 class DetectorsConfig(_Section):
     dropout: DropoutDetectorConfig
     stuck_at: StuckAtDetectorConfig
     out_of_range: OutOfRangeDetectorConfig
+    drift: DriftDetectorConfig
+    actuator: ActuatorDetectorConfig
 
 
 class ModeConfig(_Section):
