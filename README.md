@@ -138,6 +138,7 @@ them all. `python start.py --help` lists what can currently be started.
 ```bash
 python -m sim.run_sim --steps 100     # room plant, sensors, actuator
 python -m src.estimation              # online RC identification
+python -m src.control                 # regulatory loop and safety gate
 python -m src.faults                  # fault detector bank (D1-D3)
 python -m src.speech                  # wake word, transcription, reasoning
 ```
@@ -238,7 +239,7 @@ simulated success predict nothing about real hardware.
 
 ```
 src/common/      clock, config, schemas, topics, MQTT blackboard, device
-src/control/     safety validator, regulatory controller
+src/control/     safety validator, regulatory loop    (python -m src.control)
 src/estimation/  RC model, RLS, persistence          (python -m src.estimation)
 src/faults/      detector bank, aggregator           (python -m src.faults)
 src/speech/      wake word, capture, ASR, pipeline  (python -m src.speech)

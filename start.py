@@ -99,6 +99,11 @@ SERVICES = (
         description="Online RC identification: coefficients, prediction, residual",
     ),
     Service(
+        name="control",
+        module="src.control",
+        description="Regulatory loop: deadband tracking behind the safety gate",
+    ),
+    Service(
         name="detectors",
         module="src.faults",
         description="Fault detector bank: dropout, stuck-at, out-of-range",
