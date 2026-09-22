@@ -16,11 +16,15 @@ from src.common.clock import SimClock
 from src.common.config import load_config
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    AdaptationState,
+    Command,
+    CommandKind,
     DetectorId,
     FaultEvent,
     Quality,
     SensorHealth,
     SensorReading,
+    ThermalEstimate,
     Unit,
 )
 from src.faults.__main__ import run
@@ -395,3 +399,125 @@ class TestRunLoop:
         started = clock.now()
         run(service, clock, period_s=5.0, ticks=4)
         assert clock.now() - started == pytest.approx(20.0)
+
+
+def _deliver_estimate(blackboard, clock, residual_c, sigma_c=0.15):
+    t_pred = 27.0
+    estimate = ThermalEstimate(
+        ts=clock.now(),
+        t_in=t_pred + residual_c,
+        t_pred=t_pred,
+        residual=residual_c,
+        residual_sigma=sigma_c,
+        model_confidence=0.9,
+        adaptation=AdaptationState.ACTIVE,
+    )
+    blackboard.dispatch(
+        "space/estimate/thermal", estimate.model_dump_json().encode()
+    )
+
+
+def _deliver_command(blackboard, clock, kind, setpoint_c=None):
+    command = Command(
+        ts=clock.now(), actuator_id="ac", kind=kind, setpoint_c=setpoint_c
+    )
+    blackboard.dispatch(
+        "space/actuator/ac/command", command.model_dump_json().encode()
+    )
+
+
+class TestDriftWiring:
+    def test_the_bank_subscribes_to_the_model_estimate(self, wired):
+        _, transport, _ = wired
+        assert ("space/estimate/thermal", 0) in transport.subscribed
+
+    def test_a_sustained_residual_raises_drift_through_the_service(
+        self, wired, clock
+    ):
+        service, transport, blackboard = wired
+        for index in range(30):
+            _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
+            _deliver_estimate(blackboard, clock, residual_c=0.3)
+            service.tick()
+            clock.advance(5.0)
+        detectors = {event.detector for event in transport.faults()}
+        assert DetectorId.D4_DRIFT in detectors
+
+    def test_the_drift_fault_names_the_indoor_sensor(self, wired, clock, config):
+        service, transport, blackboard = wired
+        for index in range(30):
+            _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
+            _deliver_estimate(blackboard, clock, residual_c=0.3)
+            service.tick()
+            clock.advance(5.0)
+        drift = [
+            event
+            for event in transport.faults()
+            if event.detector is DetectorId.D4_DRIFT
+        ][0]
+        assert drift.subject == config.estimator.indoor_sensor_id
+
+    def test_a_healthy_residual_raises_no_drift(self, wired, clock):
+        service, transport, blackboard = wired
+        for index in range(60):
+            _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
+            _deliver_estimate(
+                blackboard, clock, residual_c=0.05 if index % 2 else -0.05
+            )
+            service.tick()
+            clock.advance(5.0)
+        assert transport.faults() == []
+
+
+class TestActuatorWiring:
+    def test_the_bank_subscribes_to_actuator_commands(self, wired):
+        """Commands, not plant state: a detector needing the plant to report
+        itself could not detect a plant that stopped reporting."""
+        _, transport, _ = wired
+        assert ("space/actuator/+/command", 1) in transport.subscribed
+
+    def test_sustained_cooling_with_no_response_raises_a_fault(
+        self, wired, clock, config
+    ):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock, value=29.0))
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+
+        window_s = config.detectors.actuator.evaluation_window_s
+        for _ in range(int(window_s / 5.0) + 2):
+            _deliver(blackboard, _reading(clock, value=29.0))
+            service.tick()
+            clock.advance(5.0)
+        detectors = {event.detector for event in transport.faults()}
+        assert DetectorId.D5_ACTUATOR_NO_RESPONSE in detectors
+
+    def test_a_cooling_room_raises_no_actuator_fault(self, wired, clock, config):
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock, value=29.0))
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+
+        window_s = config.detectors.actuator.evaluation_window_s
+        steps = int(window_s / 5.0) + 2
+        for index in range(steps):
+            _deliver(blackboard, _reading(clock, value=29.0 - index * 0.01))
+            service.tick()
+            clock.advance(5.0)
+        assert [
+            event
+            for event in transport.faults()
+            if event.detector is DetectorId.D5_ACTUATOR_NO_RESPONSE
+        ] == []
+
+    def test_the_actuator_is_not_published_as_a_sensor(self, wired, clock, config):
+        """It is a subject but not a sensor; a health topic for it would
+        invent one."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock, value=29.0))
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+
+        window_s = config.detectors.actuator.evaluation_window_s
+        for _ in range(int(window_s / 5.0) + 2):
+            _deliver(blackboard, _reading(clock, value=29.0))
+            service.tick()
+            clock.advance(5.0)
+        assert [entry for entry in transport.health() if entry.sensor_id == "ac"] == []

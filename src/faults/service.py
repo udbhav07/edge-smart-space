@@ -35,14 +35,19 @@ from src.common.clock import Clock
 from src.common.config import Bounds, Config, SensorConfig
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    Command,
+    DetectorId,
     FaultEvent,
     Quality,
     SensorHealth,
     SensorReading,
+    ThermalEstimate,
     Unit,
 )
 from src.faults.aggregator import AggregateOutcome, FaultAggregator
+from src.faults.detectors.actuator import ActuatorResponseDetector
 from src.faults.detectors.base import Finding, Judgment
+from src.faults.detectors.drift import DriftDetector
 from src.faults.detectors.dropout import DropoutDetector
 from src.faults.detectors.out_of_range import OutOfRangeDetector
 from src.faults.detectors.stuck_at import StuckAtDetector
@@ -66,10 +71,12 @@ class SubjectDetectors:
         dropout: DropoutDetector,
         stuck_at: StuckAtDetector | None,
         out_of_range: OutOfRangeDetector | None,
+        drift: DriftDetector | None = None,
     ) -> None:
         self._dropout = dropout
         self._stuck_at = stuck_at
         self._out_of_range = out_of_range
+        self._drift = drift
 
     def observe(self, reading: SensorReading) -> None:
         self._dropout.observe(reading)
@@ -78,13 +85,31 @@ class SubjectDetectors:
         if self._out_of_range is not None:
             self._out_of_range.observe(reading)
 
+    def observe_estimate(self, estimate: ThermalEstimate) -> None:
+        """Feed the model's prediction error to D4, if this subject has one."""
+        if self._drift is not None:
+            self._drift.observe(estimate)
+
     def evaluate(self) -> tuple[Finding, ...]:
         findings = [self._dropout.evaluate()]
         if self._stuck_at is not None:
             findings.append(self._stuck_at.evaluate())
         if self._out_of_range is not None:
             findings.append(self._out_of_range.evaluate())
+        if self._drift is not None:
+            findings.append(self._drift.evaluate())
         return tuple(findings)
+
+    def reset(self, detector: DetectorId) -> None:
+        """Clear one detector's accumulated evidence after its fault retires.
+
+        Only D4 accumulates anything across a fault: D1 to D3 recompute from
+        their own inputs every tick, so there is nothing in them to stale.
+        Without this the CUSUM stays above its threshold and re-raises on the
+        next sample, and a recalibrated sensor would be faulted forever.
+        """
+        if detector is DetectorId.D4_DRIFT and self._drift is not None:
+            self._drift.reset()
 
 
 class DetectorBankService:
@@ -97,21 +122,38 @@ class DetectorBankService:
         blackboard: Blackboard,
         aggregator: FaultAggregator,
         detectors: dict[str, SubjectDetectors],
+        actuator: ActuatorResponseDetector,
     ) -> None:
         self._config = config
         self._clock = clock
         self._blackboard = blackboard
         self._aggregator = aggregator
         self._detectors = detectors
+        self._actuator = actuator
         self._last_reading_ts: dict[str, float] = {}
         self._published_quality: dict[str, Quality] = {}
 
     # --- wiring -------------------------------------------------------
 
     def subscribe(self) -> None:
-        """Listen to every sensor, whatever is producing it."""
+        """Listen to everything the bank tests against.
+
+        Three sources, one per kind of question. Readings answer whether a
+        sensor is behaving (D1 to D3). The model's estimate answers whether it
+        is telling the truth (D4). Commands answer whether the plant responds
+        to them (D5) -- commands rather than actuator state, because FR-24 asks
+        what happened after a *sustained command*, and a detector that needed
+        the plant to report its own state could not detect a plant that had
+        stopped reporting.
+        """
         self._blackboard.subscribe(
             topics.SENSOR_STATE, SensorReading, self._on_reading
+        )
+        self._blackboard.subscribe(
+            topics.ESTIMATE_THERMAL, ThermalEstimate, self._on_estimate
+        )
+        self._blackboard.subscribe(
+            topics.ACTUATOR_COMMAND, Command, self._on_command
         )
 
     @property
@@ -140,6 +182,29 @@ class DetectorBankService:
             return
         subject.observe(reading)
         self._last_reading_ts[reading.sensor_id] = reading.ts
+        if reading.sensor_id == self._config.estimator.indoor_sensor_id:
+            # D5 judges the actuator by what the room did, so it needs the
+            # room's temperature and no other sensor's.
+            self._actuator.observe_reading(reading)
+
+    def _on_estimate(self, _topic: str, estimate: ThermalEstimate) -> None:
+        """Route the model's prediction error to D4.
+
+        The residual exists only for the sensor the model predicts, so only
+        that subject has a drift detector to receive it.
+        """
+        subject = self._detectors.get(self._config.estimator.indoor_sensor_id)
+        if subject is None:
+            LOGGER.debug("no detectors for the indoor sensor; estimate ignored")
+            return
+        subject.observe_estimate(estimate)
+
+    def _on_command(self, _topic: str, command: Command) -> None:
+        """Route an actuator command to D5."""
+        if command.actuator_id != self._actuator.subject:
+            LOGGER.debug("no detector for actuator %s", command.actuator_id)
+            return
+        self._actuator.observe_command(command.kind)
 
     # --- the tick -----------------------------------------------------
 
@@ -153,14 +218,24 @@ class DetectorBankService:
         findings: list[Finding] = []
         for subject in self._detectors.values():
             findings.extend(subject.evaluate())
+        findings.append(self._actuator.evaluate())
 
         outcome = self._aggregator.ingest(findings)
         for event in outcome.raised:
             self._publish_fault(event)
         for event in outcome.cleared:
             self._withdraw_fault(event)
+            self._reset_detector(event)
         self._publish_health(findings)
         return outcome
+
+    def _reset_detector(self, event: FaultEvent) -> None:
+        """Let a detector that accumulates evidence start afresh (FR-30)."""
+        subject = self._detectors.get(event.subject)
+        if subject is not None:
+            subject.reset(event.detector)
+        elif event.subject == self._actuator.subject:
+            self._actuator.reset()
 
     def _publish_fault(self, event: FaultEvent) -> None:
         topic = self._blackboard.publish(
@@ -192,6 +267,10 @@ class DetectorBankService:
         """
         faulted = self._faulted_subjects()
         for sensor_id, quality in self._observed_quality(findings).items():
+            if sensor_id not in self._detectors:
+                # The actuator is a subject but not a sensor; it has no
+                # SensorHealth topic and publishing one would invent a sensor.
+                continue
             if self._published_quality.get(sensor_id) is quality:
                 continue
             self._published_quality[sensor_id] = quality
@@ -261,7 +340,9 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
     """Assemble the bank from the configured sensors.
 
     Every sensor gets D1. Only continuous ones get D2 and D3, because variance
-    and range say nothing about a binary signal (section 5.5).
+    and range say nothing about a binary signal. Only the indoor sensor gets
+    D4: the model predicts that one temperature, so it is the only subject
+    there is a residual for (section 5.5).
     """
     bank: dict[str, SubjectDetectors] = {}
     for sensor in config.sensors.adapters:
@@ -294,6 +375,13 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
                 if continuous and bounds is not None
                 else None
             ),
+            drift=(
+                DriftDetector(
+                    subject=sensor.sensor_id, config=config.detectors.drift
+                )
+                if sensor.sensor_id == config.estimator.indoor_sensor_id
+                else None
+            ),
         )
     return bank
 
@@ -310,4 +398,9 @@ def build_service(
             clock=clock, clear_confirm_s=config.mode.fault_clear_confirm_s
         ),
         detectors=build_detectors(config, clock),
+        actuator=ActuatorResponseDetector(
+            subject=topics.AIR_CONDITIONER_ID,
+            config=config.detectors.actuator,
+            clock=clock,
+        ),
     )
