@@ -166,6 +166,18 @@ A clamped setpoint appearing in `space/audit/validation` is the gate working,
 not a failure. Every verdict carries the proposal, the reason code, and the
 value actually applied.
 
+### Seeing the whole thing work, without a broker
+
+```bash
+python -m tools.demo                      # a sensor breaks, the loop survives
+python -m tools.demo --scenario actuator  # the air conditioner stops cooling
+```
+
+Runs all four services in one process against a simulated clock, so half an
+hour of room time takes a couple of seconds, and narrates what happens. It is
+the quickest way to see the system work, and the fallback if a live
+demonstration fails.
+
 ### Breaking it on purpose
 
 Every fault the detector bank can find is triggerable from a terminal while
