@@ -18,6 +18,17 @@ integrates the small consistent part and cancels the large random part, which
 is exactly the shape of this fault. The slack term ``k`` is what stops noise
 from accumulating: only the part of each sample beyond k adds to the sum.
 
+**The test does not start until the model has converged.** A residual is the
+joint error of the sensor and the model, so reading one as evidence about the
+*sensor* is only valid once the model is trustworthy. While the room is making
+its first approach to setpoint the estimator's one-step prediction lags the
+real cooling, which produces a sustained one-directional residual -- exactly
+the signature this detector looks for, from a healthy sensor. The warm-up is
+measured rather than chosen: over a healthy run the cumulative sum peaks at
+10.3 with no warm-up, 7.3 after 60 samples, and 3.05 after 120, beyond which
+it stops improving. It applies once, at start; drift arriving later is caught
+at the latency section 5.5 states.
+
 **No single sample may carry the test.** Each contribution is capped, because
 a cumulative test is meant to be tripped by persistence rather than by
 magnitude; an uncapped sum lets one outlier clear the threshold and turns D4
@@ -96,6 +107,11 @@ class DriftDetector:
             return
 
         self._samples += 1
+        if self._samples <= self._config.warmup_samples:
+            # Seen, but not yet evidence about the sensor: the model is still
+            # converging and its error is its own.
+            self._normalised = estimate.residual / estimate.residual_sigma
+            return
         self._normalised = estimate.residual / estimate.residual_sigma
         bounded = self._bounded(self._normalised)
         slack = self._config.slack_sigma
@@ -137,7 +153,7 @@ class DriftDetector:
         the sums are zero because nothing was measured, which must not be
         reported as a sensor observed to be drift-free.
         """
-        if self._samples == 0:
+        if self._samples <= self._config.warmup_samples:
             return self._finding(Judgment.UNKNOWN)
 
         worst = max(self._high, self._low)
@@ -169,5 +185,6 @@ class DriftDetector:
                 "normalised_residual": self._normalised,
                 "residual_sigma_c": self._sigma_c,
                 "samples": float(self._samples),
+                "warmup_samples": float(self._config.warmup_samples),
             },
         )

@@ -6,10 +6,11 @@ smaller than the noise must accumulate to one anyway.
 """
 
 import random
+from pathlib import Path
 
 import pytest
 
-from src.common.config import DriftDetectorConfig
+from src.common.config import DriftDetectorConfig, load_config
 from src.common.schemas import AdaptationState, DetectorId, ThermalEstimate
 from src.faults.detectors.base import Judgment
 from src.faults.detectors.drift import DriftDetector
@@ -29,6 +30,7 @@ def _config(**overrides) -> DriftDetectorConfig:
             "threshold_sigma": THRESHOLD,
             "min_residual_sigma_c": 0.02,
             "max_sample_sigma": MAX_SAMPLE,
+            "warmup_samples": 0,
             **overrides,
         }
     )
@@ -230,3 +232,47 @@ class TestConstruction:
         into a noisy threshold alarm, silently."""
         with pytest.raises(ValueError):
             _config(slack_sigma=5.0, threshold_sigma=5.0)
+
+
+class TestWarmUp:
+    """A residual is the joint error of the sensor and the model."""
+
+    def _warming(self, samples: int = 10) -> DriftDetector:
+        return DriftDetector(
+            subject=SUBJECT, config=_config(warmup_samples=samples)
+        )
+
+    def test_nothing_is_judged_while_the_model_is_converging(self):
+        """During the first approach to setpoint the estimator's prediction
+        lags the real cooling, which looks exactly like a drifting sensor."""
+        detector = self._warming()
+        _feed(detector, residual_c=SIGMA_C * 3.0, samples=10)
+        assert detector.evaluate().judgment is Judgment.UNKNOWN
+
+    def test_the_warm_up_samples_do_not_accumulate(self):
+        detector = self._warming()
+        _feed(detector, residual_c=SIGMA_C * 3.0, samples=10)
+        assert (detector.cusum_high, detector.cusum_low) == (0.0, 0.0)
+
+    def test_the_test_starts_once_the_warm_up_has_passed(self):
+        detector = self._warming()
+        _feed(detector, residual_c=0.0, samples=11)
+        assert detector.evaluate().judgment is Judgment.CLEAR
+
+    def test_drift_after_the_warm_up_is_still_caught(self):
+        """The warm-up applies once, at start; it does not blunt the test."""
+        detector = self._warming()
+        _feed(detector, residual_c=0.0, samples=10)
+        _feed(detector, residual_c=SIGMA_C * 3.0, samples=2)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_the_evidence_reports_the_warm_up_in_force(self):
+        detector = self._warming()
+        _feed(detector, residual_c=0.0, samples=11)
+        assert detector.evaluate().evidence["warmup_samples"] == 10.0
+
+    def test_the_shipped_warm_up_is_the_measured_one(self):
+        """Measured over a healthy run, not chosen: the cumulative sum peaks
+        at 3.05 after 120 samples and stops improving beyond it."""
+        config = load_config(Path("config/default.yaml")).detectors.drift
+        assert config.warmup_samples == 120

@@ -27,6 +27,7 @@ from src.common.clock import Clock, RealClock
 from src.common.config import Config, load_config
 from src.common.injection import FaultInjection, InjectedFault
 from src.common.mqtt_client import Blackboard, build_transport
+from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
     AckStatus,
     ActuatorState,
@@ -47,6 +48,7 @@ DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 #: Sensor identifiers. These are the ids the ESP32 nodes will report under,
 #: so nothing above Layer 1 has to change when the hardware arrives.
 INDOOR_TEMPERATURE_ID = "temp_01"
+INDOOR_HUMIDITY_ID = "hum_01"
 OUTDOOR_TEMPERATURE_ID = "outdoor_01"
 OCCUPANCY_ID = "pir_01"
 
@@ -56,6 +58,12 @@ OCCUPANCY_ID = "pir_01"
 _SIMULATED_PLANT = True
 
 _FULL_CYCLE_RADIANS = 2.0 * math.pi
+
+#: Chance that a present occupant trips the PIR in one sampling period. A
+#: person at a desk moves enough to be seen every minute or so, which at a 5 s
+#: period is about one step in twelve. This is what makes the hold-off do
+#: something: without it the published occupancy would flicker constantly.
+_MOTION_PROBABILITY_PER_STEP = 0.08
 
 
 class RoomSimulator:
@@ -73,18 +81,24 @@ class RoomSimulator:
         blackboard: Blackboard,
         room: RoomModel,
         actuator: SimulatedActuator,
+        rng: random.Random,
         indoor: SimulatedSensor,
+        humidity: SimulatedSensor,
         outdoor: SimulatedSensor,
         occupancy: BinarySensor,
+        presence: OccupancyTracker,
     ) -> None:
         self._config = config
         self._clock = clock
         self._blackboard = blackboard
         self._room = room
         self._actuator = actuator
+        self._rng = rng
         self._indoor = indoor
+        self._humidity = humidity
         self._outdoor = outdoor
         self._occupancy = occupancy
+        self._presence = presence
         self._occupied = True
         self._started_ts = clock.now()
         self._last_outdoor_publish_ts: float | None = None
@@ -105,17 +119,22 @@ class RoomSimulator:
 
     @property
     def occupied(self) -> bool:
-        """Whether someone is in the room.
+        """Whether someone is really in the room.
 
-        Defaults to occupied, which is the conservative assumption for
-        comfort and matches how the system treats a failed PIR (section 7.1).
-        Scenario files will drive this.
+        Ground truth, which the scenario sets. It is not what gets published:
+        the PIR sees motion, and what reaches the blackboard is occupancy
+        *derived* from that through the vacancy hold-off (FR-02).
         """
         return self._occupied
 
     @occupied.setter
     def occupied(self, value: bool) -> None:
         self._occupied = value
+
+    @property
+    def reported_occupied(self) -> bool:
+        """What the occupancy sensor actually reports, hold-off included."""
+        return self._presence.occupied
 
     def subscribe(self) -> None:
         """Listen for actuator commands and injections, as an adapter would."""
@@ -166,7 +185,12 @@ class RoomSimulator:
     def _sensors_by_id(self) -> dict[str, SimulatedSensor | BinarySensor]:
         return {
             sensor.sensor_id: sensor
-            for sensor in (self._indoor, self._outdoor, self._occupancy)
+            for sensor in (
+                self._indoor,
+                self._humidity,
+                self._outdoor,
+                self._occupancy,
+            )
         }
 
     def outdoor_temperature_c(self) -> float:
@@ -191,6 +215,7 @@ class RoomSimulator:
         )
 
         self._publish_indoor()
+        self._publish_humidity()
         self._publish_outdoor(outdoor_c)
         self._publish_occupancy()
         self._publish_actuator_state()
@@ -198,6 +223,17 @@ class RoomSimulator:
     def _publish_indoor(self) -> None:
         reading = self._indoor.sample(self._room.temperature_c)
         self._publish_reading(reading, INDOOR_TEMPERATURE_ID)
+
+    def _publish_humidity(self) -> None:
+        """Indoor relative humidity (FR-01).
+
+        Published at the same cadence as temperature because it comes from the
+        same device. Nothing above Layer 1 controls on it; it is measured
+        because FR-01 says so and because D1 and D3 watch it, which is how a
+        failed sensor on that device gets noticed at all.
+        """
+        reading = self._humidity.sample(self._room.relative_humidity_pct)
+        self._publish_reading(reading, INDOOR_HUMIDITY_ID)
 
     def _publish_outdoor(self, outdoor_c: float) -> None:
         """Ambient updates at its own, slower cadence (FR-03, A-04)."""
@@ -212,7 +248,22 @@ class RoomSimulator:
         self._publish_reading(self._outdoor.sample(outdoor_c), OUTDOOR_TEMPERATURE_ID)
 
     def _publish_occupancy(self) -> None:
-        self._publish_reading(self._occupancy.sample(self._occupied), OCCUPANCY_ID)
+        """Publish occupancy as a device would derive it, not as truth (FR-02).
+
+        A real PIR fires on movement and says nothing about a person sitting
+        still, so a present occupant is modelled as intermittent motion and
+        the hold-off turns that back into presence. Publishing ground truth
+        here would hide the one behaviour this sensor actually has.
+        """
+        if self._occupied and self._motion_this_step():
+            self._presence.motion()
+        self._publish_reading(
+            self._occupancy.sample(self._presence.occupied), OCCUPANCY_ID
+        )
+
+    def _motion_this_step(self) -> bool:
+        """Whether an occupant moved enough to trip the PIR this period."""
+        return self._rng.random() < _MOTION_PROBABILITY_PER_STEP
 
     def _publish_reading(self, reading: SensorReading | None, sensor_id: str) -> None:
         if reading is None:
@@ -259,14 +310,21 @@ def build_simulator(
         blackboard=blackboard,
         room=RoomModel(config.sim.room, clock),
         actuator=SimulatedActuator(config.sim.actuator, rng, clock),
+        rng=rng,
         indoor=SimulatedSensor(
             INDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
+        ),
+        humidity=SimulatedSensor(
+            INDOOR_HUMIDITY_ID, Unit.PERCENT_RH, config.sim.sensor_noise, rng, clock
         ),
         outdoor=SimulatedSensor(
             OUTDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
         ),
         occupancy=BinarySensor(
             OCCUPANCY_ID, config.sim.sensor_noise, rng, clock
+        ),
+        presence=OccupancyTracker(
+            hold_off_s=config.sensors.vacancy_hold_off_s, clock=clock
         ),
     )
 

@@ -435,10 +435,12 @@ class TestDriftWiring:
         assert ("space/estimate/thermal", 0) in transport.subscribed
 
     def test_a_sustained_residual_raises_drift_through_the_service(
-        self, wired, clock
+        self, wired, clock, config
     ):
+        """Past the warm-up first: the detector ignores the samples taken
+        while the model is still converging."""
         service, transport, blackboard = wired
-        for index in range(30):
+        for index in range(config.detectors.drift.warmup_samples + 30):
             _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
             _deliver_estimate(blackboard, clock, residual_c=0.3)
             service.tick()
@@ -448,7 +450,7 @@ class TestDriftWiring:
 
     def test_the_drift_fault_names_the_indoor_sensor(self, wired, clock, config):
         service, transport, blackboard = wired
-        for index in range(30):
+        for index in range(config.detectors.drift.warmup_samples + 30):
             _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
             _deliver_estimate(blackboard, clock, residual_c=0.3)
             service.tick()
@@ -460,9 +462,9 @@ class TestDriftWiring:
         ][0]
         assert drift.subject == config.estimator.indoor_sensor_id
 
-    def test_a_healthy_residual_raises_no_drift(self, wired, clock):
+    def test_a_healthy_residual_raises_no_drift(self, wired, clock, config):
         service, transport, blackboard = wired
-        for index in range(60):
+        for index in range(config.detectors.drift.warmup_samples + 60):
             _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
             _deliver_estimate(
                 blackboard, clock, residual_c=0.05 if index % 2 else -0.05
@@ -703,7 +705,7 @@ class TestDerivedDetectorsSuspendOnAnUntrustedSensor:
         service, transport, blackboard = wired
         self._break_the_sensor(service, transport, blackboard, clock, config)
 
-        for _ in range(60):
+        for _ in range(config.detectors.drift.warmup_samples + 60):
             _deliver(blackboard, _reading(clock, value=STUCK_VALUE))
             _deliver_estimate(blackboard, clock, residual_c=0.5)
             service.tick()

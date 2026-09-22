@@ -40,6 +40,23 @@ _NO_GAIN_W = 0.0
 _FULL_CYCLE_RADIANS = 2.0 * math.pi
 
 
+#: Relative humidity is reported against this temperature; the shift per
+#: degree is how much saturation changes around ordinary room conditions.
+#: Both are rules of thumb, which is all this needs to be.
+_REFERENCE_TEMPERATURE_C = 25.0
+_HUMIDITY_PER_DEGREE_PCT = 3.0
+
+#: Physical limits of the quantity itself. A relative humidity outside these
+#: is not a dry room, it is a broken sensor, which is D3's business.
+_MIN_HUMIDITY_PCT = 0.0
+_MAX_HUMIDITY_PCT = 100.0
+
+#: How fast a running coil dries the air, and how fast it comes back.
+_CONDENSATION_RATE_PCT_PER_S = 0.004
+_RECOVERY_RATE_PCT_PER_S = 0.0008
+_OCCUPANT_MOISTURE_PCT_PER_S = 0.0012
+
+
 class RoomModel:
     """The room, as physics rather than as a model of physics.
 
@@ -52,12 +69,39 @@ class RoomModel:
         self._config = config
         self._clock = clock
         self._temperature_c = config.initial_temperature_c
+        self._condensed_humidity_pct = 0.0
         self._start_ts = clock.now()
 
     @property
     def temperature_c(self) -> float:
         """Current true zone temperature. Sensors observe this imperfectly."""
         return self._temperature_c
+
+    @property
+    def relative_humidity_pct(self) -> float:
+        """Current true relative humidity, as a consequence of temperature.
+
+        Not a second state variable. The room holds roughly a fixed mass of
+        water vapour over the minutes this simulation cares about, so relative
+        humidity moves because *saturation* moves with temperature: cool the
+        air and the same water becomes a higher fraction of what the air can
+        hold. A cooling coil also condenses water out, which is why an air
+        conditioner dries a room, and that is the second term.
+
+        Deliberately crude. Nothing in Layers 2 to 4 controls on humidity or
+        models it -- FR-01 requires it to be measured and published, and D1 and
+        D3 to watch it, which is what this supports. A latent-heat model would
+        be precision nobody consumes.
+        """
+        saturation_shift = (
+            _REFERENCE_TEMPERATURE_C - self._temperature_c
+        ) * _HUMIDITY_PER_DEGREE_PCT
+        humidity = (
+            self._config.baseline_humidity_pct
+            + saturation_shift
+            - self._condensed_humidity_pct
+        )
+        return min(_MAX_HUMIDITY_PCT, max(_MIN_HUMIDITY_PCT, humidity))
 
     @property
     def time_constant_s(self) -> float:
@@ -121,4 +165,24 @@ class RoomModel:
         decay = math.exp(-duration_s / self.time_constant_s)
 
         self._temperature_c = equilibrium_c + (self._temperature_c - equilibrium_c) * decay
+        self._condense(duration_s, cooling_fraction, occupied)
         return self._temperature_c
+
+    def _condense(
+        self, duration_s: float, cooling_fraction: float, occupied: bool
+    ) -> None:
+        """Track water leaving the air on the coil, and coming back in.
+
+        A running coil condenses moisture out; an occupant and the outside put
+        it back. Both are first-order rates rather than anything derived, for
+        the reason given on ``relative_humidity_pct``: nothing above Layer 1
+        consumes this, so accuracy beyond "it moves in the right direction for
+        the right reason" would be precision nobody reads.
+        """
+        removed = cooling_fraction * _CONDENSATION_RATE_PCT_PER_S * duration_s
+        recovered = _RECOVERY_RATE_PCT_PER_S * duration_s
+        if occupied:
+            recovered += _OCCUPANT_MOISTURE_PCT_PER_S * duration_s
+        self._condensed_humidity_pct = max(
+            0.0, self._condensed_humidity_pct + removed - recovered
+        )

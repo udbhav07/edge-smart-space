@@ -90,6 +90,16 @@ detectors:
     # meant to be driven by persistence, not by magnitude; without a cap one
     # outlier clears h and D4 becomes the threshold alarm it exists to replace.
     max_sample_sigma: 4.0
+    # Samples ignored before the test starts. A residual is the joint error of
+    # the sensor and the model, so blaming the sensor means nothing until the
+    # model has converged -- and during the first cooling ramp the model lags
+    # badly enough to look exactly like a drifting sensor. Measured, not
+    # chosen: over a healthy 100-minute run the cumulative sum peaks at 10.3
+    # from the first sample, 7.3 after 60, and 3.05 after 120, where it stops
+    # improving. 120 is where the identification transient ends, and it leaves
+    # a margin of nearly 2 sigma below the threshold. R-04 re-derives it on
+    # hardware, where the room's real time constant decides it.
+    warmup_samples: 120
   # D5, section 5.5. The room's thermal time constant is long, so an actuator
   # fault is found in about ten minutes rather than seconds. NFR-02 does not
   # promise otherwise.
@@ -106,6 +116,10 @@ mode:
 # adapter flags a reading outside them as suspect but never suppresses it,
 # because D3 exists to detect exactly that (FR-22).
 sensors:
+  # FR-02. A PIR reports motion, not presence: somebody reading quietly sets
+  # off nothing, so the room stays occupied until nothing has been seen for
+  # this long. Ten minutes is the documented default.
+  vacancy_hold_off_s: 600.0
   adapters:
     - sensor_id: temp_01
       unit: C
@@ -186,6 +200,10 @@ sim:
     initial_temperature_c: 29.0
     solar_gain_amplitude_w: 300.0           # Estimator has no regressor for this
     solar_gain_period_s: 14400.0
+    # Relative humidity at the reference temperature with a dry coil. Hyderabad
+    # indoors, roughly. Nothing above Layer 1 controls on humidity; FR-01
+    # requires it measured and published and D1/D3 watch it.
+    baseline_humidity_pct: 55.0
   sensor_noise:
     sigma_c: 0.15
     quantisation_c: 0.1

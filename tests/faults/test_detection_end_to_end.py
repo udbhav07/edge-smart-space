@@ -291,20 +291,32 @@ class TestTheFaultIsIndistinguishableFromAReadOne:
         assert injections == [(f"space/inject/{INDOOR_TEMPERATURE_ID}", True)]
 
 
-class TestASensorNothingIsPublishing:
-    """hum_01 is configured but the simulator has no humidity model, so
-    nothing ever publishes it. That is the UNKNOWN case, live."""
+class TestBeforeAnythingHasBeenObserved:
+    """The UNKNOWN case, live.
 
-    def test_a_sensor_never_heard_from_raises_no_fault(self, wiring):
-        """It has not stopped reporting; it has never started. Treating the
-        two alike would raise a dropout against every sensor at boot."""
-        wiring.run_for(600.0)
-        assert [
-            event for event in wiring.faults() if event.subject == "hum_01"
-        ] == []
+    Until this was fixed, hum_01 was configured and nothing ever published it,
+    which made this class's point for free. FR-01 requires humidity to be
+    measured, so the simulator now publishes it and the point has to be made
+    honestly: at the start of a run, nothing has been observed about any
+    sensor, and nothing is claimed about any of them.
+    """
 
-    def test_and_is_not_reported_as_healthy_either(self, wiring):
-        """There is no Quality for "not yet observed", so nothing is claimed
+    def test_nothing_is_claimed_before_the_first_tick(self, wiring):
+        assert wiring.faults() == []
+        assert wiring.health(INDOOR_TEMPERATURE_ID) == []
+
+    def test_a_sensor_is_not_reported_healthy_until_it_has_reported(
+        self, wiring
+    ):
+        """There is no Quality for "not yet observed", so nothing is published
         rather than OK being asserted about a sensor nobody has heard."""
-        wiring.run_for(600.0)
         assert wiring.health("hum_01") == []
+
+    def test_every_configured_sensor_does_eventually_report(self, wiring, config):
+        """A configured sensor nothing publishes is a hole: its detectors sit
+        UNKNOWN forever and no fault on it can ever be raised."""
+        wiring.run_for(300.0)
+        for sensor in config.sensors.adapters:
+            assert wiring.health(sensor.sensor_id), (
+                f"{sensor.sensor_id} is configured but never reported"
+            )

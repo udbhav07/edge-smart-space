@@ -255,6 +255,11 @@ class DriftDetectorConfig(_Section):
         gt=0.0,
         description="Largest contribution one sample may make, in sigma",
     )
+    warmup_samples: int = Field(
+        ge=0,
+        description="Estimates ignored before the test starts, while the "
+        "model is still converging",
+    )
 
     @model_validator(mode="after")
     def _one_sample_cannot_carry_the_test(self) -> DriftDetectorConfig:
@@ -344,6 +349,12 @@ class SensorsConfig(_Section):
     """Every sensor the system expects to hear from."""
 
     adapters: tuple[SensorConfig, ...] = Field(min_length=1)
+    vacancy_hold_off_s: float = Field(
+        default=600.0,
+        ge=0.0,
+        description="FR-02: how long the room stays occupied after the last "
+        "motion or door transition, in seconds",
+    )
 
     @model_validator(mode="after")
     def _sensor_ids_are_unique(self) -> SensorsConfig:
@@ -507,6 +518,12 @@ class RoomConfig(_Section):
         description="Unmodelled disturbance the estimator has no regressor for (R-04)",
     )
     solar_gain_period_s: float = Field(gt=0.0, description="Disturbance cycle length")
+    baseline_humidity_pct: float = Field(
+        default=55.0,
+        ge=0.0,
+        le=100.0,
+        description="Relative humidity at the reference temperature, per cent",
+    )
 
 
 class SimConfig(_Section):
