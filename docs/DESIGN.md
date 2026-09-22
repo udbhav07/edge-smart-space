@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
 | 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
 | 1.6 | Reconciled with the detector bank as built (Week 3). D2's latency target was unreachable by construction and is corrected from 60 s to 310 s, with the reason recorded in §5.5. D2 and D3 no longer apply to the PIR: an unoccupied room reports a constant legitimately, so variance says nothing about a stuck binary sensor, and §7.1's "D1/D2" becomes D1 only. The fault-clear confirmation period is stated as belonging to the aggregator rather than the mode manager, so one number has one owner. Fault injection gains a channel: `space/inject/{subject}` and `InjectionCommand` in §6.1 and §6.2, applied at the Layer 1 adapter so nothing above can tell an injected fault from a suffered one (FR-31). |
 | 1.5 | Adds an assistance tool surface (§5.7.6, FR-70 to FR-75). The reasoning layer could propose a setpoint and nothing else, so "put that in my calendar" had no representation at all. A tool is now a declaration — name, purpose, typed parameters, and how far its consequences reach — and the model is shown that and nothing more, so which service fulfils it is a wiring choice rather than a prompt change. The reasoning layer *runs* its own tools; the confirmation gate narrows to actions that commit the occupant to an outside party, which is what FR-54 was always about. FR-42 and FR-58 are amended accordingly. |
@@ -778,6 +779,35 @@ detect faster at the cost of reporting a settled room as stuck, which is
 exactly the trade R-04 defers until sigma is measured on hardware rather than
 assumed. The number was wrong, not the design; recording it as wrong is worth
 more than a detector quietly missing a target nobody re-derived.
+
+**On D4's warm-up, added at v1.8.** A residual is the joint error of the
+sensor *and* the model, so reading one as evidence about the sensor is only
+valid once the model can be trusted. While the room makes its first approach to
+setpoint, the estimator's one-step prediction lags the real cooling and
+produces a sustained one-directional residual — precisely the signature D4
+looks for, from a perfectly healthy sensor. Measured over a healthy
+hundred-minute run, the cumulative sum peaks at 10.3 with no warm-up, 7.3 after
+60 samples, and 3.05 after 120, beyond which it stops improving. `warmup_samples`
+is therefore 120, which is where the identification transient ends and leaves
+nearly 2 σ of margin below `h`. It applies once, at start; drift arriving later
+is caught at the stated latency. R-04 re-derives it on hardware, where the
+room's real time constant decides where the transient ends.
+
+Two related bounds, for the same reason — the test must be tripped by
+persistence, not by magnitude. No single sample may contribute more than
+`max_sample_sigma`, or one outlier clears `h` alone and D4 degenerates into the
+threshold alarm it exists to replace. And a repaired sensor produces exactly
+such an outlier, because the reading steps back to the truth while the frozen
+model is still predicting from where it was, so every accumulating detector on
+a subject is reset when any fault on that subject retires.
+
+**D4 and D5 are suspended while the indoor sensor is faulted.** Both are
+derived tests that read that one temperature, so neither has an input worth
+judging once it is known to be wrong. This is not tidiness: a sensor frozen at
+a plausible value makes the room look as though it has stopped responding to
+the air conditioner, so D5 raises an actuator fault that is not there, two
+subjects are faulted at once, the mode escalates to `SAFE_HOLD`, and FR-27's
+control-on-prediction is switched off by the very fault it exists to survive.
 
 **On D5's test, corrected at v1.7.** This row read `|ΔT|` below a threshold
 until the detector was built. That catches a room which did not move, but not
