@@ -420,6 +420,37 @@ def _deliver_estimate(blackboard, clock, residual_c, sigma_c=0.15):
     )
 
 
+def _deliver_model_expecting_cooling(blackboard, clock, config, total_c=2.0):
+    """Feed estimates in which the model predicts the room cooling.
+
+    D5 judges achieved cooling against what the model expected, so a test for
+    a dead actuator has to supply an expectation -- and enough estimates to
+    clear the warm-up, since before that the expectation is the prior.
+    """
+    steps = config.detectors.actuator.warmup_samples + 40
+    step_c = total_c / steps
+    temperature = 29.0
+    for _ in range(steps):
+        _deliver_estimate_at(blackboard, clock, temperature)
+        temperature -= step_c
+
+
+def _deliver_estimate_at(blackboard, clock, temperature_c):
+    """An estimate from a model tracking the room exactly."""
+    estimate = ThermalEstimate(
+        ts=clock.now(),
+        t_in=temperature_c,
+        t_pred=temperature_c,
+        residual=0.0,
+        residual_sigma=0.15,
+        model_confidence=0.9,
+        adaptation=AdaptationState.ACTIVE,
+    )
+    blackboard.dispatch(
+        "space/estimate/thermal", estimate.model_dump_json().encode()
+    )
+
+
 def _deliver_command(blackboard, clock, kind, setpoint_c=None):
     command = Command(
         ts=clock.now(), actuator_id="ac", kind=kind, setpoint_c=setpoint_c
@@ -489,6 +520,7 @@ class TestActuatorWiring:
         service, transport, blackboard = wired
         _deliver(blackboard, _reading(clock, value=29.0))
         _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+        _deliver_model_expecting_cooling(blackboard, clock, config)
 
         window_s = config.detectors.actuator.evaluation_window_s
         for index in range(int(window_s / 5.0) + 2):

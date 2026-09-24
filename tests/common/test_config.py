@@ -117,9 +117,12 @@ class TestCrossSectionConsistency:
         assert default_config.controller.min_off_s == default_config.validator.min_off_s
 
     def test_disagreeing_dwell_values_are_rejected(self, tmp_path):
+        # The controller's dwell is the first of the two in the file, so one
+        # replacement moves it and leaves the validator's alone. Anchored on
+        # the value rather than on its neighbouring lines, which a comment
+        # added above it would otherwise silently break -- as one did.
         text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
-            "controller:\n  deadband_c: 0.5\n  min_off_s: 180.0",
-            "controller:\n  deadband_c: 0.5\n  min_off_s: 120.0",
+            "  min_off_s: 180.0", "  min_off_s: 120.0", 1
         )
         path = tmp_path / "config.yaml"
         path.write_text(text, encoding="utf-8")

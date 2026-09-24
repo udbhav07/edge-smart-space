@@ -91,6 +91,8 @@ class ThermalEstimatorService:
         self._faulted_sensors: set[str] = set()
         self._mode = Mode.INIT
         self._skipped_pairs = 0
+        self._free_running_c: float | None = None
+        self._last_prediction_c: float | None = None
 
     # --- wiring -------------------------------------------------------
 
@@ -135,6 +137,20 @@ class ThermalEstimatorService:
     @property
     def adaptation_frozen(self) -> bool:
         return bool(self._faulted_sensors) or self._mode in _FREEZING_MODES
+
+    @property
+    def indoor_trusted(self) -> bool:
+        """Whether the indoor reading still means anything."""
+        return self._config.estimator.indoor_sensor_id not in self._faulted_sensors
+
+    @property
+    def free_running_c(self) -> float | None:
+        """The model's own temperature while the sensor is not trusted.
+
+        None whenever the sensor is trusted, because then the room is being
+        measured and there is nothing to dead-reckon.
+        """
+        return self._free_running_c
 
     def _on_health(self, _topic: str, health: SensorHealth) -> None:
         """Track which regressor inputs are untrustworthy (FR-29)."""
@@ -189,6 +205,14 @@ class ThermalEstimatorService:
         previous_c, previous_ts = self._indoor_c, self._indoor_ts
         self._indoor_c, self._indoor_ts = reading.value, reading.ts
 
+        if not self.indoor_trusted:
+            # The reading is known to be wrong, so it is kept for reporting
+            # and used for nothing else. Predicting one step ahead *from* it
+            # would produce a prediction that simply follows the fault, which
+            # is the opposite of what FR-27 asks for: tick() dead-reckons
+            # instead.
+            return
+
         if previous_c is None or previous_ts is None or self._outdoor_c is None:
             return
 
@@ -225,6 +249,69 @@ class ThermalEstimatorService:
         tolerance = self._config.estimator.sample_interval_tolerance
         return abs(interval_s - nominal_s) <= nominal_s * tolerance
 
+    def tick(self) -> bool:
+        """Advance the model when the room cannot be measured (FR-27).
+
+        This is the substitution FR-27 actually asks for. A one-step-ahead
+        prediction is formed *from* the current reading, so while that reading
+        is frozen or absent the prediction follows it and substituting one for
+        the other changes nothing. The model has to run free instead: its own
+        previous output becomes its next input, and it dead-reckons the room
+        forward from the last state anyone trusted.
+
+        The seed is already stale by construction. A stuck sensor is not
+        detected until its variance has collapsed for a whole window, so the
+        last trustworthy belief is minutes old before free-running begins, and
+        the error grows from there with nothing to correct it. That is the
+        reason the substitution is time-boxed at all (section 7.2), and it is
+        why the budget is a duration rather than a confidence.
+
+        :returns: whether an estimate was published. False is ordinary: the
+            sensor is fine, or nothing has been observed to seed from.
+        """
+        if self.indoor_trusted:
+            self._free_running_c = None
+            return False
+        if self._outdoor_c is None:
+            return False
+
+        seed = self._free_running_c
+        if seed is None:
+            seed = self._last_prediction_c if self._last_prediction_c is not None else self._indoor_c
+        if seed is None:
+            return False
+
+        regressor = Regressor(
+            indoor_c=seed,
+            outdoor_c=self._outdoor_c,
+            command=self._command,
+            occupancy=self._occupancy,
+        )
+        self._free_running_c = self._estimator.predict(regressor)
+        self._publish_free_running()
+        return True
+
+    def _publish_free_running(self) -> None:
+        """Publish a dead-reckoned estimate.
+
+        ``t_in`` remains whatever the sensor last said, so the residual keeps
+        its meaning -- how far the untrusted sensor now sits from the model --
+        which is the number worth watching during a degraded run. The
+        controller reads ``t_pred`` and nothing else.
+        """
+        if self._free_running_c is None or self._indoor_c is None:
+            return
+        estimate = ThermalEstimate(
+            ts=self._clock.now(),
+            t_in=self._indoor_c,
+            t_pred=self._free_running_c,
+            residual=self._indoor_c - self._free_running_c,
+            residual_sigma=self._estimator.residual_sigma,
+            model_confidence=self._estimator.model_confidence,
+            adaptation=self._estimator.adaptation,
+        )
+        self._blackboard.publish(topics.ESTIMATE_THERMAL, estimate)
+
     def _publish(self, result: UpdateResult, measured_c: float) -> None:
         estimate = ThermalEstimate(
             ts=self._clock.now(),
@@ -235,6 +322,7 @@ class ThermalEstimatorService:
             model_confidence=self._estimator.model_confidence,
             adaptation=self._estimator.adaptation,
         )
+        self._last_prediction_c = result.prediction_c
         self._blackboard.publish(topics.ESTIMATE_THERMAL, estimate)
         self._blackboard.publish(
             topics.ESTIMATE_COEFFICIENTS, self._estimator.snapshot()

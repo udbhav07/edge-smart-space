@@ -69,12 +69,19 @@ class TestDeadband:
         self, controller, clock, config
     ):
         """Asymmetry is the point: the band prevents chatter around the
-        setpoint, so a running compressor is not stopped by a small error."""
+        setpoint, so a running compressor is not stopped by a small error.
+
+        What is asserted is that the compressor keeps running, not the literal
+        command. A tick inside the band reports MAINTAIN, unless the re-assert
+        interval has come round, in which case it re-sends COOL -- and both
+        mean the same thing to the plant (R-02).
+        """
         _start_cooling(controller, clock, config)
         command = controller.tick(
             SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
         )
-        assert command.kind is CommandKind.MAINTAIN
+        assert command.kind is not CommandKind.OFF
+        assert controller.compressor_on
 
     def test_the_deadband_edge_does_not_trigger_cooling(self, controller, config):
         command = controller.tick(
@@ -96,7 +103,10 @@ class TestCompressorDwell:
         command = controller.tick(
             SETPOINT_C + 2.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
         )
-        assert command.kind is CommandKind.MAINTAIN
+        # Not restarted is the claim: the command may be MAINTAIN or a
+        # re-asserted OFF, and neither starts the compressor.
+        assert command.kind is not CommandKind.COOL
+        assert not controller.compressor_on
 
     def test_a_restart_after_the_dwell_window_is_commanded(
         self, controller, clock, config
@@ -203,3 +213,78 @@ class TestDeterminism:
             SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
         )
         assert command.actuator_id == ACTUATOR_ID
+
+
+class TestReassertingIntent:
+    """R-02: the IR path is open-loop, so a command can simply not land."""
+
+    def test_a_quiet_tick_reports_maintain(self, controller, config):
+        command = controller.tick(
+            SETPOINT_C + config.deadband_c / 2.0,
+            UNUSED_PREDICTION_C,
+            SETPOINT_C,
+            Mode.NORMAL,
+        )
+        assert command.kind is CommandKind.MAINTAIN
+
+    def test_the_intended_state_is_re_sent_after_the_interval(
+        self, controller, clock, config
+    ):
+        """Without this a lost OFF is permanent: the controller believes the
+        compressor stopped, reports MAINTAIN forever, and the room freezes.
+        Measured before the fix, it reached 18 C against a 24 C setpoint."""
+        clock.advance(config.reassert_interval_s)
+        command = controller.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is CommandKind.OFF
+
+    def test_a_running_compressor_re_asserts_cooling(
+        self, controller, clock, config
+    ):
+        _start_cooling(controller, clock, config)
+        command = controller.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is CommandKind.COOL
+        assert command.setpoint_c == SETPOINT_C
+
+    def test_re_asserting_does_not_change_the_compressor_state(
+        self, controller, clock, config
+    ):
+        clock.advance(config.reassert_interval_s)
+        controller.tick(SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL)
+        assert not controller.compressor_on
+
+    def test_the_interval_restarts_after_each_assertion(
+        self, controller, clock, config
+    ):
+        clock.advance(config.reassert_interval_s)
+        controller.tick(SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL)
+        command = controller.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is CommandKind.MAINTAIN
+
+    def test_a_transition_counts_as_an_assertion(self, controller, clock, config):
+        """A command that changes the state has just stated it, so the timer
+        starts from there rather than re-sending a second later."""
+        clock.advance(config.reassert_interval_s)
+        controller.tick(
+            SETPOINT_C + 2.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        command = controller.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is CommandKind.MAINTAIN
+
+    def test_a_held_mode_still_holds_rather_than_re_asserting(
+        self, controller, clock, config
+    ):
+        """HOLD outranks the refresh: a mode that forbids actuation is not a
+        state to re-assert into the plant."""
+        clock.advance(config.reassert_interval_s)
+        command = controller.tick(
+            SETPOINT_C + 2.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD
+        )
+        assert command.kind is CommandKind.HOLD

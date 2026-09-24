@@ -41,11 +41,15 @@ class TestScenarioConfiguration:
         adjusted = _configure(config, "stuck")
         assert adjusted.sim.room.cooling_power_w > 0.0
 
-    def test_the_actuator_scenario_breaks_the_plant(self, config):
-        """The air conditioner is commanded and does nothing, which is the
-        fault under demonstration."""
-        adjusted = _configure(config, "actuator")
-        assert adjusted.sim.room.cooling_power_w == 0.0
+    def test_no_scenario_weakens_the_plant(self, config):
+        """The actuator scenario breaks the unit by injecting a fault, not by
+        configuring a room that could never be cooled. A weaker plant would
+        also be one the model learns is weak, and D5 tests the room against
+        what the model expects -- so a unit dead before identification began
+        is a unit with no expectation left to violate."""
+        for scenario in ("stuck", "actuator"):
+            adjusted = _configure(config, scenario)
+            assert adjusted.sim.room == config.sim.room
 
 
 class TestRunning:

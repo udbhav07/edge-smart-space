@@ -17,25 +17,54 @@ would see one command and conclude cooling had stopped. Only COOL and OFF
 change the state; MAINTAIN and HOLD leave it alone. This is the same
 distinction the validator draws for dwell and rate limits.
 
+**The test is against the model's expectation, not a fixed number of
+degrees.** This is what makes D5 one of the two detectors a thermostat cannot
+have. A room sitting near its equilibrium cannot cool much however well the
+air conditioner works, so a fixed threshold blames the actuator for physics:
+with one, this detector raised a fault within an hour of every healthy run,
+because the room had simply arrived where it was going. What the model
+supplies is the counterfactual -- how much cooling *should* have happened over
+this window -- and the fault is the room delivering a small fraction of it.
+
+Expected cooling is accumulated one step at a time, and the arithmetic has to
+be done carefully. A published estimate pairs ``t_pred`` -- the model's
+prediction of *this* instant, made one step ago -- with ``t_in``, the
+measurement of the same instant. Their difference is the prediction error, not
+an expectation, and summing its negative half just accumulates noise: doing
+exactly that produced an expected 9.5 C of cooling over a window in which the
+room honestly moved 2 C, and D5 called a working unit dead. What the model
+expects over a step is ``t_pred`` against the measurement it was predicted
+*from*, so the previous reading is kept and differenced against the next
+prediction.
+
+Summing those across the window approximates the cooling expected across it.
+It is an approximation, because it re-anchors to the measurement every step
+rather than compounding, which is why the bar is a generous fraction rather
+than a tight one. The fault being caught is an actuator doing nothing at all,
+which delivers close to zero against an expectation of several tenths.
+
 **The window is long because the room is slow.** Ten minutes, against a
 thermal time constant measured in tens of minutes. An actuator fault is found
 on the order of ten minutes and NFR-02 deliberately does not promise better.
 
-**Where this can be wrong.** The test asks whether the room cooled, and a room
-can fail to cool for reasons that are not the air conditioner's fault: a door
-left open, a heat load nobody modelled, or an ambient high enough that the
-plant is at capacity. On a 45-degree afternoon a working unit may hold the
-room level rather than cool it, and this detector would call that a fault.
-That is the trade R-04 settles with measured data during bring-up, by raising
-the window or lowering the required cooling; it is stated here because it is a
-limit of the method rather than a bug in it.
+**Where this can still be wrong.** The model is identified from the same room
+the test is about, so a persistent unmodelled heat load -- a door propped open
+all afternoon -- eventually becomes part of what the model expects, and the
+test stops seeing it. R-04 settles the numbers with measured data during
+bring-up. What cannot be settled is that this detector is only ever as good as
+the model behind it.
 """
 
 from __future__ import annotations
 
 from src.common.clock import Clock
 from src.common.config import ActuatorDetectorConfig
-from src.common.schemas import CommandKind, DetectorId, SensorReading
+from src.common.schemas import (
+    CommandKind,
+    DetectorId,
+    SensorReading,
+    ThermalEstimate,
+)
 from src.faults.detectors.base import Finding, Judgment
 
 #: Commands that change whether the compressor is running. MAINTAIN and HOLD
@@ -66,6 +95,9 @@ class ActuatorResponseDetector:
         self._started_s: float | None = None
         self._start_temperature_c: float | None = None
         self._latest_temperature_c: float | None = None
+        self._expected_cooling_c = 0.0
+        self._estimates_seen = 0
+        self._previous_t_in_c: float | None = None
 
     @property
     def subject(self) -> str:
@@ -102,6 +134,40 @@ class ActuatorResponseDetector:
             self._start_temperature_c = reading.value
             self._started_s = self._clock.monotonic()
 
+    def observe_estimate(self, estimate: ThermalEstimate) -> None:
+        """Accumulate the cooling the model expects over this window.
+
+        Only while cooling is being commanded. An expectation gathered while
+        the compressor was off says nothing about whether the compressor
+        works, and warming the model expects is not cooling it expects, so
+        only the cooling half is accumulated.
+        """
+        self._estimates_seen += 1
+        previous_c, self._previous_t_in_c = self._previous_t_in_c, estimate.t_in
+
+        if not self._model_is_warm():
+            # The expectation is still the prior, which over-predicts cooling
+            # threefold. Judging against it blames a working air conditioner
+            # for the estimator not having learned the room yet.
+            return
+        if not self._cooling or self._started_s is None or previous_c is None:
+            return
+
+        # The model's prediction is of this instant, formed from the previous
+        # one, so the change it expected is measured against that.
+        expected_change_c = estimate.t_pred - previous_c
+        if expected_change_c < 0.0:
+            self._expected_cooling_c += -expected_change_c
+
+    def _model_is_warm(self) -> bool:
+        """Whether the model behind the expectation can be trusted yet."""
+        return self._estimates_seen > self._config.warmup_samples
+
+    @property
+    def expected_cooling_c(self) -> float:
+        """Cooling the model has predicted across the current window."""
+        return self._expected_cooling_c
+
     def reset(self) -> None:
         """Abandon the current evaluation window.
 
@@ -111,6 +177,7 @@ class ActuatorResponseDetector:
         """
         self._started_s = None
         self._start_temperature_c = None
+        self._expected_cooling_c = 0.0
 
     def evaluate(self) -> Finding:
         """Judge the actuator on the current cooling period.
@@ -123,6 +190,9 @@ class ActuatorResponseDetector:
         while reporting it FAULTED on a window with no temperatures in it
         would blame the air conditioner for a broken sensor.
         """
+        if not self._model_is_warm():
+            return self._finding(Judgment.UNKNOWN, cooled_c=0.0, elapsed_s=0.0)
+
         if not self._cooling or self._started_s is None:
             return self._finding(Judgment.UNKNOWN, cooled_c=0.0, elapsed_s=0.0)
 
@@ -133,23 +203,37 @@ class ActuatorResponseDetector:
         if elapsed_s < self._config.evaluation_window_s:
             return self._finding(Judgment.UNKNOWN, cooled_c=0.0, elapsed_s=elapsed_s)
 
+        # Captured before any re-anchor, because re-anchoring clears the
+        # expectation and the evidence has to say what the decision was
+        # actually made on. Reported zero for every CLEAR verdict until this
+        # was fixed, which made the healthy case impossible to calibrate from
+        # its own audit trail.
+        expected_c = self._expected_cooling_c
         cooled_c = self._cooling_achieved_c()
-        if cooled_c >= self._config.min_cooling_c:
+        required_c = expected_c * self._config.response_fraction
+
+        if expected_c < self._config.min_expected_cooling_c:
+            # The model says barely anything should happen: the room is at its
+            # equilibrium, or the ambient has the plant at capacity. There is
+            # no test to run, so nothing is claimed, and the window restarts so
+            # the next verdict is measured over a fresh stretch.
+            self._anchor_window()
+            return self._finding(Judgment.UNKNOWN, 0.0, elapsed_s, expected_c)
+
+        if cooled_c >= required_c:
             # It works. Re-anchor, so the next window is a fresh test rather
             # than a verdict that stands on one success forever.
             self._anchor_window()
-            return self._finding(Judgment.CLEAR, cooled_c, elapsed_s)
+            return self._finding(Judgment.CLEAR, cooled_c, elapsed_s, expected_c)
 
-        return self._finding(Judgment.FAULTED, cooled_c, elapsed_s)
+        return self._finding(Judgment.FAULTED, cooled_c, elapsed_s, expected_c)
 
     def _cooling_achieved_c(self) -> float:
         """How much the room fell over the window. Negative means it rose.
 
-        Section 5.5 writes this test as ``|dT|`` below a threshold, which
-        catches a room that did not move but not a room that got *warmer*
-        while the compressor was supposedly running -- the more certain
-        actuator fault of the two. Signed cooling subsumes both cases, so that
-        is what is measured here and what section 5.5 now says.
+        Signed rather than absolute: a room that got *warmer* under
+        sustained cooling is the more certain actuator fault of the two, and
+        ``|dT|`` would miss it.
         """
         if self._start_temperature_c is None or self._latest_temperature_c is None:
             return 0.0
@@ -162,18 +246,35 @@ class ActuatorResponseDetector:
         self._anchor_window()
 
     def _stop_cooling(self) -> None:
+        """End the cooling period, and the expectation gathered during it.
+
+        Clearing the expectation matters as much as clearing the window. It is
+        accumulated per window, and leaving it behind lets it grow across every
+        cycle of an ordinary deadband: measured, it reached an expected 9.5 C
+        of cooling over a window in which the room honestly moved 2 C, and D5
+        called a healthy air conditioner dead.
+        """
         self._cooling = False
         self._started_s = None
         self._start_temperature_c = None
+        self._expected_cooling_c = 0.0
 
     def _anchor_window(self) -> None:
         """Start a fresh evaluation window from the temperature now known."""
         self._started_s = self._clock.monotonic()
         self._start_temperature_c = self._latest_temperature_c
+        self._expected_cooling_c = 0.0
 
     def _finding(
-        self, judgment: Judgment, cooled_c: float, elapsed_s: float
+        self,
+        judgment: Judgment,
+        cooled_c: float,
+        elapsed_s: float,
+        expected_c: float | None = None,
     ) -> Finding:
+        expected = (
+            self._expected_cooling_c if expected_c is None else expected_c
+        )
         return Finding(
             detector=DetectorId.D5_ACTUATOR_NO_RESPONSE,
             subject=self._subject,
@@ -181,9 +282,11 @@ class ActuatorResponseDetector:
             confidence=1.0 if judgment is Judgment.FAULTED else 0.0,
             evidence={
                 "cooled_c": cooled_c,
-                "min_cooling_c": self._config.min_cooling_c,
+                "expected_cooling_c": expected,
+                "required_cooling_c": expected * self._config.response_fraction,
                 "elapsed_s": elapsed_s,
                 "window_s": self._config.evaluation_window_s,
+                "estimates_seen": float(self._estimates_seen),
                 "start_temperature_c": (
                     self._start_temperature_c
                     if self._start_temperature_c is not None

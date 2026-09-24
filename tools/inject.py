@@ -4,6 +4,7 @@
     python -m tools.inject temp_01 dropout       # make it go quiet
     python -m tools.inject temp_01 range 999.0   # report something impossible
     python -m tools.inject temp_01 drift 0.01    # 0.01 degrees per second
+    python -m tools.inject ac dead               # the unit stops cooling
     python -m tools.inject temp_01 clear         # stop injecting
     python -m tools.inject --list                # what can be injected
 
@@ -27,6 +28,7 @@ import argparse
 import logging
 from pathlib import Path
 
+from src.common import topics
 from src.common.clock import RealClock
 from src.common.config import ConfigError, load_config
 from src.common.injection import FAULTS_REQUIRING_MAGNITUDE, InjectedFault
@@ -46,6 +48,7 @@ FAULT_NAMES: dict[str, InjectedFault] = {
     "dropout": InjectedFault.DROPOUT,
     "range": InjectedFault.OUT_OF_RANGE,
     "drift": InjectedFault.DRIFT,
+    "dead": InjectedFault.STUCK_OFF,
     "clear": InjectedFault.NONE,
 }
 
@@ -56,6 +59,10 @@ MAGNITUDE_UNITS: dict[InjectedFault, str] = {
     InjectedFault.OUT_OF_RANGE: "the impossible value to report",
     InjectedFault.DRIFT: "drift rate, in units per second",
 }
+
+#: Subjects that are not sensors. The air conditioner is injectable too, so
+#: FR-24 can be triggered the same way FR-20 to FR-23 are.
+_ACTUATOR_SUBJECTS = (topics.AIR_CONDITIONER_ID,)
 
 #: MQTT delivers from the network thread, so the publish has to reach the
 #: broker before the process exits. One second is far longer than a local
@@ -113,7 +120,14 @@ def _list_targets(config) -> str:
         f"  {sensor.sensor_id:<12} {sensor.unit.value:<5} {sensor.description}"
         for sensor in config.sensors.adapters
     )
-    return f"{_describe_faults()}\n\nConfigured sensors:\n{sensors}"
+    actuators = "\n".join(
+        f"  {name:<12} {'':<5} Air conditioner (takes 'dead')"
+        for name in _ACTUATOR_SUBJECTS
+    )
+    return (
+        f"{_describe_faults()}\n\nConfigured sensors:\n{sensors}"
+        f"\n\nActuators:\n{actuators}"
+    )
 
 
 def _validate(arguments) -> str:
@@ -162,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     known = {sensor.sensor_id for sensor in config.sensors.adapters}
+    known.update(_ACTUATOR_SUBJECTS)
     if arguments.subject not in known:
         # A warning rather than a refusal: the configured list is what this
         # machine expects, and a subject published by something else is a

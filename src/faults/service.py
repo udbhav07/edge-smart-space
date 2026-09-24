@@ -213,8 +213,11 @@ class DetectorBankService:
         """
         if not self._indoor_is_trusted():
             # The residual is measured against a reading already known to be
-            # wrong, so it says nothing about drift.
+            # wrong, so it says nothing about drift -- and the same estimate is
+            # what D5 builds its expectation from, so neither may use it.
             return
+        # D5 needs the model's expectation to judge the actuator against.
+        self._actuator.observe_estimate(estimate)
         subject = self._detectors.get(self._config.estimator.indoor_sensor_id)
         if subject is None:
             LOGGER.debug("no detectors for the indoor sensor; estimate ignored")

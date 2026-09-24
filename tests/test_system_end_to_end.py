@@ -30,6 +30,7 @@ import pytest
 
 from src.common.clock import SimClock
 from src.common.config import load_config
+from src.common import topics
 from src.common.injection import InjectedFault
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
@@ -87,6 +88,7 @@ class System:
         elapsed = 0.0
         while elapsed < seconds:
             self.simulator.step()
+            self.estimator.tick()
             self.bank.tick()
             self.control.tick()
             self.clock.advance(period_s)
@@ -348,35 +350,54 @@ class TestRecovery:
 
 
 class TestAnActuatorThatIsNotCooling:
-    def test_a_dead_actuator_is_caught_by_the_room_not_responding(
-        self, config, tmp_path
-    ):
-        """FR-24 with no acknowledgement anywhere (R-02): the plant is told to
-        cool, the room does not move, and that is the evidence."""
-        room = config.sim.room.model_copy(update={"cooling_power_w": 0.0})
-        broken = config.model_copy(
-            update={"sim": config.sim.model_copy(update={"room": room})}
-        )
-        system = System(broken, SimClock())
+    """FR-24, and the limit that comes with a model-based test.
 
-        window_s = config.detectors.actuator.evaluation_window_s
-        system.run_for(window_s + 300.0)
+    The room runs healthily first, deliberately. D5 judges what the room did
+    against what the model expected of it, and a unit already dead when
+    identification began teaches the model that cooling does nothing -- after
+    which there is no expectation left to violate. What it detects is an air
+    conditioner that *stops* working, which is the fault that happens.
+    """
+
+    #: Long enough for the model to learn that cooling works.
+    LEARNING_S = 3 * 3600.0
+
+    def _break_the_actuator(self, system) -> float:
+        system.run_for(self.LEARNING_S)
+        assert system.faults() == [], "the healthy run must raise nothing"
+        system.injector.inject(topics.AIR_CONDITIONER_ID, InjectedFault.STUCK_OFF)
+        return system.clock.now()
+
+    def test_a_dead_actuator_is_caught_by_the_room_not_responding(
+        self, system, config
+    ):
+        """No acknowledgement anywhere (R-02): the plant is told to cool, the
+        room fails to respond, and that is the whole of the evidence."""
+        self._break_the_actuator(system)
+        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
         assert DetectorId.D5_ACTUATOR_NO_RESPONSE in {
             event.detector for event in system.faults()
         }
 
+    def test_the_fault_carries_what_the_model_expected(self, system, config):
+        """The counterfactual is the evidence: a fixed number of degrees would
+        blame the actuator whenever the room was near its equilibrium."""
+        self._break_the_actuator(system)
+        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
+        event = [
+            fault
+            for fault in system.faults()
+            if fault.detector is DetectorId.D5_ACTUATOR_NO_RESPONSE
+        ][0]
+        assert event.evidence["expected_cooling_c"] > 0.0
+        assert event.evidence["cooled_c"] < event.evidence["required_cooling_c"]
+
     def test_the_system_stops_actuating_when_the_actuator_is_faulted(
-        self, config, tmp_path
+        self, system, config
     ):
         """FR-28: cease closed-loop actuation and hold."""
-        room = config.sim.room.model_copy(update={"cooling_power_w": 0.0})
-        broken = config.model_copy(
-            update={"sim": config.sim.model_copy(update={"room": room})}
-        )
-        system = System(broken, SimClock())
-
-        window_s = config.detectors.actuator.evaluation_window_s
-        system.run_for(window_s + 300.0)
+        self._break_the_actuator(system)
+        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
         assert system.mode() in (Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD)
 
         before = len(system.commands())
@@ -385,6 +406,16 @@ class TestAnActuatorThatIsNotCooling:
         assert issued and all(
             command.kind is CommandKind.HOLD for command in issued
         )
+
+    def test_a_held_system_does_not_leave_the_compressor_running(
+        self, system, config
+    ):
+        """FR-28 asks for a safe state, and a compressor left at full power
+        with nobody watching is not one."""
+        self._break_the_actuator(system)
+        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
+        system.run_for(600.0)
+        assert system.simulator._actuator.cooling_fraction == 0.0
 
 
 class TestTheLoopSurvivesWhatIsAboveIt:

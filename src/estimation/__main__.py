@@ -35,9 +35,10 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 CLIENT_ID = "thermal-estimator"
 
-#: The service is entirely callback-driven, so the main thread only has to
-#: stay alive and remain interruptible.
-_IDLE_INTERVAL_S = 1.0
+#: The service is callback-driven while the sensor is trusted. It stops being
+#: so the moment the sensor is not: a dropped sensor delivers no callbacks at
+#: all, and that is exactly when the model has to keep running (FR-27), so the
+#: loop ticks on the clock.
 
 
 def build_service(
@@ -86,7 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         while True:
-            clock.sleep(_IDLE_INTERVAL_S)
+            service.tick()
+            clock.sleep(config.loop.regulatory_period_s)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:

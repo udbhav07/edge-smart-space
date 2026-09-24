@@ -187,6 +187,12 @@ class ControllerConfig(_Section):
     default_setpoint_c: float = Field(
         description="Held before any goal arrives and when every goal is stale"
     )
+    reassert_interval_s: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="How often the intended actuator state is re-sent, so a "
+        "lost command on an open-loop path is not permanent (R-02)",
+    )
 
 
 class ValidatorConfig(_Section):
@@ -199,6 +205,20 @@ class ValidatorConfig(_Section):
         gt=0.0, description="V-4 maximum command frequency"
     )
     goal_max_age_s: float = Field(gt=0.0, description="V-6 staleness horizon")
+
+
+class EvaluationConfig(_Section):
+    """Policy for the experiments (section 8.3), not for the running system.
+
+    It lives in config rather than in ``eval`` because a success criterion
+    somebody can change by editing a constant is not a criterion.
+    """
+
+    comfort_band_c: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Distance from setpoint still counted as comfortable, in C",
+    )
 
 
 class DropoutDetectorConfig(_Section):
@@ -302,8 +322,19 @@ class ActuatorDetectorConfig(_Section):
     evaluation_window_s: float = Field(
         gt=0.0, description="Sustained cooling required before the test applies"
     )
-    min_cooling_c: float = Field(
-        gt=0.0, description="Cooling the room must have achieved over that window"
+    warmup_samples: int = Field(
+        ge=0,
+        description="Estimates ignored before the test starts, while the "
+        "model is still converging",
+    )
+    min_expected_cooling_c: float = Field(
+        gt=0.0,
+        description="Expected cooling below which no verdict is given, in C",
+    )
+    response_fraction: float = Field(
+        gt=0.0,
+        lt=1.0,
+        description="Share of the model's expected cooling the room must deliver",
     )
 
 
@@ -548,6 +579,7 @@ class Config(_Section):
     controller: ControllerConfig
     validator: ValidatorConfig
     detectors: DetectorsConfig
+    evaluation: EvaluationConfig = EvaluationConfig()
     mode: ModeConfig
     sensors: SensorsConfig
     speech: SpeechConfig

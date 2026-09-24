@@ -159,18 +159,18 @@ class RoomSimulator:
         logged rather than ignored: an injection that appears to work and does
         nothing turns a detection trial into a phantom missed detection.
         """
-        sensor = self._sensors_by_id().get(command.subject)
-        if sensor is None:
+        target = self._injectable_by_id().get(command.subject)
+        if target is None:
             LOGGER.warning(
                 "injection for unknown subject %s ignored", command.subject
             )
             return
         if command.kind is InjectedFault.NONE:
-            sensor.clear()
+            target.clear()
             LOGGER.info("cleared injection on %s", command.subject)
             return
         try:
-            sensor.inject(
+            target.inject(
                 FaultInjection(kind=command.kind, magnitude=command.magnitude)
             )
         except ValueError as exc:
@@ -182,8 +182,14 @@ class RoomSimulator:
             command.subject,
         )
 
-    def _sensors_by_id(self) -> dict[str, SimulatedSensor | BinarySensor]:
-        return {
+    def _injectable_by_id(self) -> dict[str, object]:
+        """Everything at Layer 1 that can be told to misbehave (FR-31).
+
+        The actuator is in here alongside the sensors, because FR-24 is a
+        fault class like any other and an examiner has to be able to break the
+        air conditioner the same way they break a sensor.
+        """
+        targets: dict[str, object] = {
             sensor.sensor_id: sensor
             for sensor in (
                 self._indoor,
@@ -192,6 +198,8 @@ class RoomSimulator:
                 self._occupancy,
             )
         }
+        targets[topics.AIR_CONDITIONER_ID] = self._actuator
+        return targets
 
     def outdoor_temperature_c(self) -> float:
         """Ambient, as a daily cycle around the configured mean."""

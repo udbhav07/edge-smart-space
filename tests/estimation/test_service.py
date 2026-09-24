@@ -334,19 +334,59 @@ class TestFreezing:
 
     def test_the_published_estimate_says_adaptation_is_frozen(self, config):
         service, transport, clock, board, _, _ = _service(config)
-        self._fault(board, clock, INDOOR, Quality.FAULTED)
         _feed(service, board, clock, 3, config.loop.sensor_period_s)
+        self._fault(board, clock, INDOOR, Quality.FAULTED)
+        service.tick()
         estimate = ThermalEstimate.model_validate_json(
             transport.on("space/estimate/thermal")[-1]
         )
         assert estimate.adaptation is AdaptationState.FROZEN
 
     def test_prediction_continues_while_frozen(self, config):
-        """FR-27 depends on it: DEGRADED_SENSOR control runs on this."""
+        """FR-27 depends on it: DEGRADED_SENSOR control runs on this.
+
+        The estimate now comes from tick() rather than from a reading. While
+        the sensor is faulted its readings are not used at all -- predicting
+        one step ahead *from* a frozen reading produces a prediction that
+        follows the fault, which would make the substitution a no-op.
+        """
         service, transport, clock, board, _, _ = _service(config)
-        self._fault(board, clock, INDOOR, Quality.FAULTED)
         _feed(service, board, clock, 3, config.loop.sensor_period_s)
-        assert transport.on("space/estimate/thermal")
+        self._fault(board, clock, INDOOR, Quality.FAULTED)
+        before = len(transport.on("space/estimate/thermal"))
+        service.tick()
+        assert len(transport.on("space/estimate/thermal")) > before
+
+    def test_the_model_runs_free_rather_than_following_the_fault(self, config):
+        """The dead-reckoned prediction must leave the stuck reading behind.
+
+        Measured before this: the prediction tracked the frozen sensor, so
+        DEGRADED_SENSOR control acted on the very number it was meant to
+        replace and the comfort result was identical to a thermostat's.
+        """
+        service, transport, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 5, config.loop.sensor_period_s)
+        self._fault(board, clock, INDOOR, Quality.FAULTED)
+
+        for _ in range(20):
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        estimate = ThermalEstimate.model_validate_json(
+            transport.on("space/estimate/thermal")[-1]
+        )
+        assert estimate.t_pred != estimate.t_in
+        assert service.free_running_c is not None
+
+    def test_a_trusted_sensor_stops_the_free_run(self, config):
+        service, _, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 3, config.loop.sensor_period_s)
+        self._fault(board, clock, INDOOR, Quality.FAULTED)
+        service.tick()
+        assert service.free_running_c is not None
+
+        self._fault(board, clock, INDOOR, Quality.OK)
+        service.tick()
+        assert service.free_running_c is None
 
 
 class TestDivergence:

@@ -30,6 +30,12 @@ from dataclasses import dataclass
 
 from src.common.clock import Clock
 from src.common.config import SimActuatorConfig
+from src.common.injection import (
+    ACTUATOR_SUPPORTED_FAULTS,
+    NO_FAULT,
+    FaultInjection,
+    InjectedFault,
+)
 from src.common.schemas import AckStatus, CommandKind
 
 #: Bang-bang drive levels, as a fraction of rated cooling power.
@@ -41,8 +47,17 @@ COOLING_OFF = 0.0
 #: generous bound that still refuses to grow without limit.
 MAX_IN_FLIGHT_COMMANDS = 16
 
-#: Commands that instruct the unit to keep doing what it is already doing.
-_NO_CHANGE_COMMANDS = frozenset({CommandKind.MAINTAIN, CommandKind.HOLD})
+#: MAINTAIN instructs the unit to keep doing what it is already doing, and is
+#: the only command that changes nothing.
+_NO_CHANGE_COMMANDS = frozenset({CommandKind.MAINTAIN})
+
+#: Commands that stop the unit driving the room. HOLD is one of them: it is
+#: what the controller emits in DEGRADED_ACTUATOR and SAFE_HOLD, and "hold a
+#: safe state" (FR-28) cannot mean leaving a compressor running at full power
+#: with nobody watching. Measured before this was fixed: a held system kept
+#: cooling indefinitely and drove the room to 21.8 C, two degrees past the
+#: setpoint it had stopped tracking.
+_STOPPING_COMMANDS = frozenset({CommandKind.OFF, CommandKind.HOLD})
 
 
 @dataclass(frozen=True)
@@ -73,6 +88,7 @@ class SimulatedActuator:
         self._pending: deque[_PendingCommand] = deque(maxlen=MAX_IN_FLIGHT_COMMANDS)
         self._failed = False
         self._last_command_ts: float | None = None
+        self._injection = NO_FAULT
 
     @property
     def is_failed(self) -> bool:
@@ -88,6 +104,39 @@ class SimulatedActuator:
     def pending_count(self) -> int:
         """Commands sent but not yet in effect."""
         return len(self._pending)
+
+    @property
+    def injected_fault(self) -> InjectedFault:
+        """What is currently being injected, for the operator's own audit."""
+        return self._injection.kind
+
+    def inject(self, injection: FaultInjection) -> None:
+        """Break the unit (FR-31).
+
+        :raises ValueError: if the fault has no meaning for an actuator. It
+            has no range to leave and no value to freeze at, and an injection
+            that appeared to work while doing nothing would turn a detection
+            trial into a phantom missed detection.
+        """
+        if injection.kind not in ACTUATOR_SUPPORTED_FAULTS:
+            supported = sorted(kind.value for kind in ACTUATOR_SUPPORTED_FAULTS)
+            raise ValueError(
+                f"{type(self).__name__} cannot inject {injection.kind.value}; "
+                f"supported: {supported}"
+            )
+        self._injection = injection
+        if injection.kind is InjectedFault.STUCK_OFF:
+            # Stuck *off* means off. Ignoring new commands is not enough: a
+            # unit broken while it happened to be running would keep running,
+            # which is a different fault from the one asked for -- and it made
+            # a dead air conditioner look better at cooling than a healthy one
+            # when the detector was measured against it.
+            self._pending.clear()
+            self._applied_fraction = COOLING_OFF
+
+    def clear(self) -> None:
+        """Stop injecting. The unit returns to its nominal imperfection."""
+        self._injection = NO_FAULT
 
     @property
     def cooling_fraction(self) -> float:
@@ -125,13 +174,19 @@ class SimulatedActuator:
         """
         self._last_command_ts = self._clock.now()
 
+        if self._injection.kind is InjectedFault.STUCK_OFF:
+            # The unit takes the command and does nothing with it. On an
+            # open-loop path this is indistinguishable from working, which is
+            # the whole reason D5 tests the room rather than the reply (R-02).
+            return self._acknowledge(arrived=True)
+
         if kind in _NO_CHANGE_COMMANDS:
             return self._acknowledge(arrived=True)
 
         if self._rng.random() < self._config.command_loss_probability:
             return self._acknowledge(arrived=False)
 
-        fraction = COOLING_ON if kind is CommandKind.COOL else COOLING_OFF
+        fraction = COOLING_OFF if kind in _STOPPING_COMMANDS else COOLING_ON
         self._pending.append(
             _PendingCommand(
                 effective_ts=self._clock.now() + self._config.dead_time_s,

@@ -122,23 +122,44 @@ class TestCommandKinds:
         _settle(unit, clock, config)
         assert unit.cooling_fraction == COOLING_OFF
 
-    @pytest.mark.parametrize("kind", [CommandKind.MAINTAIN, CommandKind.HOLD])
-    def test_a_no_change_command_leaves_the_drive_alone(
-        self, actuator_config, clock, kind
-    ):
+    def test_maintain_leaves_the_drive_alone(self, actuator_config, clock):
+        """MAINTAIN means keep doing what you are doing, and is the only
+        command that changes nothing."""
         config = _reliable(actuator_config)
         unit = _unit(config, clock)
         unit.command(CommandKind.COOL, SETPOINT_C)
         _settle(unit, clock, config)
-        unit.command(kind)
+        unit.command(CommandKind.MAINTAIN)
         _settle(unit, clock, config)
         assert unit.cooling_fraction == COOLING_ON
 
-    @pytest.mark.parametrize("kind", [CommandKind.MAINTAIN, CommandKind.HOLD])
-    def test_a_no_change_command_queues_nothing(self, actuator_config, clock, kind):
+    def test_maintain_queues_nothing(self, actuator_config, clock):
         unit = _unit(_reliable(actuator_config), clock)
-        unit.command(kind)
+        unit.command(CommandKind.MAINTAIN)
         assert unit.pending_count == 0
+
+    def test_hold_stops_the_drive(self, actuator_config, clock):
+        """FR-28 asks a held system to hold a *safe* state, and a compressor
+        left running at full power with nobody watching is not one. Before
+        this, a held system cooled indefinitely and drove the room to 18 C."""
+        config = _reliable(actuator_config)
+        unit = _unit(config, clock)
+        unit.command(CommandKind.COOL, SETPOINT_C)
+        _settle(unit, clock, config)
+        unit.command(CommandKind.HOLD)
+        _settle(unit, clock, config)
+        assert unit.cooling_fraction == COOLING_OFF
+
+    def test_hold_is_subject_to_dead_time_like_any_other_command(
+        self, actuator_config, clock
+    ):
+        """It reaches the unit the same way a command does, because it is
+        one."""
+        unit = _unit(_reliable(actuator_config), clock)
+        unit.command(CommandKind.COOL, SETPOINT_C)
+        _settle(unit, clock, actuator_config)
+        unit.command(CommandKind.HOLD)
+        assert unit.pending_count == 1
 
     def test_every_command_records_when_it_was_sent(self, actuator_config, clock):
         unit = _unit(_reliable(actuator_config), clock)

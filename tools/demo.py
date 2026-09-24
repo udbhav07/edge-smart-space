@@ -57,6 +57,12 @@ STUCK_VALUE_C = 27.0
 #: budget exists and is enforced, not what it should be.
 DEMO_BUDGET_S = 420.0
 
+#: How long the room runs healthily before the actuator scenario breaks it.
+#: Long enough for the model to learn that cooling works, because D5 tests the
+#: room against the model's expectation and there is nothing to violate until
+#: that expectation exists.
+LEARNING_S = 3 * 3600.0
+
 
 class Narrator:
     """Watches the bus and says what changed, in English."""
@@ -125,6 +131,7 @@ class Demo:
         elapsed = 0.0
         while elapsed < seconds:
             self.simulator.step()
+            self.estimator.tick()
             self.bank.tick()
             self.control.tick()
             self.clock.advance(period_s)
@@ -179,13 +186,27 @@ def _stuck_sensor(demo: Demo) -> None:
 
 
 def _dead_actuator(demo: Demo) -> None:
-    """The other detector a thermostat cannot have."""
+    """The other detector a thermostat cannot have.
+
+    The room has to run healthily first. D5 judges the room against what the
+    model expects of it, and a unit that was already dead when identification
+    began teaches the model that cooling does nothing -- after which there is
+    no expectation left to violate. It detects an air conditioner that *stops*
+    working, which is the fault that actually happens.
+    """
     window_s = demo.config.detectors.actuator.evaluation_window_s
     demo.narrator.say(
-        "START   the air conditioner is commanded but cools nothing. "
-        "No acknowledgement exists to tell us (R-02)."
+        "START   healthy room; the model learns what cooling does"
     )
-    demo.run_for(window_s + 300.0)
+    demo.run_for(LEARNING_S)
+    demo.report_room("before the fault")
+
+    demo.narrator.say(
+        "INJECT  the air conditioner stops cooling. It still accepts every "
+        "command, and no acknowledgement exists to say otherwise (R-02)."
+    )
+    demo.injector.inject(topics.AIR_CONDITIONER_ID, InjectedFault.STUCK_OFF)
+    demo.run_for(window_s + 900.0)
     demo.report_room("after the evaluation window")
     demo.narrator.say(
         "NOTE    the fault came from the room not responding, "
@@ -197,22 +218,17 @@ SCENARIOS = {"stuck": _stuck_sensor, "actuator": _dead_actuator}
 
 
 def _configure(config: Config, scenario: str) -> Config:
-    """Shorten the budget, and for the actuator scenario break the plant.
+    """Shorten the degradation budget so the whole story fits in one run.
 
-    The budget is the only policy number changed, so the whole story fits in
-    one run. Nothing about the sensors is softened: the noise, quantisation,
-    jitter and dropout are the shipped ones.
+    It is the only policy number changed. Nothing about the plant or the
+    sensors is softened: the noise, quantisation, jitter, dropout and actuator
+    dead time are all the shipped ones, and the actuator scenario breaks the
+    unit by injecting a fault rather than by configuring a weaker room.
     """
     mode = config.mode.model_copy(
         update={"degraded_sensor_budget_s": DEMO_BUDGET_S}
     )
-    config = config.model_copy(update={"mode": mode})
-    if scenario != "actuator":
-        return config
-    room = config.sim.room.model_copy(update={"cooling_power_w": 0.0})
-    return config.model_copy(
-        update={"sim": config.sim.model_copy(update={"room": room})}
-    )
+    return config.model_copy(update={"mode": mode})
 
 
 def main(argv: list[str] | None = None) -> int:
