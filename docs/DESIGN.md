@@ -16,6 +16,9 @@
 
 | Version | Change |
 |---|---|
+| 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
+| 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
+| 1.6 | Reconciled with the detector bank as built (Week 3). D2's latency target was unreachable by construction and is corrected from 60 s to 310 s, with the reason recorded in §5.5. D2 and D3 no longer apply to the PIR: an unoccupied room reports a constant legitimately, so variance says nothing about a stuck binary sensor, and §7.1's "D1/D2" becomes D1 only. The fault-clear confirmation period is stated as belonging to the aggregator rather than the mode manager, so one number has one owner. Fault injection gains a channel: `space/inject/{subject}` and `InjectionCommand` in §6.1 and §6.2, applied at the Layer 1 adapter so nothing above can tell an injected fault from a suffered one (FR-31). |
 | 1.5 | Adds an assistance tool surface (§5.7.6, FR-70 to FR-75). The reasoning layer could propose a setpoint and nothing else, so "put that in my calendar" had no representation at all. A tool is now a declaration — name, purpose, typed parameters, and how far its consequences reach — and the model is shown that and nothing more, so which service fulfils it is a wiring choice rather than a prompt change. The reasoning layer *runs* its own tools; the confirmation gate narrows to actions that commit the occupant to an outside party, which is what FR-54 was always about. FR-42 and FR-58 are amended accordingly. |
 | 1.4 | Adds the local console (FR-56 to FR-58): comfort band, standing prompts, confirmations, and a first-party calendar. Scheduling writes to that calendar rather than to a hosted one, which keeps NFR-06 intact and credentials off the node; flights and hotels remain mocks. §5.8's unnamed "Confirmation UI" is now this console. Priority S throughout: R-05 already names assistance as the cuttable feature set. |
 | 1.3 | §5.2.3 separates rejection from divergence. `MODEL_DIVERGENCE` was raised after three consecutive rejections and fired 252 times an hour against a healthy plant, because `a2` and `a4` both have true values on a box edge and noise crosses it constantly. It is now a sustained rate over a window, with `a4`-only rejections excluded; a healthy plant produces none, and a genuinely wrong model still diverges. |
@@ -745,12 +748,79 @@ flowchart LR
 | ID | Method | Parameters | Latency target |
 |---|---|---|---|
 | D1 | No message on topic within timeout | 3 × sample interval = 15 s | < 20 s |
-| D2 | `var(window) < ε` for N consecutive windows | window = 60 samples, ε = 0.001 °C² | < 60 s |
+| D2 | `var(window) < ε` for N consecutive windows | window = 60 samples, ε = 0.001 °C² | < 310 s |
 | D3 | Reading outside `[−10, 60] °C` or `[0, 100] %RH` | immediate, 2-sample debounce | < 10 s |
 | D4 | Two-sided CUSUM on `e[k]/σ̂` | drift k = 0.5σ, threshold h = 5σ | < 300 s |
-| D5 | `\|ΔT\|` below threshold over evaluation window after sustained COOL | window = 600 s, threshold = 0.3 °C | < 600 s |
+| D5 | Cooling achieved below threshold over evaluation window after sustained COOL | window = 600 s, threshold = 0.3 °C | < 600 s |
+
+**How a fault is triggered (FR-31).** The injector publishes an
+`InjectionCommand` on `space/inject/{subject}` and the Layer 1 adapter for that
+subject obeys it. That is the only message in the system travelling *down* into
+Layer 1, and the direction is deliberate: the fault is produced at the adapter,
+so what reaches the detector bank is an absent, frozen or implausible reading
+and nothing above Layer 1 can distinguish an injected fault from a suffered
+one. A detection trial against a fault the detectors could recognise as
+synthetic would measure nothing.
+
+The topic is retained, so it answers "what is being injected right now" for
+anyone reading the tree, and a restarted adapter resumes the state the operator
+last asked for instead of quietly healing a fault nobody cleared. Clearing is
+an `InjectionCommand` of kind `NONE` rather than a second mechanism.
 
 **On D4 and D5:** these are the two detectors that only exist because the model exists. A threshold thermostat can implement D1–D3 trivially. It cannot implement D4 or D5 at all, because it has no expectation to compare against. That asymmetry is the fault-tolerance argument in one sentence, and it belongs in the evaluation chapter.
+
+**On D2's latency, corrected at v1.6.** This row read "< 60 s" until the
+detector was built, and that target is unreachable by construction: sixty
+samples at a 5 s interval span 300 s, so the window cannot even be filled
+inside a minute. The window slides and is evaluated on every sample once full,
+which puts real detection at one sample past the first full window -- about
+305 s -- and the target is now stated as 310 s. Shortening the window would
+detect faster at the cost of reporting a settled room as stuck, which is
+exactly the trade R-04 defers until sigma is measured on hardware rather than
+assumed. The number was wrong, not the design; recording it as wrong is worth
+more than a detector quietly missing a target nobody re-derived.
+
+**On D4's warm-up, added at v1.8.** A residual is the joint error of the
+sensor *and* the model, so reading one as evidence about the sensor is only
+valid once the model can be trusted. While the room makes its first approach to
+setpoint, the estimator's one-step prediction lags the real cooling and
+produces a sustained one-directional residual — precisely the signature D4
+looks for, from a perfectly healthy sensor. Measured over a healthy
+hundred-minute run, the cumulative sum peaks at 10.3 with no warm-up, 7.3 after
+60 samples, and 3.05 after 120, beyond which it stops improving. `warmup_samples`
+is therefore 120, which is where the identification transient ends and leaves
+nearly 2 σ of margin below `h`. It applies once, at start; drift arriving later
+is caught at the stated latency. R-04 re-derives it on hardware, where the
+room's real time constant decides where the transient ends.
+
+Two related bounds, for the same reason — the test must be tripped by
+persistence, not by magnitude. No single sample may contribute more than
+`max_sample_sigma`, or one outlier clears `h` alone and D4 degenerates into the
+threshold alarm it exists to replace. And a repaired sensor produces exactly
+such an outlier, because the reading steps back to the truth while the frozen
+model is still predicting from where it was, so every accumulating detector on
+a subject is reset when any fault on that subject retires.
+
+**D4 and D5 are suspended while the indoor sensor is faulted.** Both are
+derived tests that read that one temperature, so neither has an input worth
+judging once it is known to be wrong. This is not tidiness: a sensor frozen at
+a plausible value makes the room look as though it has stopped responding to
+the air conditioner, so D5 raises an actuator fault that is not there, two
+subjects are faulted at once, the mode escalates to `SAFE_HOLD`, and FR-27's
+control-on-prediction is switched off by the very fault it exists to survive.
+
+**On D5's test, corrected at v1.7.** This row read `|ΔT|` below a threshold
+until the detector was built. That catches a room which did not move, but not
+one which got *warmer* while the compressor was supposedly running — the more
+certain actuator fault of the two, since a room warming under sustained cooling
+is unambiguous. The test is now signed cooling achieved, `T_start − T_now`,
+which subsumes both cases.
+
+The method has a limit worth stating: a room can fail to cool for reasons that
+are not the air conditioner's fault — a door left open, an unmodelled heat
+load, or an ambient high enough that a working unit is at capacity and holds
+the room level rather than cooling it. R-04 settles the window and the
+threshold against measured data during bring-up.
 
 **On D5's parameters:** the 600 s window is long because a room's thermal time constant is long. This is an honest limit — actuator faults are detected on the order of ten minutes, not seconds, and NFR-02 deliberately does not promise otherwise.
 
@@ -784,6 +854,43 @@ stateDiagram-v2
 | `DEGRADED_SENSOR` | frozen (FR-29) | closed loop on prediction, time-boxed | banner |
 | `DEGRADED_ACTUATOR` | frozen | blocked, hold state | alert + reason |
 | `SAFE_HOLD` | frozen | blocked | alert, manual reset required |
+
+**What counts as "multiple faults".** Distinct *subjects*, not distinct
+findings. A stuck temperature sensor raises D2, and its frozen reading then
+grows the model residual until D4 raises as well: two faults, one broken
+sensor. Counting findings would send every single sensor failure to SAFE_HOLD
+with actuation blocked, and FR-27 — the whole reason for identifying a model —
+would never once be exercised.
+
+**Leaving `DEGRADED_ACTUATOR` as written is unreachable, found at v1.7.** The
+transition above is "actuator ack restored and response observed". On an
+open-loop IR path there is no ack to restore (R-02), and the mode blocks
+actuation, so no cooling can be commanded and no response can be observed.
+D5 also reads UNKNOWN whenever cooling is not being commanded, and an UNKNOWN
+never retires a fault, so the hold would be permanent. The operator reset on
+`space/system/reset` is therefore the route back from `DEGRADED_ACTUATOR` as
+well as from `SAFE_HOLD`.
+
+A reset retires the active faults rather than overriding them. The operator is
+not asserting the room is fine; they are asserting they have looked at it and
+dealt with it, so the accumulated evidence is stale and the question is asked
+again from scratch. It cannot conceal a fault that is still present: every
+detector re-gathers from live inputs, so a real fault is raised again within
+its own window. A reset re-tests rather than overrides.
+
+**Where the confirmation period lives.** A fault stays active until its
+detector has judged it clear continuously for `fault_clear_confirm_s` (FR-30),
+and that countdown is held by the aggregator rather than by the mode manager.
+One owner, for two reasons. A detector that flaps -- D3 watching a value
+oscillate across a bound, which is a real failure signature -- would otherwise
+raise and retire repeatedly, minting a new fault id and writing another
+retained topic each time. And the same period in two components is the same
+number in two places, which is how they drift apart. The mode manager therefore
+holds no timer of its own: mode follows the active fault set.
+
+An UNKNOWN judgment does not start the countdown. A stuck sensor that then goes
+silent leaves D2 with an empty window and nothing to say, and that sensor is
+more broken, not less.
 
 Mode transition is driven by the detector bank and completes within 2 s (FR-26). The Fault Diagnosis LLM call runs *in parallel* and enriches the notification — it never sits on the critical path. If the model is unloaded, slow, or produces an invalid output, the transition has already happened.
 
@@ -1174,7 +1281,7 @@ sequenceDiagram
     FI->>SA: clear fault
     SA->>FD: variance restored
     FD->>MM: FaultCleared
-    MM->>MM: wait 120 s confirmation
+    FD->>FD: hold clear 120 s (aggregator)
     MM->>EST: unfreeze
     MM->>C: mode = NORMAL
 ```
@@ -1218,13 +1325,15 @@ edge-smart-space/
 │   │   └── persistence.py
 │   ├── control/
 │   │   ├── regulatory.py
+│   │   ├── service.py              # the loop as a process (`python -m src.control`)
 │   │   ├── goal_manager.py
 │   │   └── validator.py
 │   ├── faults/
-│   │   ├── detectors/
-│   │   ├── aggregator.py
-│   │   ├── mode_manager.py
-│   │   └── injector.py
+│   │   ├── detectors/              # D1 to D5
+│   │   ├── aggregator.py           # active fault set, clear confirmation
+│   │   ├── service.py              # the bank as a process (`python -m src.faults`)
+│   │   ├── mode_manager.py         # the section 5.6 state machine
+│   │   └── injector.py             # publishes InjectionCommand (FR-31)
 │   ├── assistance/                # the only place a provider may live
 │   │   ├── executor.py            # gates and runs invocations (§5.7.6)
 │   │   └── providers/
@@ -1249,6 +1358,9 @@ edge-smart-space/
 │   ├── actuator.py                # dead time, command loss, no acknowledgement
 │   ├── scenarios/
 │   └── run_sim.py
+├── tools/
+│   ├── blackboard_view.py         # live terminal view of every topic (FR-60)
+│   └── inject.py                  # triggers any sensor fault (FR-31)
 ├── eval/
 │   ├── baseline_thermostat.py
 │   ├── metrics.py
@@ -1261,8 +1373,9 @@ edge-smart-space/
 └── tests/
 ```
 
-Written as of v1.1 and revised at v1.5, the following are specified above but
-**not yet implemented**: everything under `src/faults/`, `goal_manager.py`,
+Written as of v1.1 and revised at v1.7, the following are specified above but
+**not yet implemented**: `goal_manager.py` (the control service gates a
+proposed goal, but nothing arbitrates between several sources yet),
 `supervisor_agent.py`, `supervisor_tools.py`, `speaker_profile.py` (FR-52),
 `simulated_actuators.py`, the whole of `src/assistance/`, `docs/adr/`, and the
 whole of `deploy/`. They are listed because they are the design, and named here so the
@@ -1306,6 +1419,10 @@ startup, which NFR-06 forbids.
 | `space/actuator/ac/command` | pub | no | 1 | `Command` |
 | `space/actuator/ac/state` | pub | yes | 1 | `ActuatorState` |
 | `space/actuator/{sim_id}/state` | pub | yes | 1 | `ActuatorState` with `simulated: true` |
+| `space/system/reset` | pub | no | 1 | `ModeReset` |
+
+| `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
+
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
@@ -1356,6 +1473,22 @@ startup, which NFR-06 forbids.
   "detected_ts": 1756032300.0,
   "evidence": { "window_s": 300, "variance": 0.0002 },
   "mode_impact": "DEGRADED_SENSOR"
+}
+
+// ModeReset -- an operator clearing SAFE_HOLD by hand (section 5.6)
+{
+  "ts": 1756032000.0,
+  "requester": "operator",
+  "reason": "replaced the indoor sensor"
+}
+
+// InjectionCommand  -- the one message that travels down into Layer 1 (FR-31)
+{
+  "ts": 1756032000.0,
+  "subject": "temp_01",
+  "kind": "STUCK_AT",            // NONE | STUCK_AT | DROPOUT | OUT_OF_RANGE | DRIFT
+  "magnitude": 27.0,             // frozen value, reported value, or degrees/second
+  "requester": "operator"
 }
 
 // Goal
@@ -1459,7 +1592,7 @@ prompt that generates it forbids claiming anything was changed (FR-45).
 | Temperature sensor stuck | D2 | `DEGRADED_SENSOR`, freeze RLS | FR-21, FR-29 |
 | Temperature sensor out of range | D3 | `DEGRADED_SENSOR` | FR-22 |
 | Temperature sensor drift | D4 | `DEGRADED_SENSOR`, flag for recalibration | FR-23 |
-| PIR failure | D1/D2 | Occupancy assumed `true` (conservative for comfort) | FR-02 |
+| PIR failure | D1 only | Occupancy assumed `true` (conservative for comfort) | FR-02 |
 | Air conditioner no response | D5 | `DEGRADED_ACTUATOR`, hold, alert | FR-24, FR-28 |
 | MQTT broker down | Client disconnect callback | Each process holds last state; controller holds last setpoint | FR-11 |
 | LLM server down or slow | Invocation timeout (30 s) | Retain previous goal; regulatory loop unaffected | FR-47 |

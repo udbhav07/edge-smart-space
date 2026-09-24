@@ -8,9 +8,14 @@ the hardware adapters have to speak the same language about it.
 That is why this lives in ``common`` rather than in ``sim``: if the
 simulator owned the vocabulary, the ESP32 adapter could not use it without
 importing the simulator, and Layer 1 would have two different notions of
-what a stuck sensor is. Nothing above Layer 1 imports this at all -- a fault
-reaches the detectors as absent, frozen or implausible readings, exactly as
-a real fault would, and no consumer can tell the difference.
+what a stuck sensor is.
+
+The vocabulary is named above Layer 1 in exactly one place -- the
+``InjectionCommand`` message and the injector that publishes it (FR-31) --
+because somebody has to be able to *ask* for a fault. What no layer above
+Layer 1 does is read it to interpret a reading: a fault reaches the detectors
+as absent, frozen or implausible readings, exactly as a real fault would, and
+no consumer can tell an injected fault from a suffered one.
 """
 
 from __future__ import annotations
@@ -46,6 +51,14 @@ class FaultInjection:
     kind: InjectedFault
     magnitude: float = 0.0
 
+
+#: Faults whose magnitude field carries their whole content. Injecting one of
+#: these without saying how hard is a request nobody can act on, and injecting
+#: a magnitude with any other kind is a value that would be silently ignored --
+#: which looks exactly like a fault that failed to take effect.
+FAULTS_REQUIRING_MAGNITUDE = frozenset(
+    {InjectedFault.STUCK_AT, InjectedFault.OUT_OF_RANGE, InjectedFault.DRIFT}
+)
 
 #: The absence of an injected fault. A sensor in this state still exhibits
 #: whatever nominal imperfection its implementation models.

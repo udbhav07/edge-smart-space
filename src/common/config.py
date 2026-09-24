@@ -233,10 +233,86 @@ class OutOfRangeDetectorConfig(_Section):
     debounce_samples: int = Field(gt=0, description="Consecutive samples before raising")
 
 
+class DriftDetectorConfig(_Section):
+    """D4: two-sided CUSUM on the normalised model residual (FR-23).
+
+    Both thresholds are in units of the residual's own standard deviation, so
+    they carry over unchanged to a sensor with different noise. R-04 re-derives
+    them from measured sigma during hardware bring-up.
+    """
+
+    slack_sigma: float = Field(
+        gt=0.0, description="k: drift below this is absorbed rather than accumulated"
+    )
+    threshold_sigma: float = Field(
+        gt=0.0, description="h: cumulative sum at which drift is declared"
+    )
+    min_residual_sigma_c: float = Field(
+        gt=0.0,
+        description="Noise floor below which the residual is not normalisable yet",
+    )
+    max_sample_sigma: float = Field(
+        gt=0.0,
+        description="Largest contribution one sample may make, in sigma",
+    )
+    warmup_samples: int = Field(
+        ge=0,
+        description="Estimates ignored before the test starts, while the "
+        "model is still converging",
+    )
+
+    @model_validator(mode="after")
+    def _one_sample_cannot_carry_the_test(self) -> DriftDetectorConfig:
+        """A cap at or above the threshold is no cap at all.
+
+        The point of a cumulative test is that persistence trips it, not
+        magnitude. If a single sample can contribute the whole threshold, D4
+        degenerates into the noisy threshold alarm it exists to replace --
+        and a sensor being repaired produces exactly such a sample, because
+        the reading steps back to the truth while the frozen model is still
+        predicting from where it was.
+        """
+        if self.max_sample_sigma - self.slack_sigma >= self.threshold_sigma:
+            raise ValueError(
+                f"max_sample_sigma {self.max_sample_sigma!r} less slack "
+                f"{self.slack_sigma!r} must stay below threshold_sigma "
+                f"{self.threshold_sigma!r}, or one sample decides the test"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _slack_is_below_the_threshold(self) -> DriftDetectorConfig:
+        """Slack at or above the threshold can never accumulate to it.
+
+        The CUSUM adds ``z - k`` per sample, so a k no smaller than h makes a
+        single sample the whole test and turns the detector into a noisy
+        threshold alarm. Silently, which is the problem.
+        """
+        if self.slack_sigma >= self.threshold_sigma:
+            raise ValueError(
+                f"slack_sigma {self.slack_sigma!r} must be below threshold_sigma "
+                f"{self.threshold_sigma!r}, or drift can never accumulate"
+            )
+        return self
+
+
+class ActuatorDetectorConfig(_Section):
+    """D5: no thermal response to sustained cooling (FR-24)."""
+
+    evaluation_window_s: float = Field(
+        gt=0.0, description="Sustained cooling required before the test applies"
+    )
+    min_cooling_c: float = Field(
+        gt=0.0, description="Cooling the room must have achieved over that window"
+    )
+
+
 class DetectorsConfig(_Section):
     dropout: DropoutDetectorConfig
     stuck_at: StuckAtDetectorConfig
     out_of_range: OutOfRangeDetectorConfig
+    drift: DriftDetectorConfig
+    actuator: ActuatorDetectorConfig
 
 
 class ModeConfig(_Section):
@@ -273,6 +349,12 @@ class SensorsConfig(_Section):
     """Every sensor the system expects to hear from."""
 
     adapters: tuple[SensorConfig, ...] = Field(min_length=1)
+    vacancy_hold_off_s: float = Field(
+        default=600.0,
+        ge=0.0,
+        description="FR-02: how long the room stays occupied after the last "
+        "motion or door transition, in seconds",
+    )
 
     @model_validator(mode="after")
     def _sensor_ids_are_unique(self) -> SensorsConfig:
@@ -436,6 +518,12 @@ class RoomConfig(_Section):
         description="Unmodelled disturbance the estimator has no regressor for (R-04)",
     )
     solar_gain_period_s: float = Field(gt=0.0, description="Disturbance cycle length")
+    baseline_humidity_pct: float = Field(
+        default=55.0,
+        ge=0.0,
+        le=100.0,
+        description="Relative humidity at the reference temperature, per cent",
+    )
 
 
 class SimConfig(_Section):

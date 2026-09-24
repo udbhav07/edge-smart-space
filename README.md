@@ -137,6 +137,9 @@ them all. `python start.py --help` lists what can currently be started.
 
 ```bash
 python -m sim.run_sim --steps 100     # room plant, sensors, actuator
+python -m src.estimation              # online RC identification
+python -m src.control                 # regulatory loop and safety gate
+python -m src.faults                  # fault detector bank (D1-D3)
 python -m src.speech                  # wake word, transcription, reasoning
 ```
 
@@ -162,6 +165,68 @@ mosquitto_sub -t 'space/system/mode' -v         # degradation state
 A clamped setpoint appearing in `space/audit/validation` is the gate working,
 not a failure. Every verdict carries the proposal, the reason code, and the
 value actually applied.
+
+### Seeing the whole thing work, without a broker
+
+```bash
+python -m tools.demo                      # a sensor breaks, the loop survives
+python -m tools.demo --scenario actuator  # the air conditioner stops cooling
+```
+
+Runs all four services in one process against a simulated clock, so half an
+hour of room time takes a couple of seconds, and narrates what happens. It is
+the quickest way to see the system work, and the fallback if a live
+demonstration fails.
+
+### Breaking it on purpose
+
+Every fault the detector bank can find is triggerable from a terminal while
+the system runs — no code edit, no restart:
+
+```bash
+python -m tools.inject --list                # what can be injected, and where
+python -m tools.inject temp_01 stuck 27.0    # freeze the indoor sensor
+python -m tools.inject temp_01 dropout       # make it go quiet
+python -m tools.inject temp_01 range 999.0   # report something impossible
+python -m tools.inject temp_01 drift 0.01    # 0.01 C per second, invisible per sample
+python -m tools.inject temp_01 clear         # stop injecting
+```
+
+Then watch what the detectors make of it:
+
+```bash
+mosquitto_sub -t 'space/fault/#' -v             # faults, with their evidence
+mosquitto_sub -t 'space/sensor/+/health' -v     # what is still trusted
+mosquitto_sub -t 'space/system/mode' -v         # what the system is allowed to do
+mosquitto_sub -t 'space/actuator/ac/command' -v # proof the loop is still closed
+```
+
+The interesting thing to watch is the last two together. When a sensor is
+detected as broken the mode becomes `DEGRADED_SENSOR` — and the commands
+**keep coming**, because the loop switches to the model's prediction instead of
+the reading it no longer trusts. That substitution is the whole point of
+identifying a model, and it is the thing a thermostat cannot do. It is bounded:
+after 30 minutes the system stops rather than treat a stale prediction as a
+measurement, and the mode becomes `SAFE_HOLD`.
+
+`SAFE_HOLD` is the one state the system will not leave on its own:
+
+```bash
+python -m tools.reset --reason "replaced the sensor"
+```
+
+The fault is applied at the sensor, so nothing above Layer 1 can tell an
+injected fault from a real one — which is the only way the detection means
+anything. `space/inject/{subject}` is retained, so it always answers what is
+being injected right now.
+
+Detection is not instant, and the delays are honest ones: a dropout takes 15 s
+(three missed samples), an implausible reading 10 s (two samples), a stuck
+sensor about five minutes because that is how long the variance window is, and
+an actuator fault about ten minutes because that is how slowly a room responds.
+Drift is found by accumulating evidence, so how long it takes depends on how
+fast the sensor is drifting — which is the point of using a cumulative test
+rather than a threshold.
 
 ---
 
@@ -206,7 +271,9 @@ simulated success predict nothing about real hardware.
 
 ```
 src/common/      clock, config, schemas, topics, MQTT blackboard, device
-src/control/     safety validator, regulatory controller
+src/control/     safety validator, regulatory loop    (python -m src.control)
+src/estimation/  RC model, RLS, persistence          (python -m src.estimation)
+src/faults/      detector bank, aggregator           (python -m src.faults)
 src/speech/      wake word, capture, ASR, pipeline  (python -m src.speech)
 src/reasoning/   single-shot LLM calls
 src/io/          actuator driver contracts
@@ -226,8 +293,8 @@ evaluation degenerates into the model predicting itself.
 
 Honest about the gaps, so nobody hunts for something that isn't there:
 
-- `src/estimation/` — the RC model and the recursive least squares identifier
-- `src/faults/` — the detector bank, aggregator and mode manager
+- `src/faults/detectors/` — D4 drift and D5 actuator-response are not written
+- `src/faults/mode_manager.py` — degraded modes and control on prediction
 - `deploy/systemd/` — the unit files that supervise this on the Jetson
 - `eval/` — the baseline thermostat and the experiment harness
 

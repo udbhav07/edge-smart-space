@@ -183,6 +183,19 @@ ASSIST_RESULT = TopicSpec("space/assist/result", Qos.AT_LEAST_ONCE, retain=False
 #: can read what the reasoning layer is allowed to ask for (FR-60, FR-70).
 ASSIST_CATALOGUE = TopicSpec("space/assist/catalogue", Qos.AT_LEAST_ONCE, retain=True)
 
+#: An operator clearing SAFE_HOLD (section 5.6). Deliberately *not* retained:
+#: a retained reset would be redelivered on every reconnect and re-clear a hold
+#: nobody had looked at, which is the opposite of a manual acknowledgement.
+SYSTEM_RESET = TopicSpec("space/system/reset", Qos.AT_LEAST_ONCE, retain=False)
+
+# --- Fault injection (FR-31) -----------------------------------------------
+
+#: The one topic that travels down into Layer 1. Retained, because it is the
+#: answer to "what is being injected right now": an examiner can read it, and
+#: a restarted adapter resumes the state the operator last asked for rather
+#: than quietly healing a fault nobody cleared.
+INJECT = TopicSpec("space/inject/{subject}", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Audit (FR-46, FR-62) --------------------------------------------------
 
 AUDIT_VALIDATION = TopicSpec("space/audit/validation", Qos.AT_LEAST_ONCE, retain=False)

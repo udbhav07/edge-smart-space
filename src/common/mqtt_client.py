@@ -39,6 +39,11 @@ MessageT = TypeVar("MessageT", bound=BlackboardMessage)
 #: Payloads are UTF-8 JSON so the tree stays readable with mosquitto_sub.
 PAYLOAD_ENCODING = "utf-8"
 
+#: MQTT deletes a retained message when a zero-length payload is published to
+#: its topic. There is no other way to withdraw one, so this is a protocol
+#: fact rather than a convention of ours.
+_RETAINED_DELETION_PAYLOAD = b""
+
 
 class Transport(Protocol):
     """The slice of an MQTT client this module uses.
@@ -87,6 +92,33 @@ class Blackboard:
         topic = spec.format(**parameters)
         payload = message.model_dump_json(by_alias=True).encode(PAYLOAD_ENCODING)
         self._transport.publish(topic, payload, spec.qos.value, spec.retain)
+        return topic
+
+    def clear_retained(self, spec: TopicSpec, **parameters: str) -> str:
+        """Withdraw the retained message on a topic.
+
+        A fault topic is retained so a late subscriber learns about a fault
+        that was raised before it connected (FR-61). Fault ids are unique per
+        occurrence, so without withdrawal the broker accumulates one retained
+        message per fault the system has ever raised, and a subscriber
+        starting tomorrow is handed today's resolved faults as current state.
+        Clearing on resolution (FR-30) is therefore part of the lifecycle, not
+        housekeeping.
+
+        :returns: the concrete topic cleared, for logging and tests.
+        :raises TopicParameterError: if the parameters do not fit the topic.
+        :raises ValueError: if the topic is not a retained one, where a
+            zero-length publish would reach subscribers as a malformed
+            message instead of withdrawing anything.
+        """
+        if not spec.retain:
+            raise ValueError(
+                f"{spec.pattern!r} is not retained; there is nothing to clear"
+            )
+        topic = spec.format(**parameters)
+        self._transport.publish(
+            topic, _RETAINED_DELETION_PAYLOAD, spec.qos.value, True
+        )
         return topic
 
     def subscribe(
@@ -157,6 +189,14 @@ class Blackboard:
         registration = self._match(topic)
         if registration is None:
             LOGGER.debug("no handler for %s", topic)
+            return
+
+        if payload == _RETAINED_DELETION_PAYLOAD:
+            # A withdrawn retained message (see clear_retained). It is the
+            # absence of state, not a corrupt payload, so it is not a
+            # warning -- and there is nothing to hand a handler typed on a
+            # schema.
+            LOGGER.debug("retained message withdrawn on %s", topic)
             return
 
         schema, handler = registration

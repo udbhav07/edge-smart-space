@@ -12,11 +12,13 @@ import pytest
 from src.common import topics
 from src.common.clock import SimClock
 from src.common.config import load_config
+from src.common.injection import InjectedFault
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     ActuatorState,
     Command,
     CommandKind,
+    InjectionCommand,
     SensorReading,
     Unit,
 )
@@ -254,3 +256,113 @@ class TestOccupancy:
         simulator.step()
         payload = transport.payloads_on(f"space/sensor/{OCCUPANCY_ID}/state")[0]
         assert SensorReading.model_validate_json(payload).value == 0.0
+
+
+class TestInjectionAtLayerOne:
+    """FR-31: the adapter obeys, and nothing above can tell the difference."""
+
+    def _inject(self, blackboard, subject, kind, magnitude=0.0):
+        command = InjectionCommand(
+            ts=1756032000.0,
+            subject=subject,
+            kind=kind,
+            magnitude=magnitude,
+            requester="operator",
+        )
+        blackboard.dispatch(
+            f"space/inject/{subject}", command.model_dump_json().encode()
+        )
+
+    def test_the_simulator_listens_for_injections(self, config):
+        simulator, transport, _, blackboard = _running(config)
+        blackboard.on_connected()
+        assert ("space/inject/+", topics.INJECT.qos.value) in transport.subscribed
+
+    def test_a_stuck_injection_freezes_the_reported_value(self, quiet_config):
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(
+            blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.STUCK_AT, 27.0
+        )
+        for _ in range(3):
+            simulator.step()
+        values = [
+            SensorReading.model_validate_json(payload).value
+            for payload in transport.payloads_on(
+                f"space/sensor/{INDOOR_TEMPERATURE_ID}/state"
+            )
+        ]
+        assert values == [27.0, 27.0, 27.0]
+
+    def test_a_dropout_injection_publishes_nothing_at_all(self, quiet_config):
+        """A lost sample is the absence of a message, which is what D1
+        detects. A placeholder would hide it."""
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.DROPOUT)
+        for _ in range(3):
+            simulator.step()
+        assert (
+            transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")
+            == []
+        )
+
+    def test_an_out_of_range_injection_reports_the_implausible_value(
+        self, quiet_config
+    ):
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(
+            blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.OUT_OF_RANGE, 999.0
+        )
+        simulator.step()
+        reading = SensorReading.model_validate_json(
+            transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")[0]
+        )
+        assert reading.value == 999.0
+
+    def test_clearing_returns_the_sensor_to_the_plant(self, quiet_config):
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(
+            blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.STUCK_AT, 27.0
+        )
+        simulator.step()
+        self._inject(blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.NONE)
+        simulator.step()
+        values = [
+            SensorReading.model_validate_json(payload).value
+            for payload in transport.payloads_on(
+                f"space/sensor/{INDOOR_TEMPERATURE_ID}/state"
+            )
+        ]
+        assert values[0] == 27.0 and values[1] != 27.0
+
+    def test_injecting_one_sensor_leaves_the_others_alone(self, quiet_config):
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.DROPOUT)
+        simulator.step()
+        assert transport.payloads_on(f"space/sensor/{OCCUPANCY_ID}/state")
+
+    def test_a_fault_a_binary_sensor_cannot_honour_is_refused(self, quiet_config):
+        """An injection that appears to work and does nothing turns a
+        detection trial into a phantom missed detection."""
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(blackboard, OCCUPANCY_ID, InjectedFault.DRIFT, 0.01)
+        simulator.step()
+        reading = SensorReading.model_validate_json(
+            transport.payloads_on(f"space/sensor/{OCCUPANCY_ID}/state")[0]
+        )
+        assert reading.value in (0.0, 1.0)
+
+    def test_an_injection_for_an_unknown_subject_does_not_stop_the_plant(
+        self, quiet_config
+    ):
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ghost_99", InjectedFault.DROPOUT)
+        simulator.step()
+        assert transport.payloads_on(
+            f"space/sensor/{INDOOR_TEMPERATURE_ID}/state"
+        )
+
+    def test_a_dropout_can_be_injected_on_the_binary_sensor(self, quiet_config):
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(blackboard, OCCUPANCY_ID, InjectedFault.DROPOUT)
+        simulator.step()
+        assert transport.payloads_on(f"space/sensor/{OCCUPANCY_ID}/state") == []
