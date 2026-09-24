@@ -1,0 +1,18 @@
+[Unit]
+# The whole system, as one thing to start and stop.
+#
+#   sudo systemctl enable --now space.target
+#
+# Every component is wanted by this target rather than required by it, so one
+# failing unit degrades the system instead of refusing to bring it up. That is
+# the same rule the code follows: a missing speech stack costs speech, not
+# control.
+Description=Edge smart space
+Wants=space-layer1@space.service
+Wants=space-estimator@space.service
+Wants=space-control@space.service
+Wants=space-detectors@space.service
+Wants=space-speech@space.service
+
+[Install]
+WantedBy=multi-user.target

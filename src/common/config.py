@@ -14,6 +14,7 @@ sections 5.2.2, 5.3, 5.4 and 5.5.
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 
 import yaml
@@ -448,6 +449,69 @@ class SensorsConfig(_Section):
         raise KeyError(f"no sensor configured with id {sensor_id!r}")
 
 
+class Layer1Source(str, Enum):
+    """Which Layer 1 implementation runs (section 9.1).
+
+    The phase transition is a configuration change rather than a code change:
+    both publish the same topics, so nothing above Layer 1 can tell which is
+    running and the whole test suite applies to either.
+    """
+
+    SIMULATED = "simulated"
+    ESPHOME = "esphome"
+
+
+class DeviceBinding(_Section):
+    """One configured sensor and the device topic that feeds it.
+
+    The topic belongs in configuration because it is decided when a node is
+    flashed and named, not when this code is written. Guessing a naming
+    convention here would produce code that looks finished and silently
+    matches nothing (R-03).
+    """
+
+    sensor_id: str = Field(min_length=1)
+    topic: str = Field(min_length=1, description="Device topic the node publishes on")
+
+
+class IoActuatorConfig(_Section):
+    """Where actuator commands are sent on hardware."""
+
+    command_topic: str = Field(min_length=1)
+    acknowledges: bool = Field(
+        default=False,
+        description="R-02: an IR path has no readback, so this is normally "
+        "false and every ack is UNKNOWN",
+    )
+
+
+class IoConfig(_Section):
+    """Layer 1 selection and the device details that belong to it."""
+
+    source: Layer1Source = Layer1Source.SIMULATED
+    stale_after_s: float = Field(
+        gt=0.0,
+        description="Age at which a held device value counts as silence",
+    )
+    devices: tuple[DeviceBinding, ...] = ()
+    actuator: IoActuatorConfig
+
+    @model_validator(mode="after")
+    def _device_ids_are_unique(self) -> IoConfig:
+        seen = [binding.sensor_id for binding in self.devices]
+        duplicates = {name for name in seen if seen.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate device bindings: {sorted(duplicates)}")
+        return self
+
+    def topic_for(self, sensor_id: str) -> str | None:
+        """The device topic feeding one sensor, if it has one."""
+        for binding in self.devices:
+            if binding.sensor_id == sensor_id:
+                return binding.topic
+        return None
+
+
 class SpeechConfig(_Section):
     """Speech pipeline settings (DESIGN.md section 5.8).
 
@@ -642,6 +706,7 @@ class Config(_Section):
     evaluation: EvaluationConfig = EvaluationConfig()
     mode: ModeConfig
     sensors: SensorsConfig
+    io: IoConfig
     speech: SpeechConfig
     reasoning: ReasoningConfig
     assistance: AssistanceConfig

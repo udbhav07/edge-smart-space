@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-from src.common.config import Config, ConfigError, load_config
+from src.common.config import Config, ConfigError, Layer1Source, load_config
 
 LOGGER = logging.getLogger("start")
 
@@ -86,6 +86,23 @@ class Dependency:
     def hint(self, system: str) -> str:
         return self.hints.get(system, self.hints.get(LINUX, ""))
 
+
+#: The two Layer 1 implementations. Exactly one runs, chosen by ``io.source``
+#: in configuration (section 9.1). Running both would put two publishers on
+#: the same sensor topics, which everything above Layer 1 would read as one
+#: sensor contradicting itself -- a fault nobody injected.
+LAYER_1 = {
+    Layer1Source.SIMULATED: Service(
+        name="simulator",
+        module="sim.run_sim",
+        description="Room plant, sensors and actuator (simulation mode)",
+    ),
+    Layer1Source.ESPHOME: Service(
+        name="hardware",
+        module="src.io",
+        description="ESPHome sensor bridge and actuator driver (hardware mode)",
+    ),
+}
 
 SERVICES = (
     Service(
@@ -202,19 +219,44 @@ def preflight(config: Config, system: str) -> bool:
     return satisfied
 
 
-def select(only: list[str] | None, skip: list[str] | None) -> tuple[Service, ...]:
+def services_for(config: Config) -> tuple[Service, ...]:
+    """Every service this configuration runs, with the right Layer 1.
+
+    The simulator and the hardware bridge are alternatives, never both: they
+    publish the same topics, so running the pair would look from above like a
+    single sensor disagreeing with itself.
+    """
+    layer_1 = LAYER_1[config.io.source]
+    others = tuple(
+        service
+        for service in SERVICES
+        if service.name not in {entry.name for entry in LAYER_1.values()}
+    )
+    return (layer_1, *others)
+
+
+def select(
+    only: list[str] | None,
+    skip: list[str] | None,
+    available: tuple[Service, ...] = SERVICES,
+) -> tuple[Service, ...]:
     """Choose which services to run.
 
     :raises ValueError: if a name does not match a known service, rather than
         silently starting nothing.
     """
+    known = {service.name for service in SERVICES} | {
+        service.name for service in LAYER_1.values()
+    }
     for name in (only or []) + (skip or []):
-        if name not in SERVICE_NAMES:
+        if name not in known:
             raise ValueError(
-                f"unknown service {name!r}; choose from {list(SERVICE_NAMES)}"
+                f"unknown service {name!r}; choose from {sorted(known)}"
             )
 
-    chosen = SERVICES if not only else tuple(s for s in SERVICES if s.name in only)
+    chosen = (
+        available if not only else tuple(s for s in available if s.name in only)
+    )
     if skip:
         chosen = tuple(service for service in chosen if service.name not in skip)
     return chosen
@@ -313,7 +355,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        services = select(arguments.only, arguments.skip)
+        services = select(
+            arguments.only, arguments.skip, available=services_for(config)
+        )
     except ValueError as exc:
         LOGGER.error("%s", exc)
         return 2

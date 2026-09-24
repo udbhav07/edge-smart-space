@@ -1,0 +1,30 @@
+[Unit]
+# Fault detector bank and mode manager
+#
+# Killing this stops detection; the control loop keeps running on
+# whatever mode was last retained, which is the conservative answer.
+Description=Fault detector bank and mode manager
+After=network-online.target docker.service
+Wants=network-online.target
+# The broker is the only hard dependency: nothing can publish without it.
+# It is a container rather than a unit, so this is a start order rather than
+# a requirement -- a component that comes up first reconnects when it lands.
+PartOf=space.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/edge-smart-space
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/edge-smart-space/.venv/bin/python -m src.faults --config config/default.yaml
+# Restart independence is a requirement rather than a convenience (section
+# 9.3): killing any one process and watching the rest carry on is part of the
+# demonstration, so every unit restarts itself and none takes another down.
+Restart=always
+RestartSec=5
+# A component that cannot start at all should be visible rather than spinning.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=space.target

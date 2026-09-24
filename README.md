@@ -166,6 +166,38 @@ A clamped setpoint appearing in `space/audit/validation` is the gate working,
 not a failure. Every verdict carries the proposal, the reason code, and the
 value actually applied.
 
+### Running on hardware instead of the simulator
+
+Layer 1 is chosen by configuration, not by code. Everything above it
+subscribes to the same topics either way, so the whole test suite applies to
+both:
+
+```yaml
+io:
+  source: simulated   # or: esphome
+```
+
+`python start.py` then launches the room simulator or the hardware bridge and
+leaves the other four services untouched. The device topics each node
+publishes on live in the same `io:` block, because they are decided when a
+node is flashed rather than when this code was written.
+
+**Nothing in `deploy/` has touched hardware yet**, and it says so where it
+matters. `deploy/esphome/room-node.yaml` is marked UNVERIFIED: the pins, the
+one-wire address and the IR protocol are placeholders until a board exists.
+What is real is the shape — and a test asserts that every device topic the
+config expects is one the node definition actually publishes, so a rename
+cannot silently disconnect them.
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d    # the broker
+sudo cp deploy/systemd/* /etc/systemd/system/        # the components
+sudo systemctl enable --now space.target
+```
+
+Every unit restarts itself and none requires another, so killing any one
+process and watching the rest carry on is a thing you can demonstrate.
+
 ### Seeing the whole thing work, without a broker
 
 ```bash

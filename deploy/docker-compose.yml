@@ -1,0 +1,29 @@
+# The one dependency this project does not own (DESIGN.md section 4.5).
+#
+# The broker is the only coupling between components, so it comes up before
+# anything else and stays up on its own. Everything else on the Orin is a
+# systemd unit rather than a container: the estimator and the speech pipeline
+# want the GPU, and putting them behind a container runtime buys nothing here
+# and costs a driver problem on a Jetson.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: space-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      # A broker that accepts connections but refuses to route is the failure
+      # that looks like a bug in every component at once.
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-W", "3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  mosquitto-data:

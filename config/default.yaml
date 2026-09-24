@@ -186,6 +186,36 @@ mode:
   fault_clear_confirm_s: 120.0
   transition_deadline_s: 2.0         # FR-26
 
+# Section 9.1, the phase transition. Which Layer 1 runs is a configuration
+# choice, not a code change: 'simulated' starts the room simulator, 'esphome'
+# starts the hardware bridge. Everything above Layer 1 subscribes to the same
+# topics either way, so the whole test suite runs unchanged against both.
+#
+# The device topics below are placeholders and are marked as such. An ESPHome
+# node's topic depends on how it is named at flash time, so the real values are
+# a bring-up decision; putting them here rather than in code is what keeps that
+# decision a config edit.
+io:
+  source: simulated
+  # A device value older than this counts as silence rather than being
+  # repeated. Repeating it would turn a dropped node into a stuck sensor and
+  # send D1 looking for a fault that D2 would then find in the wrong place.
+  stale_after_s: 30.0
+  devices:
+    - sensor_id: temp_01
+      topic: esphome/room/sensor/indoor_temperature/state
+    - sensor_id: hum_01
+      topic: esphome/room/sensor/indoor_humidity/state
+    - sensor_id: outdoor_01
+      topic: esphome/room/sensor/outdoor_temperature/state
+    - sensor_id: pir_01
+      topic: esphome/room/binary_sensor/occupancy/state
+  actuator:
+    # What the IR bridge listens on. R-02: nothing comes back, so the driver
+    # reports UNKNOWN and D5 decides whether it worked by watching the room.
+    command_topic: esphome/room/climate/air_conditioner/command
+    acknowledges: false
+
 # Section 5.1. Limits are what the instrument can physically report; the
 # adapter flags a reading outside them as suspect but never suppresses it,
 # because D3 exists to detect exactly that (FR-22).
