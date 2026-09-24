@@ -319,6 +319,7 @@ reasoning:
   supervisor_min_interval_s: 30.0   # A flapping PIR is not a queue of calls
   supervisor_max_rounds: 6          # Model turns before a run is abandoned
   supervisor_goal_lifetime_s: 600.0 # Two cadences: one miss is no gap
+  vacancy_relax_c: 2.0              # How much warmer an empty room may run
   # FR-44's post-decode check on propose_setpoint. Wider than the validator on
   # purpose: 5 C is a request the gate must be seen refusing; 500 C is not a
   # room temperature and never reaches it.

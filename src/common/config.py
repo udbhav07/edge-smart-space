@@ -672,6 +672,12 @@ class ReasoningConfig(_Section):
         description="Model turns one supervisor run may take before it is "
         "abandoned and the previous goal retained",
     )
+    vacancy_relax_c: float = Field(
+        default=2.0,
+        ge=0.0,
+        description="How much warmer the supervisor may let an empty room "
+        "run, in C. Policy the occupant owns, told to the model as a number",
+    )
     supervisor_goal_lifetime_s: float = Field(
         default=600.0,
         gt=0.0,
