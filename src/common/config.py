@@ -316,6 +316,36 @@ class TariffConfig(_Section):
         return self
 
 
+class BringupConfig(_Section):
+    """What ``tools/bringup.py`` accepts as a working instrument (Week 5)."""
+
+    listen_s: float = Field(
+        default=60.0, gt=0.0, description="How long to listen by default, in s"
+    )
+    max_interval_factor: float = Field(
+        default=1.5,
+        gt=1.0,
+        description="Median interval allowed, as a multiple of the expected "
+        "period. Past this D1 starts calling dropouts",
+    )
+    actuation_drop_c: float = Field(
+        default=2.0,
+        gt=0.0,
+        description="How far below the room the actuation check asks for, in C",
+    )
+    actuation_window_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description="How long to watch for the compressor's draw, in s. Longer "
+        "than the validator's dwell, or a recent OFF hides a working unit",
+    )
+    min_power_rise_w: float = Field(
+        default=200.0,
+        gt=0.0,
+        description="Rise in draw that counts as the compressor starting, in W",
+    )
+
+
 class EvaluationConfig(_Section):
     """Policy for the experiments (section 8.3), not for the running system.
 
@@ -875,6 +905,7 @@ class Config(_Section):
     detectors: DetectorsConfig
     evaluation: EvaluationConfig = EvaluationConfig()
     site: SiteConfig = SiteConfig()
+    bringup: BringupConfig = BringupConfig()
     tariff: TariffConfig = TariffConfig()
     mode: ModeConfig
     sensors: SensorsConfig

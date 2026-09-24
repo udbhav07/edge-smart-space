@@ -117,6 +117,14 @@ tariff:
   peak_windows:
     - {start_h: 18.0, end_h: 22.0}
 
+# Week 5. What tools/bringup.py accepts as an instrument that is really there.
+bringup:
+  listen_s: 60.0
+  max_interval_factor: 1.5      # Past this, D1 starts calling dropouts
+  actuation_drop_c: 2.0         # Ask for this far below the room
+  actuation_window_s: 300.0     # Longer than the 180 s dwell, or a recent OFF hides a working unit
+  min_power_rise_w: 200.0       # A compressor starting draws far more than this
+
 # Section 8.3. Evaluation policy, used by the experiments and by nothing that
 # runs in production. The comfort band is what success criterion 4 is measured
 # against: the room is comfortable while it is within this of the setpoint.
