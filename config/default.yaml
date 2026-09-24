@@ -85,6 +85,11 @@ controller:
   excitation_duration_s: 5400.0   # Identification phase after startup
   excitation_period_s: 900.0      # Full cycle; half on, half off
   excitation_envelope_c: 2.0      # Never excite the room past this from setpoint
+  # How far one spoken request moves the setpoint when somebody asks for
+  # "cooler" rather than naming a temperature. A degree is noticeable without
+  # being startling, and asking twice moves it twice because the step is
+  # applied to what is in force rather than to a constant.
+  comfort_step_c: 1.0
   deadband_c: 0.5
   min_off_s: 180.0
   default_setpoint_c: 24.0

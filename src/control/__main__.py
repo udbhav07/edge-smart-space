@@ -23,6 +23,7 @@ from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
+from src.control.goal_manager import GoalManager
 from src.control.service import ControlService, build_service
 
 LOGGER = logging.getLogger(__name__)
@@ -36,14 +37,22 @@ def run(
     clock: Clock,
     period_s: float,
     ticks: int | None = None,
+    goals: GoalManager | None = None,
 ) -> None:
     """Tick the loop until interrupted, or for a fixed number of cycles.
 
     ``ticks`` exists so a test drives the real loop rather than a double of it,
     and so an accelerated experiment run can bound itself.
+
+    The goal manager is expired on the same tick. A source going silent is
+    precisely the case where no message arrives, so noticing it has to happen
+    on the clock rather than on a callback -- otherwise a supervisor that
+    crashed mid-proposal keeps steering the room.
     """
     completed = 0
     while ticks is None or completed < ticks:
+        if goals is not None:
+            goals.expire()
         service.tick()
         clock.sleep(period_s)
         completed += 1
@@ -78,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
 
     service = build_service(config, clock, blackboard)
     service.subscribe()
+    # Arbitration runs in this process and publishes proposals the service
+    # then gates, so a spoken request crosses the same gate a supervisor's
+    # goal does (FR-45).
+    goals = GoalManager(config, clock, blackboard)
+    goals.subscribe()
     blackboard.start()
     LOGGER.info(
         "controlling to %.1f C every %.0f s; commands appear on %s",
@@ -86,7 +100,13 @@ def main(argv: list[str] | None = None) -> int:
         topics.ACTUATOR_COMMAND.wildcard(),
     )
     try:
-        run(service, clock, config.loop.regulatory_period_s, arguments.ticks)
+        run(
+            service,
+            clock,
+            config.loop.regulatory_period_s,
+            arguments.ticks,
+            goals=goals,
+        )
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:

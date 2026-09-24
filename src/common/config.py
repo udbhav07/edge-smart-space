@@ -188,6 +188,12 @@ class ControllerConfig(_Section):
     """Deadband law parameters from DESIGN.md section 5.3."""
 
     deadband_c: float = Field(gt=0.0, description="Symmetric; prevents chatter")
+    comfort_step_c: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="How far a spoken request for 'cooler' or 'warmer' moves "
+        "the setpoint when no temperature is named",
+    )
     min_off_s: float = Field(
         ge=0.0, description="Compressor protection; also enforced by validator V-3"
     )

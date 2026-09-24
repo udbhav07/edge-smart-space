@@ -1375,10 +1375,8 @@ edge-smart-space/
 ```
 
 Written as of v1.1 and revised at v1.9, the following are specified above but
-**not yet implemented**: `goal_manager.py` (the control service gates a
-proposed goal, but nothing arbitrates between several sources yet),
-`supervisor_agent.py` and `supervisor_tools.py` (the reasoning layer's own
-half; the surface it acts through exists and is tested),
+**not yet implemented**: `supervisor_agent.py` and `supervisor_tools.py` (the
+reasoning layer's own half; the surface it acts through exists and is tested),
 `speaker_profile.py` (FR-52), `simulated_actuators.py`, and `docs/adr/`. They are listed because they are the design, and named here so the
 gap between the document and the tree is explicit rather than discovered.
 
