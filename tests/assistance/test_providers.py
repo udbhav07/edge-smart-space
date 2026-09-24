@@ -284,6 +284,23 @@ class TestTheMockStillRefusesNonsense:
                 },
             )
 
+    def test_the_site_offset_decides_what_is_in_the_past(self):
+        """A node provisioned in UTC must judge "now" in the room's frame.
+
+        Simulated now is 2025-08-24 10:40 UTC, which is 16:10 in India. A
+        flight at 14:00 local has already left in India and has not in UTC.
+        """
+        clock = SimClock()
+        flight = {
+            "kind": "flight",
+            "destination": "Delhi",
+            "depart_on": "2025-08-24T14:00:00",
+            "origin": "Hyderabad",
+        }
+        MockTravel(clock=clock, utc_offset_h=0.0).invoke("book_travel", flight)
+        with pytest.raises(TravelRequestError):
+            MockTravel(clock=clock, utc_offset_h=5.5).invoke("book_travel", flight)
+
     def test_an_absurd_stay_is_refused(self, travel):
         with pytest.raises(TravelRequestError):
             travel.invoke(

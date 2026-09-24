@@ -46,8 +46,9 @@ class _Boundary:
 class TariffSchedule:
     """Which band is in force at any instant, from the configured windows."""
 
-    def __init__(self, config: TariffConfig) -> None:
+    def __init__(self, config: TariffConfig, utc_offset_h: float) -> None:
         self._config = config
+        self._utc_offset_h = utc_offset_h
 
     @property
     def offset_c(self) -> float:
@@ -55,7 +56,7 @@ class TariffSchedule:
 
     def _local_midnight(self, ts: float) -> float:
         """Epoch seconds of the local midnight that starts ``ts``'s day."""
-        offset_s = self._config.utc_offset_h * SECONDS_PER_HOUR
+        offset_s = self._utc_offset_h * SECONDS_PER_HOUR
         return ts - ((ts + offset_s) % SECONDS_PER_DAY)
 
     def _boundaries_around(self, ts: float) -> list[_Boundary]:

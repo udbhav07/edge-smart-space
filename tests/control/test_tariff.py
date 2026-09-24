@@ -31,9 +31,9 @@ def _schedule(*windows, offset_h=IST, offset_c=1.0) -> TariffSchedule:
     return TariffSchedule(
         TariffConfig(
             peak_windows=tuple(PeakWindow(start_h=a, end_h=b) for a, b in windows),
-            utc_offset_h=offset_h,
             peak_offset_c=offset_c,
-        )
+        ),
+        utc_offset_h=offset_h,
     )
 
 
@@ -147,7 +147,9 @@ class TestPublisher:
         clock = SimClock(start_epoch_s=_at(hour))
         transport = RecordingTransport()
         blackboard = Blackboard(config.mqtt, transport)
-        publisher = TariffPublisher(TariffSchedule(config.tariff), clock, blackboard)
+        publisher = TariffPublisher(
+            TariffSchedule(config.tariff, config.site.utc_offset_h), clock, blackboard
+        )
         return publisher, transport, clock
 
     def test_the_first_tick_publishes(self):
@@ -186,6 +188,8 @@ class TestPublisher:
         transport = RecordingTransport()
         blackboard = Blackboard(config.mqtt, transport)
         service = build_service(config, clock, blackboard)
-        publisher = TariffPublisher(TariffSchedule(config.tariff), clock, blackboard)
+        publisher = TariffPublisher(
+            TariffSchedule(config.tariff, config.site.utc_offset_h), clock, blackboard
+        )
         run(service, clock, config.loop.regulatory_period_s, ticks=2, tariff=publisher)
         assert transport.tariffs()

@@ -276,6 +276,23 @@ class PeakWindow(_Section):
         return self
 
 
+class SiteConfig(_Section):
+    """Where the room is, as far as time is concerned.
+
+    One offset, read by everything that turns an epoch into a wall time: the
+    tariff, the date a model is told, and the providers that check the times
+    it writes. Two sources of local time would disagree on a node provisioned
+    in UTC (see ``src/common/localtime.py``).
+    """
+
+    utc_offset_h: float = Field(
+        default=0.0,
+        ge=-12.0,
+        le=14.0,
+        description="Local time minus UTC, in hours. Fixed: a room does not move",
+    )
+
+
 class TariffConfig(_Section):
     """The pricing schedule FR-16 reacts to."""
 
@@ -284,12 +301,6 @@ class TariffConfig(_Section):
         default=1.0,
         ge=0.0,
         description="How far the comfort band shifts up while peak, in C",
-    )
-    utc_offset_h: float = Field(
-        default=0.0,
-        ge=-12.0,
-        le=14.0,
-        description="Local time minus UTC, in hours. Fixed: a room does not move",
     )
 
     @model_validator(mode="after")
@@ -809,6 +820,7 @@ class Config(_Section):
     validator: ValidatorConfig
     detectors: DetectorsConfig
     evaluation: EvaluationConfig = EvaluationConfig()
+    site: SiteConfig = SiteConfig()
     tariff: TariffConfig = TariffConfig()
     mode: ModeConfig
     sensors: SensorsConfig

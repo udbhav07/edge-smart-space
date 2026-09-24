@@ -89,7 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     # Arbitration lives inside the service, ahead of the gate: every proposal
     # -- supervisor, operator, spoken -- is arbitrated and then validated in
     # one component, so none can reach the gate unarbitrated (FR-45).
-    tariff = TariffPublisher(TariffSchedule(config.tariff), clock, blackboard)
+    tariff = TariffPublisher(
+        TariffSchedule(config.tariff, config.site.utc_offset_h), clock, blackboard
+    )
     blackboard.start()
     LOGGER.info(
         "controlling to %.1f C every %.0f s; commands appear on %s",

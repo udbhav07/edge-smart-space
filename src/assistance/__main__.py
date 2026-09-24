@@ -55,7 +55,10 @@ def build_registry(config: Config, clock: Clock) -> ToolRegistry:
     )
     registry.bind(SCHEDULE_EVENT.name, calendar)
     registry.bind(GET_EVENTS.name, calendar)
-    registry.bind(BOOK_TRAVEL.name, MockTravel(clock=clock))
+    registry.bind(
+        BOOK_TRAVEL.name,
+        MockTravel(clock=clock, utc_offset_h=config.site.utc_offset_h),
+    )
     return registry
 
 

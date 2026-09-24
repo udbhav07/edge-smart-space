@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from src.common.clock import Clock
+from src.common.localtime import local_time
 from src.common.tools import ArgumentValue, ProviderOutcome
 
 LOGGER = logging.getLogger(__name__)
@@ -53,8 +54,9 @@ class TravelRequestError(ValueError):
 class MockTravel:
     """Pretends to book travel, and never pretends it did."""
 
-    def __init__(self, clock: Clock) -> None:
+    def __init__(self, clock: Clock, utc_offset_h: float | None = None) -> None:
         self._clock = clock
+        self._utc_offset_h = utc_offset_h
         self._bookings = 0
 
     @property
@@ -157,7 +159,14 @@ class MockTravel:
         return f"{_REFERENCE_PREFIX}-{int(self._clock.now())}-{self._bookings:03d}"
 
     def _as_now(self) -> datetime:
-        return datetime.fromtimestamp(self._clock.now())
+        """Now, in the frame the model wrote ``depart_on`` in.
+
+        The site offset when one is given, so a node provisioned in UTC does
+        not call a flight tomorrow morning "in the past" (localtime.py).
+        """
+        if self._utc_offset_h is None:
+            return datetime.fromtimestamp(self._clock.now())
+        return local_time(self._clock.now(), self._utc_offset_h)
 
     @staticmethod
     def _as_datetime(value: object) -> datetime:
