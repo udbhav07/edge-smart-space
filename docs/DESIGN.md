@@ -719,6 +719,8 @@ The validator is the only component permitted to be paranoid. It has no knowledg
 
 Every verdict is published to `space/audit/validation` with the proposal, the verdict, the reason code, and the applied value. A clamped supervisor proposal is a finding, not a failure — it is evidence the gate works, and the review deck should present it that way.
 
+**Arbitration sits in front of the gate, in the same component** (§4.4's "Goal Manager + Validator"). Every proposal arriving on `space/goal/proposed`, and every spoken preference on `space/context/preference`, is arbitrated first — operator over occupant over supervisor over default — and only the winner is validated. A proposal that loses is published as `BLOCKED` with reason `OUTRANKED`, which is not a V-rule but is a decision, and a supervisor goal that changed nothing because an occupant had spoken must be visible as exactly that. Corrected in v2.0: arbitration previously published its winner back onto `space/goal/proposed`, where the gate could not tell an arbitrated goal from a raw one, so a supervisor's goal would have overridden an occupant simply by arriving.
+
 ### 5.5 Fault Detection
 
 Five detectors run in parallel at regulatory cadence. Each emits a `FaultEvent` with a confidence and the evidence window.

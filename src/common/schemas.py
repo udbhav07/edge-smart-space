@@ -166,6 +166,10 @@ class ReasonCode(str, Enum):
     CMD_RATE = "CMD_RATE"
     MODE_BLOCK = "MODE_BLOCK"
     STALE_GOAL = "STALE_GOAL"
+    #: Not a V-rule: the proposal lost arbitration to a more authoritative
+    #: source (an occupant outranks the supervisor). Published so a supervisor
+    #: goal that changed nothing is visible as that, not as silence.
+    OUTRANKED = "OUTRANKED"
 
 
 class CommandKind(str, Enum):

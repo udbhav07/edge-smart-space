@@ -41,15 +41,20 @@ from src.common.config import Config
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     COMMAND_KIND_KEY,
+    SETPOINT_KEY,
     Command,
     CommandKind,
     Goal,
     Mode,
     ModeState,
+    PreferenceHint,
+    ReasonCode,
     SensorReading,
     ThermalEstimate,
     ValidationVerdict,
+    Verdict,
 )
+from src.control.goal_manager import GoalManager
 from src.control.regulatory import RegulatoryController
 from src.control.validator import CommandValidator, GoalValidator
 
@@ -72,6 +77,7 @@ class ControlService:
         controller: RegulatoryController,
         goal_validator: GoalValidator,
         command_validator: CommandValidator,
+        goals: GoalManager,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -79,6 +85,7 @@ class ControlService:
         self._controller = controller
         self._goal_validator = goal_validator
         self._command_validator = command_validator
+        self._goals = goals
 
         self._measured_c: float | None = None
         self._predicted_c: float | None = None
@@ -97,6 +104,9 @@ class ControlService:
         )
         self._blackboard.subscribe(topics.SYSTEM_MODE, ModeState, self._on_mode)
         self._blackboard.subscribe(topics.GOAL_PROPOSED, Goal, self._on_goal)
+        self._blackboard.subscribe(
+            topics.CONTEXT_PREFERENCE, PreferenceHint, self._on_preference
+        )
 
     @property
     def setpoint_c(self) -> float:
@@ -124,9 +134,51 @@ class ControlService:
         if state.mode is not self._mode:
             LOGGER.info("control mode is now %s", state.mode.value)
         self._mode = state.mode
+        self._goals.observe_mode(state.mode)
 
     def _on_goal(self, _topic: str, goal: Goal) -> None:
-        """Gate a proposed setpoint and adopt what survives (FR-13, FR-14).
+        """A proposal from outside: the supervisor, an operator (FR-40).
+
+        Arbitrated first, then gated. A stale one goes straight to the gate,
+        which refuses it with the reason that is actually true (V-6). One that
+        loses arbitration is published as a verdict too: a supervisor goal
+        that changed nothing because an occupant had spoken is a decision, and
+        a decision nobody can see did not happen.
+        """
+        if self._goal_validator.is_stale(goal):
+            self._gate(goal)
+            return
+        winner = self._goals.propose(goal)
+        if winner is not None:
+            self._gate(winner)
+        elif goal.source is not self._goals.winning_source:
+            self._publish_outranked(goal)
+
+    def _on_preference(self, _topic: str, hint: PreferenceHint) -> None:
+        """What an occupant said, as a proposal (FR-53), then gated (FR-45)."""
+        winner = self._goals.consider(hint)
+        if winner is not None:
+            self._gate(winner)
+
+    def _publish_outranked(self, goal: Goal) -> None:
+        verdict = ValidationVerdict(
+            ts=self._clock.now(),
+            proposed={SETPOINT_KEY: goal.setpoint_c},
+            verdict=Verdict.BLOCKED,
+            reason=ReasonCode.OUTRANKED,
+            applied={SETPOINT_KEY: self.setpoint_c},
+        )
+        self._blackboard.publish(topics.AUDIT_VALIDATION, verdict)
+        LOGGER.info(
+            "goal %.2f from %s outranked by %s; setpoint stays %.2f",
+            goal.setpoint_c,
+            goal.source.value,
+            self._goals.winning_source.value,
+            self.setpoint_c,
+        )
+
+    def _gate(self, goal: Goal) -> None:
+        """Gate a winning setpoint and adopt what survives (FR-13, FR-14).
 
         The verdict is published whatever it says. A clamped proposal is the
         gate working and belongs in the audit trail; hiding it would remove the
@@ -168,6 +220,13 @@ class ControlService:
             is no measurement, and a loop that commanded from a default would
             drive a room it has never observed.
         """
+        # Proposals age out on the clock, not on a message: a source going
+        # silent is exactly the case where nothing arrives, and a supervisor
+        # that crashed mid-proposal must not keep steering the room.
+        successor = self._goals.expire()
+        if successor is not None:
+            self._gate(successor)
+
         if self._measured_c is None:
             if not self._warned_about_no_reading:
                 LOGGER.warning(
@@ -255,4 +314,5 @@ def build_service(
             initial_setpoint_c=config.controller.default_setpoint_c,
         ),
         command_validator=CommandValidator(config=config.validator, clock=clock),
+        goals=GoalManager(config, clock),
     )

@@ -114,6 +114,15 @@ class GoalValidator:
         self._applied_setpoint_c = candidate
         return self._verdict(now, goal.setpoint_c, verdict, reason, candidate)
 
+    def is_stale(self, goal: Goal) -> bool:
+        """Whether V-6 would refuse this goal now.
+
+        Public so the goal gate can send a stale proposal straight here for
+        its STALE_GOAL verdict, rather than arbitrating it and reporting it as
+        outranked -- which would be the wrong reason on the audit trail.
+        """
+        return self._is_stale(goal, self._clock.now())
+
     def _is_stale(self, goal: Goal, now: float) -> bool:
         """V-6. Also rejects a goal that has passed its own expiry."""
         if now - goal.ts > self._config.goal_max_age_s:

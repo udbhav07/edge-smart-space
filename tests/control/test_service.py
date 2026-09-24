@@ -14,12 +14,16 @@ from src.common.config import load_config
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     AdaptationState,
+    Comfort,
     Command,
     CommandKind,
     Goal,
     GoalSource,
+    Intent,
     Mode,
     ModeState,
+    PreferenceHint,
+    ReasonCode,
     SensorReading,
     ThermalEstimate,
     Unit,
@@ -131,10 +135,16 @@ def _send_mode(blackboard, clock, mode: Mode):
     blackboard.dispatch("space/system/mode", state.model_dump_json().encode())
 
 
-def _send_goal(blackboard, clock, setpoint_c: float, expires_in_s: float = 600.0):
+def _send_goal(
+    blackboard,
+    clock,
+    setpoint_c: float,
+    expires_in_s: float = 600.0,
+    source: GoalSource = GoalSource.SUPERVISOR,
+):
     goal = Goal(
         ts=clock.now(),
-        source=GoalSource.SUPERVISOR,
+        source=source,
         setpoint_c=setpoint_c,
         mode=Mode.NORMAL,
         rationale="test",
@@ -279,6 +289,80 @@ class TestGoals:
         assert service.setpoint_c == config.controller.default_setpoint_c
 
 
+def _send_hint(blackboard, clock, target_c: float):
+    hint = PreferenceHint(
+        ts=clock.now(),
+        intent=Intent.ENVIRONMENT,
+        comfort=Comfort.COOLER,
+        subject="temperature",
+        target_c=target_c,
+        rationale="it is too warm in here",
+    )
+    blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
+
+
+class TestArbitrationAtTheGate:
+    """Section 4.4's one box: every proposal is arbitrated, then gated.
+
+    Before Week 6 arbitration published its winner onto the same topic the
+    gate read, so a supervisor goal would have overridden an occupant simply
+    by arriving. These pin the fix.
+    """
+
+    def test_a_supervisor_cannot_override_an_occupant(self, wired, clock):
+        service, _, blackboard = wired
+        _send_hint(blackboard, clock, 23.0)
+        _send_goal(blackboard, clock, 25.0)
+        assert service.setpoint_c == 23.0
+
+    def test_an_outranked_proposal_is_published_not_dropped(self, wired, clock):
+        """A decision nobody can see did not happen."""
+        _, transport, blackboard = wired
+        _send_hint(blackboard, clock, 23.0)
+        _send_goal(blackboard, clock, 25.0)
+        verdict = transport.verdicts()[-1]
+        assert verdict.verdict is Verdict.BLOCKED
+        assert verdict.reason is ReasonCode.OUTRANKED
+        assert verdict.proposed["setpoint_c"] == 25.0
+        assert verdict.applied["setpoint_c"] == 23.0
+
+    def test_a_spoken_request_is_gated_like_any_other(self, wired, clock):
+        """FR-45 holds of speech: asking for 5 C does not get 5 C."""
+        service, transport, blackboard = wired
+        _send_hint(blackboard, clock, 5.0)
+        assert service.setpoint_c > 5.0
+        assert transport.verdicts()[-1].verdict is Verdict.CLAMPED
+
+    def test_the_supervisor_takes_over_when_the_occupant_request_expires(
+        self, wired, clock, config
+    ):
+        """The supervisor's proposal must itself still be fresh: V-6 measures
+        age from when it was proposed, which is why the supervisor re-proposes
+        on its cadence rather than once."""
+        service, _, blackboard = wired
+        _send_hint(blackboard, clock, 23.0)
+        clock.advance(config.validator.goal_max_age_s - 10.0)
+        _send_goal(blackboard, clock, 25.0, expires_in_s=3600.0)
+        clock.advance(20.0)
+        _send_reading(blackboard, clock, WARM_C)
+        service.tick()
+        assert service.setpoint_c == 25.0
+
+    def test_a_stale_proposal_is_refused_as_stale_not_as_outranked(
+        self, wired, clock
+    ):
+        """The audit trail has to give the reason that is actually true."""
+        _, transport, blackboard = wired
+        _send_goal(blackboard, clock, 26.0, expires_in_s=-1.0)
+        assert transport.verdicts()[-1].reason is ReasonCode.STALE_GOAL
+
+    def test_an_operator_outranks_the_occupant(self, wired, clock):
+        service, _, blackboard = wired
+        _send_hint(blackboard, clock, 23.0)
+        _send_goal(blackboard, clock, 25.0, source=GoalSource.OPERATOR)
+        assert service.setpoint_c == 25.0
+
+
 class TestControlOnPrediction:
     """FR-27, and the reason the model is worth identifying."""
 
@@ -341,4 +425,5 @@ class TestRunLoop:
             "space/estimate/thermal",
             "space/system/mode",
             "space/goal/proposed",
+            "space/context/preference",
         }

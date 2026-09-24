@@ -8,10 +8,16 @@ that gate exists to apply hard limits without knowing intent, and teaching it
 whose intent to prefer would give it exactly the knowledge it is supposed to
 lack.
 
-So the arbitration happens here and the result is a *proposal*. This publishes
-to ``space/goal/proposed``; the validator still gates whatever wins, and a
-proposal that survives arbitration and fails V-1 is clamped like any other.
-Winning the argument is not the same as being allowed.
+So the arbitration happens here, and what wins is handed to the validator.
+Section 4.4 draws the two as one box, "Goal Manager + Validator", subscribed to
+``space/goal/proposed``: every proposal from outside -- the supervisor's, an
+operator's -- arrives there, is arbitrated, and only the winner is gated. They
+are two classes because they answer two questions, and one component because
+there must be no topic between them: if arbitration published its winner back
+onto ``space/goal/proposed``, the gate could not tell an arbitrated goal from a
+raw one, and a supervisor's proposal would override an occupant simply by
+arriving. That was the wiring before Week 6, and it went unnoticed only because
+no supervisor existed yet.
 
 **An occupant outranks a model.** Somebody in the room saying it is too warm
 beats a supervisor's tariff optimisation, because the supervisor is optimising
@@ -25,12 +31,13 @@ running would let a reasoning layer that has since crashed keep steering the
 room. With every source silent the configured default stands, which is what
 FR-11 means by holding a valid setpoint when the layers above are gone.
 
-**This closes the loop from speech.** A ``PreferenceHint`` is what an occupant
-said, turned into structure (FR-53); until something converted one into a goal
-it was published and read by nobody. A hint is advisory by construction -- it
-proposes, it does not command -- and routing it through this and then through
-the validator is what keeps FR-45 true of spoken requests as well as of the
-reasoning layer.
+**Speech reaches the plant through here.** A ``PreferenceHint`` is what an
+occupant said, turned into structure (FR-53). It is converted into a proposal
+and arbitrated like any other, then gated like any other: FR-45 holds of spoken
+requests exactly as it holds of the reasoning layer.
+
+This class holds no blackboard. The control service subscribes, feeds it, and
+gates what it returns.
 """
 
 from __future__ import annotations
@@ -38,17 +45,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from src.common import topics
 from src.common.clock import Clock
 from src.common.config import Config
-from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     Comfort,
     Goal,
     GoalSource,
     Intent,
     Mode,
-    ModeState,
     PreferenceHint,
 )
 
@@ -78,24 +82,18 @@ class _Standing:
 
 
 class GoalManager:
-    """Holds the live proposals and publishes whichever one wins."""
+    """Holds the live proposals and says which one wins."""
 
-    def __init__(
-        self,
-        config: Config,
-        clock: Clock,
-        blackboard: Blackboard,
-    ) -> None:
+    def __init__(self, config: Config, clock: Clock) -> None:
         self._config = config
         self._clock = clock
-        self._blackboard = blackboard
         self._standing: dict[GoalSource, _Standing] = {}
         self._mode = Mode.INIT
-        self._published_setpoint_c: float | None = None
+        self._handed_on_c: float | None = None
 
     @property
     def setpoint_c(self) -> float:
-        """The setpoint currently being proposed.
+        """The setpoint currently winning.
 
         Falls back to the configured default, which is the answer when every
         source has gone quiet or expired.
@@ -111,46 +109,40 @@ class GoalManager:
         winner = self._winner()
         return GoalSource.DEFAULT if winner is None else winner.goal.source
 
-    # --- wiring -------------------------------------------------------
+    def observe_mode(self, mode: Mode) -> None:
+        """Remember the mode, so a spoken request is stamped with it."""
+        self._mode = mode
 
-    def subscribe(self) -> None:
-        """Listen to everything that may want the room at a temperature."""
-        self._blackboard.subscribe(
-            topics.CONTEXT_PREFERENCE, PreferenceHint, self._on_preference
-        )
-        self._blackboard.subscribe(topics.SYSTEM_MODE, ModeState, self._on_mode)
+    # --- proposals ----------------------------------------------------
 
-    def _on_mode(self, _topic: str, state: ModeState) -> None:
-        self._mode = state.mode
-
-    def _on_preference(self, _topic: str, hint: PreferenceHint) -> None:
+    def consider(self, hint: PreferenceHint) -> Goal | None:
         """Turn what an occupant said into a proposal, if it asked for one.
 
         A hint about anything other than the environment is not a setpoint
-        request and is left alone: FR-42 and section 6.4 make a hint able to
-        carry a service request or nothing at all, and reading every hint as a
+        request and is left alone: section 6.4 makes a hint able to carry a
+        service request or nothing at all, and reading every hint as a
         temperature would turn "put that in my calendar" into a goal.
+
+        :returns: the goal to gate, when the winner changed as a result.
         """
         if hint.intent is not Intent.ENVIRONMENT:
             LOGGER.debug("hint with intent %s is not a goal", hint.intent.value)
-            return
+            return None
 
         target_c = self._target_from(hint)
         if target_c is None:
-            LOGGER.info(
-                "hint %r asked for no particular temperature", hint.rationale
-            )
-            return
+            LOGGER.info("hint %r asked for no particular temperature", hint.rationale)
+            return None
 
-        self.propose(
+        now = self._clock.now()
+        return self.propose(
             Goal(
-                ts=self._clock.now(),
+                ts=now,
                 source=GoalSource.PREFERENCE,
                 setpoint_c=target_c,
                 mode=self._mode,
                 rationale=hint.rationale or "an occupant asked",
-                expires_ts=self._clock.now()
-                + self._config.validator.goal_max_age_s,
+                expires_ts=now + self._config.validator.goal_max_age_s,
             )
         )
 
@@ -158,7 +150,7 @@ class GoalManager:
         """The temperature a hint is asking for, if it names one.
 
         A stated target is taken as given. A direction is applied to what is
-        currently in force rather than to the configured default, because
+        currently winning rather than to the configured default, because
         "cooler" means cooler than it is now -- resolving it against a
         constant would make repeating it do nothing the second time.
         """
@@ -172,57 +164,26 @@ class GoalManager:
             return self.setpoint_c + step
         return None
 
-    # --- arbitration --------------------------------------------------
-
     def propose(self, goal: Goal) -> Goal | None:
-        """Enter a proposal and publish the winner, if it changed.
+        """Enter a proposal.
 
-        :returns: the goal published, or None when the outcome is unchanged.
-            Republishing an unchanged proposal every time anything spoke would
-            reset the validator's rate limit against a setpoint nobody moved.
+        :returns: the winning goal when the winning setpoint changed, for the
+            validator to gate; None when the outcome is unchanged. Handing on
+            an unchanged setpoint every time anything spoke would reset the
+            validator's rate limit against a setpoint nobody moved.
         """
         self._standing[goal.source] = _Standing(goal=goal)
-        return self._publish_winner()
-
-    def _winner(self) -> _Standing | None:
-        """The most authoritative proposal that has not expired."""
-        now = self._clock.now()
-        live = [
-            standing
-            for standing in self._standing.values()
-            if standing.goal.expires_ts > now
-        ]
-        if not live:
-            return None
-        return max(
-            live, key=lambda standing: (standing.authority, standing.goal.ts)
-        )
-
-    def _publish_winner(self) -> Goal | None:
-        winner = self._winner()
-        if winner is None:
-            return None
-        if self._published_setpoint_c == winner.goal.setpoint_c:
-            return None
-
-        self._published_setpoint_c = winner.goal.setpoint_c
-        self._blackboard.publish(topics.GOAL_PROPOSED, winner.goal)
-        LOGGER.info(
-            "proposing %.2f C from %s: %s",
-            winner.goal.setpoint_c,
-            winner.goal.source.value,
-            winner.goal.rationale or "no reason given",
-        )
-        return winner.goal
+        return self._changed_winner()
 
     def expire(self) -> Goal | None:
-        """Drop proposals that have aged out, and republish if that changed
-        who is winning.
+        """Drop proposals that have aged out.
 
-        Called on a tick rather than only when something arrives: a source
-        going silent is exactly the case where nothing arrives, and a
+        Called on the regulatory tick rather than only when something arrives:
+        a source going silent is exactly the case where nothing arrives, and a
         supervisor that crashed mid-proposal would otherwise keep steering the
         room from beyond the grave.
+
+        :returns: the new winner, when losing a proposal changed who wins.
         """
         now = self._clock.now()
         expired = [
@@ -235,4 +196,33 @@ class GoalManager:
             del self._standing[source]
         if not expired:
             return None
-        return self._publish_winner()
+        return self._changed_winner()
+
+    # --- arbitration --------------------------------------------------
+
+    def _winner(self) -> _Standing | None:
+        """The most authoritative proposal that has not expired."""
+        now = self._clock.now()
+        live = [
+            standing
+            for standing in self._standing.values()
+            if standing.goal.expires_ts > now
+        ]
+        if not live:
+            return None
+        return max(live, key=lambda standing: (standing.authority, standing.goal.ts))
+
+    def _changed_winner(self) -> Goal | None:
+        winner = self._winner()
+        if winner is None:
+            return None
+        if self._handed_on_c == winner.goal.setpoint_c:
+            return None
+        self._handed_on_c = winner.goal.setpoint_c
+        LOGGER.info(
+            "%.2f C from %s wins: %s",
+            winner.goal.setpoint_c,
+            winner.goal.source.value,
+            winner.goal.rationale or "no reason given",
+        )
+        return winner.goal
