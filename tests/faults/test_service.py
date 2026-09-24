@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from src.common.clock import SimClock
-from src.common.config import load_config
+from src.common.config import Bounds, SensorConfig, load_config
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     AdaptationState,
@@ -182,6 +182,82 @@ class TestBankConstruction:
         service.tick()
         raised = [event for event in transport.faults() if event.subject == HUMIDITY]
         assert raised and raised[0].detector is DetectorId.D3_OUT_OF_RANGE
+
+
+POWER = "pwr_01"
+
+
+def _with_power_meter(config):
+    """The shipped config plus a power meter, whatever the YAML says.
+
+    The detector assignment is decided from the unit, so this checks that
+    rule rather than whichever sensors happen to be configured this week.
+    """
+    if any(a.sensor_id == POWER for a in config.sensors.adapters):
+        return config
+    meter = SensorConfig(
+        sensor_id=POWER,
+        unit=Unit.WATT,
+        limits=Bounds(low=0.0, high=5000.0),
+        description="Air conditioner electrical power",
+    )
+    sensors = config.sensors.model_copy(
+        update={"adapters": config.sensors.adapters + (meter,)}
+    )
+    return config.model_copy(update={"sensors": sensors})
+
+
+@pytest.fixture(name="metered")
+def _metered(config, clock):
+    config = _with_power_meter(config)
+    transport = FakeTransport()
+    blackboard = Blackboard(config.mqtt, transport)
+    service = build_service(config, clock, blackboard)
+    service.subscribe()
+    blackboard.on_connected()
+    return service, transport, blackboard, config
+
+
+class TestPowerMeter:
+    """An idle compressor draws the same standby power for hours."""
+
+    def test_an_idle_meter_reading_a_constant_raises_nothing(self, metered, clock):
+        """D2 on a power meter would call every quiet hour a stuck sensor."""
+        service, transport, blackboard, config = metered
+        for _ in range(config.detectors.stuck_at.window_samples * 3):
+            _deliver(blackboard, _reading(clock, POWER, 4.0, Unit.WATT))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert [e for e in transport.faults() if e.subject == POWER] == []
+
+    def test_an_impossible_draw_is_out_of_range(self, metered, clock):
+        service, transport, blackboard, config = metered
+        for _ in range(config.detectors.out_of_range.debounce_samples):
+            _deliver(blackboard, _reading(clock, POWER, 99999.0, Unit.WATT))
+            clock.advance(config.loop.sensor_period_s)
+        service.tick()
+        raised = [e for e in transport.faults() if e.subject == POWER]
+        assert raised and raised[0].detector is DetectorId.D3_OUT_OF_RANGE
+
+    def test_a_negative_draw_is_out_of_range(self, metered, clock):
+        """A meter cannot report the air conditioner generating power."""
+        service, transport, blackboard, config = metered
+        for _ in range(config.detectors.out_of_range.debounce_samples):
+            _deliver(blackboard, _reading(clock, POWER, -50.0, Unit.WATT))
+            clock.advance(config.loop.sensor_period_s)
+        service.tick()
+        assert any(e.subject == POWER for e in transport.faults())
+
+    def test_a_silent_meter_is_a_dropout(self, metered, clock):
+        service, transport, blackboard, config = metered
+        _deliver(blackboard, _reading(clock, POWER, 4.0, Unit.WATT))
+        clock.advance(
+            config.loop.sensor_period_s
+            * (config.detectors.dropout.timeout_periods + 2)
+        )
+        service.tick()
+        raised = [e for e in transport.faults() if e.subject == POWER]
+        assert raised and raised[0].detector is DetectorId.D1_DROPOUT
 
 
 class TestDropoutTimeoutPerSensor:

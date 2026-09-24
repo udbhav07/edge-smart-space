@@ -121,6 +121,13 @@ class TestSensorReading:
     def test_an_out_of_range_humidity_stays_representable_for_d3(self):
         assert _reading(unit=Unit.PERCENT_RH, value=120.0).value == 120.0
 
+    def test_a_negative_power_stays_representable_for_d3(self):
+        """A meter wired backwards reports negative watts; D3 has to see it."""
+        assert _reading(sensor_id="pwr_01", unit=Unit.WATT, value=-50.0).value == -50.0
+
+    def test_power_travels_in_watts(self):
+        assert Unit("W") is Unit.WATT
+
 
 class TestThermalEstimate:
     def test_model_confidence_is_bounded_to_the_unit_interval(self):

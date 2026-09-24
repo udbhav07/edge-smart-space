@@ -299,6 +299,10 @@ class OutOfRangeDetectorConfig(_Section):
 
     temperature_c: Bounds
     humidity_pct: Bounds
+    power_w: Bounds = Field(
+        default=Bounds(low=0.0, high=5000.0),
+        description="What an electrical power reading may physically be, in W",
+    )
     debounce_samples: int = Field(gt=0, description="Consecutive samples before raising")
 
 

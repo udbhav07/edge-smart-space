@@ -64,6 +64,7 @@ class Unit(str, Enum):
 
     CELSIUS = "C"
     PERCENT_RH = "%RH"
+    WATT = "W"
     BOOLEAN = "bool"
 
 
