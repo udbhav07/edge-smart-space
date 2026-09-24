@@ -311,6 +311,19 @@ reasoning:
   model: qwen2.5:7b
   timeout_s: 30.0
   max_history_turns: 20
+  temperature: 0.0              # E6 measures the model, not the dice
+  max_audit_chars: 4000         # Per text field of a ReasoningRecord
+  # FR-41. The Environmental Supervisor runs on this cadence and on events:
+  # an occupancy transition, a tariff transition, a newly confirmed fault.
+  supervisor_period_s: 300.0
+  supervisor_min_interval_s: 30.0   # A flapping PIR is not a queue of calls
+  supervisor_max_rounds: 6          # Model turns before a run is abandoned
+  supervisor_goal_lifetime_s: 600.0 # Two cadences: one miss is no gap
+  # FR-44's post-decode check on propose_setpoint. Wider than the validator on
+  # purpose: 5 C is a request the gate must be seen refusing; 500 C is not a
+  # room temperature and never reaches it.
+  plausible_setpoint_c: {low: 0.0, high: 50.0}
+  verdict_timeout_s: 2.0            # Wait for the gate's answer, then move on
 
 # Section 5.7.6. The tool surface itself is a declaration in code; the only
 # policy number in it is how long an occupant has to answer.

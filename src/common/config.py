@@ -645,6 +645,54 @@ class ReasoningConfig(_Section):
     max_history_turns: int = Field(
         gt=0, description="Retained turns; unbounded history grows every prompt"
     )
+    temperature: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=2.0,
+        description="Decoding temperature. Zero, so E6 measures the model and "
+        "not the dice",
+    )
+    max_audit_chars: int = Field(
+        default=4000,
+        gt=16,
+        description="Longest text any one audit field may carry, in characters",
+    )
+    supervisor_period_s: float = Field(
+        default=300.0, gt=0.0, description="FR-41 cadence, in seconds"
+    )
+    supervisor_min_interval_s: float = Field(
+        default=30.0,
+        ge=0.0,
+        description="Closest two event-triggered runs may be, in seconds. A "
+        "flapping PIR must not become a queue of model calls",
+    )
+    supervisor_max_rounds: int = Field(
+        default=6,
+        gt=0,
+        description="Model turns one supervisor run may take before it is "
+        "abandoned and the previous goal retained",
+    )
+    supervisor_goal_lifetime_s: float = Field(
+        default=600.0,
+        gt=0.0,
+        description="How long a supervisor goal stands if no newer one "
+        "replaces it, in seconds. Two cadences, so one missed run is not a "
+        "gap but a dead supervisor is",
+    )
+    plausible_setpoint_c: Bounds = Field(
+        default=Bounds(low=0.0, high=50.0),
+        description="Post-decode check (FR-44): outside this, a proposal is "
+        "not a room temperature at all and is discarded before the gate. "
+        "Deliberately wider than the validator's bounds: 5 C is a request the "
+        "gate should be seen to refuse, 500 C is a model that has lost the "
+        "plot",
+    )
+    verdict_timeout_s: float = Field(
+        default=2.0,
+        gt=0.0,
+        description="How long propose_setpoint waits for the validator's "
+        "verdict before reporting the proposal as submitted, in seconds",
+    )
 
 
 class AssistanceConfig(_Section):
