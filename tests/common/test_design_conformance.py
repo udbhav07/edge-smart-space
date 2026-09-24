@@ -22,6 +22,11 @@ from src.common import topics
 from src.common.injection import InjectedFault
 from src.common.schemas import (
     Coefficients,
+    FaultDiagnosis,
+    Mode,
+    ReasoningRecord,
+    TariffState,
+    Utterance,
     PreferenceHint,
     FaultEvent,
     Goal,
@@ -140,6 +145,49 @@ TOOL_RESULT_PAYLOAD = {
     "simulated": False,
 }
 
+REASONING_RECORD_PAYLOAD = {
+    "ts": 1756032003.2,
+    "invocation_id": "rsn_1756032000_supervisor_4",
+    "call_site": "supervisor",
+    "trigger": "cadence",
+    "inputs": "Decide the setpoint goal for the room now.",
+    "raw_output": "Occupied, peak tariff: 25.5 C.",
+    "tool_calls": ["get_thermal_state", "get_occupancy", "get_tariff_state",
+                   "get_active_faults", "propose_setpoint"],
+    "rounds": 3,
+    "outcome": "APPLIED",
+    "reason": "",
+    "applied": "proposed 25.5 C in NORMAL",
+    "latency_s": 3.2,
+    "prompt_tokens": 1840,
+    "completion_tokens": 96,
+}
+
+TARIFF_STATE_PAYLOAD = {
+    "ts": 1756032000.0,
+    "band": "peak",
+    "since_ts": 1756029600.0,
+    "next_transition_ts": 1756044000.0,
+    "offset_c": 1.0,
+}
+
+UTTERANCE_PAYLOAD = {
+    "ts": 1756032000.0,
+    "text": "put the design review in my calendar at three on Thursday",
+    "source": "speech",
+}
+
+FAULT_DIAGNOSIS_PAYLOAD = {
+    "ts": 1756032301.5,
+    "fault_id": "f_temp01_stuck_1756032",
+    "primary_hypothesis": "sensor_stuck",
+    "confidence": "high",
+    "supporting_evidence": ["variance_collapse", "residual_step"],
+    "recommended_mode": "DEGRADED_SENSOR",
+    "user_message": "Temperature sensor appears stuck. Running on the room model.",
+    "generated": True,
+}
+
 DOCUMENTED_PAYLOADS = [
     (SensorReading, SENSOR_READING_PAYLOAD),
     (ThermalEstimate, THERMAL_ESTIMATE_PAYLOAD),
@@ -152,6 +200,10 @@ DOCUMENTED_PAYLOADS = [
     (PreferenceHint, PREFERENCE_HINT_PAYLOAD),
     (ToolInvocation, TOOL_INVOCATION_PAYLOAD),
     (ToolResult, TOOL_RESULT_PAYLOAD),
+    (ReasoningRecord, REASONING_RECORD_PAYLOAD),
+    (TariffState, TARIFF_STATE_PAYLOAD),
+    (Utterance, UTTERANCE_PAYLOAD),
+    (FaultDiagnosis, FAULT_DIAGNOSIS_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -171,6 +223,9 @@ DOCUMENTED_TOPICS = frozenset(
         "space/actuator/{actuator_id}/command",
         "space/actuator/{actuator_id}/state",
         "space/context/preference",
+        "space/context/utterance",
+        "space/context/tariff",
+        "space/diagnosis",
         "space/assist/proposed",
         "space/assist/confirmed",
         "space/assist/result",
@@ -261,6 +316,32 @@ class TestSection62Payloads:
         verdict = ValidationVerdict.model_validate(VALIDATION_VERDICT_PAYLOAD)
         assert verdict.proposed["setpoint_c"] == 23.0
         assert verdict.applied["setpoint_c"] == 25.5
+
+
+class TestReasoningContracts:
+    """Section 6.3 and FR-46: what the reasoning layer leaves behind."""
+
+    def test_an_utterance_is_not_retained(self):
+        """A restarting reasoning process must not answer yesterday's request."""
+        assert not _retained_in_the_code("space/context/utterance")
+
+    def test_the_tariff_is_retained(self):
+        """A supervisor starting mid-peak has to know it is mid-peak."""
+        assert _retained_in_the_code("space/context/tariff")
+
+    def test_a_diagnosis_cannot_be_mistaken_for_a_fault(self):
+        """A recording replays by pattern; an explanation under space/fault/
+        would come back as a fault."""
+        assert topics.spec_for("space/diagnosis") is topics.DIAGNOSIS
+
+    def test_the_documented_diagnosis_recommends_a_legal_transition(self):
+        diagnosis = FaultDiagnosis.model_validate(FAULT_DIAGNOSIS_PAYLOAD)
+        assert diagnosis.recommended_mode is Mode.DEGRADED_SENSOR
+
+    def test_the_audit_record_carries_latency_and_tokens(self):
+        """FR-63 is measured from the record, not from a second instrument."""
+        record = ReasoningRecord.model_validate(REASONING_RECORD_PAYLOAD)
+        assert record.latency_s > 0 and record.prompt_tokens > 0
 
 
 class TestOperatorReset:

@@ -22,6 +22,7 @@ RETAINED_SPECS = (
     topics.SYSTEM_MODE,
     topics.GOAL_ACTIVE,
     topics.ACTUATOR_STATE,
+    topics.CONTEXT_TARIFF,
 )
 
 TRANSIENT_SPECS = (
@@ -31,6 +32,8 @@ TRANSIENT_SPECS = (
     topics.CONTEXT_PREFERENCE,
     topics.AUDIT_VALIDATION,
     topics.AUDIT_REASONING,
+    topics.CONTEXT_UTTERANCE,
+    topics.DIAGNOSIS,
 )
 
 ALL_SPECS = RETAINED_SPECS + TRANSIENT_SPECS
@@ -55,6 +58,9 @@ class TestContract:
             (topics.CONTEXT_PREFERENCE, "space/context/preference"),
             (topics.AUDIT_VALIDATION, "space/audit/validation"),
             (topics.AUDIT_REASONING, "space/audit/reasoning"),
+            (topics.CONTEXT_UTTERANCE, "space/context/utterance"),
+            (topics.CONTEXT_TARIFF, "space/context/tariff"),
+            (topics.DIAGNOSIS, "space/diagnosis"),
         ],
     )
     def test_pattern_matches_the_design_document(self, spec, expected):

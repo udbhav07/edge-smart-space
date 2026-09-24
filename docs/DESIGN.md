@@ -1423,6 +1423,9 @@ startup, which NFR-06 forbids.
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
 
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
+| `space/context/utterance` | pub | no | 1 | `Utterance` |
+| `space/context/tariff` | pub | yes | 1 | `TariffState` |
+| `space/diagnosis` | pub | no | 1 | `FaultDiagnosis` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/result` | pub | no | 1 | `ToolResult` |
@@ -1544,6 +1547,53 @@ startup, which NFR-06 forbids.
   "detail": { "event_id": "ev_0007" },
   "provider": "local_calendar",      // "" when nothing ran
   "simulated": false                 // true for the mock endpoint (FR-55)
+}
+
+// Utterance -- text addressed to the room, spoken or typed (§5.7.1)
+{
+  "ts": 1756032000.0,
+  "text": "put the design review in my calendar at three on Thursday",
+  "source": "speech"                 // speech | console | operator
+}
+
+// TariffState -- retained (FR-16)
+{
+  "ts": 1756032000.0,
+  "band": "peak",                    // normal | peak
+  "since_ts": 1756029600.0,
+  "next_transition_ts": 1756044000.0,
+  "offset_c": 1.0                    // comfort-band shift while peak
+}
+
+// ReasoningRecord -- one per reasoning invocation (FR-46, FR-63)
+{
+  "ts": 1756032003.2,
+  "invocation_id": "rsn_1756032000_supervisor_4",
+  "call_site": "supervisor",         // supervisor | personal_context | fault_diagnosis
+  "trigger": "cadence",
+  "inputs": "Decide the setpoint goal for the room now.",
+  "raw_output": "Occupied, peak tariff: 25.5 C.",
+  "tool_calls": ["get_thermal_state", "get_occupancy", "get_tariff_state",
+                 "get_active_faults", "propose_setpoint"],
+  "rounds": 3,
+  "outcome": "APPLIED",              // APPLIED | NO_ACTION | DISCARDED | UNAVAILABLE
+  "reason": "",
+  "applied": "proposed 25.5 C in NORMAL",
+  "latency_s": 3.2,
+  "prompt_tokens": 1840,
+  "completion_tokens": 96
+}
+
+// FaultDiagnosis -- §6.3's output, as published on space/diagnosis
+{
+  "ts": 1756032301.5,
+  "fault_id": "f_temp01_stuck_1756032",
+  "primary_hypothesis": "sensor_stuck",
+  "confidence": "high",
+  "supporting_evidence": ["variance_collapse", "residual_step"],
+  "recommended_mode": "DEGRADED_SENSOR",
+  "user_message": "Temperature sensor appears stuck. Running on the room model.",
+  "generated": true                  // false: the generic text, model absent or discarded
 }
 ```
 

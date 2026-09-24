@@ -93,6 +93,29 @@ class Mode(str, Enum):
     SAFE_HOLD = "SAFE_HOLD"
 
 
+#: Section 5.6's state machine, as the transitions it permits out of each
+#: mode. Staying put is always permitted and is not listed. Written down once
+#: so that anything judging a recommended mode -- the Fault Diagnosis call in
+#: particular (section 6.3) -- judges it against the diagram rather than
+#: against its own reading of it.
+LEGAL_TRANSITIONS: Mapping[Mode, frozenset[Mode]] = MappingProxyType(
+    {
+        Mode.INIT: frozenset({Mode.NORMAL}),
+        Mode.NORMAL: frozenset(
+            {Mode.DEGRADED_SENSOR, Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD}
+        ),
+        Mode.DEGRADED_SENSOR: frozenset({Mode.NORMAL, Mode.SAFE_HOLD}),
+        Mode.DEGRADED_ACTUATOR: frozenset({Mode.NORMAL, Mode.SAFE_HOLD}),
+        Mode.SAFE_HOLD: frozenset({Mode.NORMAL}),
+    }
+)
+
+
+def is_legal_transition(current: Mode, target: Mode) -> bool:
+    """Whether section 5.6 allows moving from one mode to another."""
+    return target is current or target in LEGAL_TRANSITIONS[current]
+
+
 class FaultClass(str, Enum):
     """What kind of thing failed."""
 
@@ -601,3 +624,148 @@ class InjectionCommand(TimestampedMessage):
                 f"magnitude, got {self.magnitude!r}"
             )
         return self
+
+
+# --- Context: tariff and utterances (FR-16, FR-53) --------------------------
+
+
+class TariffState(TimestampedMessage):
+    """The electricity pricing band in force, and when it next changes (FR-16).
+
+    Retained on ``space/context/tariff``. ``next_transition_ts`` is what the
+    supervisor's ``get_tariff_state`` tool returns (section 5.7.2) and what
+    lets it say "peak until 22:00" in a rationale rather than guess.
+    ``offset_c`` is the configured comfort-band shift, carried with the band so
+    a reader never has to look the number up somewhere else.
+    """
+
+    band: TariffBand
+    since_ts: float = Field(gt=0.0)
+    next_transition_ts: float = Field(gt=0.0)
+    offset_c: float = Field(
+        ge=0.0, description="How far the comfort band shifts up while peak"
+    )
+
+    @model_validator(mode="after")
+    def _the_next_transition_is_ahead_of_the_current_one(self) -> TariffState:
+        if self.next_transition_ts <= self.since_ts:
+            raise ValueError("next_transition_ts must follow since_ts")
+        return self
+
+
+class UtteranceSource(str, Enum):
+    """Where a piece of text addressed to the room came from."""
+
+    SPEECH = "speech"
+    CONSOLE = "console"
+    OPERATOR = "operator"
+
+
+class Utterance(TimestampedMessage):
+    """Something an occupant said or typed to the room.
+
+    The speech pipeline publishes its transcripts here rather than calling
+    the reasoning layer itself: Layer 1 turns sound into text and stops, and
+    Personal Context runs in the reasoning process (section 5.7.1). The same
+    topic is how a typed request reaches it from a terminal or the console, so
+    everything speech can ask for can be asked for without a microphone.
+
+    Not retained. A retained utterance would be answered again by a restarting
+    reasoning process, which is how one request becomes two calendar entries.
+    """
+
+    text: str = Field(min_length=1, max_length=2000)
+    source: UtteranceSource
+
+
+# --- Reasoning (FR-25, FR-43, FR-46, FR-63) --------------------------------
+
+
+class CallSite(str, Enum):
+    """Which of the three reasoning call sites ran (section 5.7.1)."""
+
+    SUPERVISOR = "supervisor"
+    PERSONAL_CONTEXT = "personal_context"
+    FAULT_DIAGNOSIS = "fault_diagnosis"
+
+
+class ReasoningOutcome(str, Enum):
+    """What became of one reasoning invocation.
+
+    Four values because they are four different findings. ``DISCARDED`` is the
+    model producing something that parsed and was wrong (FR-44), which is a
+    result about the model; ``UNAVAILABLE`` is the endpoint not answering,
+    which is a result about the deployment.
+    """
+
+    APPLIED = "APPLIED"
+    NO_ACTION = "NO_ACTION"
+    DISCARDED = "DISCARDED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class ReasoningRecord(TimestampedMessage):
+    """The audit record of one reasoning invocation (FR-46, FR-63).
+
+    Published to ``space/audit/reasoning`` for every call, including the ones
+    that failed: inputs, what the model said, which tools it called, the
+    verdict on it, and what was applied as a result. Latency and token counts
+    ride along so NFR-03 and E7 are measured from the record rather than from
+    a separate instrument that might disagree with it.
+    """
+
+    invocation_id: str = Field(min_length=1)
+    call_site: CallSite
+    trigger: str = Field(min_length=1, description="What caused the call")
+    inputs: str = Field(default="", description="What the model was given")
+    raw_output: str = Field(default="", description="What it said, verbatim")
+    tool_calls: tuple[str, ...] = Field(
+        default=(), description="Tool names called, in order"
+    )
+    rounds: int = Field(ge=0, description="Model turns taken")
+    outcome: ReasoningOutcome
+    reason: str = Field(default="", description="Why the outcome is what it is")
+    applied: str = Field(default="", description="What was acted on, if anything")
+    latency_s: float = Field(ge=0.0)
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+
+
+class Hypothesis(str, Enum):
+    """The fixed set a Fault Diagnosis may name (section 6.3)."""
+
+    SENSOR_STUCK = "sensor_stuck"
+    SENSOR_DROPOUT = "sensor_dropout"
+    SENSOR_OUT_OF_RANGE = "sensor_out_of_range"
+    SENSOR_DRIFT = "sensor_drift"
+    ACTUATOR_NO_RESPONSE = "actuator_no_response"
+    MODEL_DIVERGENCE = "model_divergence"
+    UNKNOWN = "unknown"
+
+
+class DiagnosisConfidence(str, Enum):
+    """Coarse on purpose: a model's own probability is not a probability."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class FaultDiagnosis(TimestampedMessage):
+    """What the Fault Diagnosis call made of one fault (section 6.3, FR-25).
+
+    Published on ``space/diagnosis`` after the mode has already changed: the
+    call enriches the notification and never decides the transition (FR-26).
+    ``generated`` is false when the model was unavailable or its answer was
+    discarded, in which case the text is the generic notification section
+    5.7.1 specifies -- still published, because a fault with no explanation at
+    all is worse than one with a plain one.
+    """
+
+    fault_id: str = Field(min_length=1)
+    primary_hypothesis: Hypothesis
+    confidence: DiagnosisConfidence
+    supporting_evidence: tuple[str, ...] = ()
+    recommended_mode: Mode
+    user_message: str = Field(min_length=1, max_length=500)
+    generated: bool

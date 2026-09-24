@@ -217,6 +217,24 @@ CONTEXT_PREFERENCE = TopicSpec(
     "space/context/preference", Qos.AT_LEAST_ONCE, retain=False
 )
 
+#: Text addressed to the room, spoken or typed. Not retained: a restarting
+#: reasoning process must not answer yesterday's request again.
+CONTEXT_UTTERANCE = TopicSpec(
+    "space/context/utterance", Qos.AT_LEAST_ONCE, retain=False
+)
+
+#: The pricing band in force (FR-16). Retained, because a supervisor starting
+#: mid-peak has to know it is mid-peak without waiting for the next change.
+CONTEXT_TARIFF = TopicSpec("space/context/tariff", Qos.AT_LEAST_ONCE, retain=True)
+
+# --- Diagnosis (FR-25) -----------------------------------------------------
+
+#: The Fault Diagnosis call's explanation of a fault. Published after the mode
+#: has changed and never before it (FR-26). Deliberately outside
+#: ``space/fault/``: a pattern there would match ``space/fault/{fault_id}``
+#: and a recording would replay an explanation as a fault.
+DIAGNOSIS = TopicSpec("space/diagnosis", Qos.AT_LEAST_ONCE, retain=False)
+
 # --- Assistance tools (FR-70 to FR-75) -------------------------------------
 
 #: Every tool call the reasoning layer makes, including the ones it is
