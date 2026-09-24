@@ -1,5 +1,6 @@
 """Unit tests for the injectable time source."""
 
+import threading
 import time
 
 import pytest
@@ -114,3 +115,37 @@ class TestSimClock:
         clock = SimClock(start_epoch_s=0.0)
         clock.advance(0.0)
         assert clock.now() == 0.0
+
+
+class TestWaitFor:
+    """Waiting for another thread's answer, without a direct time call."""
+
+    def test_a_set_event_returns_at_once_on_the_real_clock(self):
+        event = threading.Event()
+        event.set()
+        assert RealClock().wait_for(event, 5.0) is True
+
+    def test_an_unset_event_times_out_on_the_real_clock(self):
+        assert RealClock().wait_for(threading.Event(), 0.01) is False
+
+    def test_the_sim_clock_reports_a_set_event(self):
+        event = threading.Event()
+        event.set()
+        assert SimClock().wait_for(event, 5.0) is True
+
+    def test_the_sim_clock_never_blocks_on_an_unset_event(self):
+        """A missing answer must not cost a batch run real seconds."""
+        started = RealClock().monotonic()
+        assert SimClock().wait_for(threading.Event(), 30.0) is False
+        assert RealClock().monotonic() - started < 1.0
+
+    def test_waiting_does_not_move_simulated_time(self):
+        clock = SimClock()
+        before = clock.now()
+        clock.wait_for(threading.Event(), 30.0)
+        assert clock.now() == before
+
+    @pytest.mark.parametrize("make_clock", [RealClock, SimClock])
+    def test_a_negative_timeout_is_refused(self, make_clock):
+        with pytest.raises(ValueError):
+            make_clock().wait_for(threading.Event(), -1.0)

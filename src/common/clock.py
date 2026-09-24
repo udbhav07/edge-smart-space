@@ -65,6 +65,18 @@ class Clock(Protocol):
         """
         ...
 
+    def wait_for(self, event: threading.Event, timeout_s: float) -> bool:
+        """Wait for another thread to signal, for at most ``timeout_s``.
+
+        For answers that arrive from another process -- a tool result, a
+        validator's verdict. Waiting is timing, so it lives here with the rest
+        of it rather than in the component that waits.
+
+        :returns: whether the event was set.
+        :raises ValueError: if ``timeout_s`` is negative.
+        """
+        ...
+
 
 class RealClock:
     """Wall-clock time source, for live demonstration and hardware runs.
@@ -82,6 +94,10 @@ class RealClock:
     def sleep(self, seconds: float) -> None:
         _require_non_negative(seconds)
         time.sleep(seconds)
+
+    def wait_for(self, event: threading.Event, timeout_s: float) -> bool:
+        _require_non_negative(timeout_s)
+        return event.wait(timeout_s)
 
 
 class SimClock:
@@ -111,6 +127,19 @@ class SimClock:
 
     def sleep(self, seconds: float) -> None:
         self.advance(seconds)
+
+    def wait_for(self, event: threading.Event, timeout_s: float) -> bool:
+        """Report whether the event is already set, without blocking.
+
+        Simulated runs are driven in lockstep over an in-process bus, where an
+        answer either arrived synchronously before this is called or is not
+        coming. Blocking for real seconds would make a batch run's duration
+        depend on how many answers were missing, and advancing virtual time
+        here would move the room's clock under a component that only asked a
+        question.
+        """
+        _require_non_negative(timeout_s)
+        return event.is_set()
 
     def advance(self, seconds: float) -> None:
         """Move virtual time forward.
