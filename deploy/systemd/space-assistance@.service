@@ -1,0 +1,23 @@
+[Unit]
+# Tool executor: the calendar and the booking gate
+#
+# Entirely optional, like speech. Killing it costs assistance and nothing
+# else -- the regulatory loop does not know it exists.
+Description=Tool executor: the calendar and the booking gate
+After=network-online.target docker.service
+Wants=network-online.target
+PartOf=space.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/edge-smart-space
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/edge-smart-space/.venv/bin/python -m src.assistance --config config/default.yaml
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=space.target

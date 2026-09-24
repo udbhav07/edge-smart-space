@@ -12,6 +12,7 @@ Wants=space-layer1@space.service
 Wants=space-estimator@space.service
 Wants=space-control@space.service
 Wants=space-detectors@space.service
+Wants=space-assistance@space.service
 Wants=space-speech@space.service
 
 [Install]

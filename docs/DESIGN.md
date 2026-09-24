@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.9 | Layer 1 becomes a configuration choice (§9.1): `io.source` selects the simulator or the ESPHome bridge, both publishing the same topics, so the phase transition is an edit and the whole test suite applies to either. `deploy/` exists — broker, systemd units and an ESPHome node definition marked UNVERIFIED, with a test asserting the device topics the configuration expects are ones the node publishes. `src/assistance/` exists: the calendar is first-party and real, travel is a mock that says so in every result, and the confirmation gate is carried by the topic rather than by a field. |
 | 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
 | 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
 | 1.6 | Reconciled with the detector bank as built (Week 3). D2's latency target was unreachable by construction and is corrected from 60 s to 310 s, with the reason recorded in §5.5. D2 and D3 no longer apply to the PIR: an unoccupied room reports a constant legitimately, so variance says nothing about a stuck binary sensor, and §7.1's "D1/D2" becomes D1 only. The fault-clear confirmation period is stated as belonging to the aggregator rather than the mode manager, so one number has one owner. Fault injection gains a channel: `space/inject/{subject}` and `InjectionCommand` in §6.1 and §6.2, applied at the Layer 1 adapter so nothing above can tell an injected fault from a suffered one (FR-31). |
@@ -1373,12 +1374,12 @@ edge-smart-space/
 └── tests/
 ```
 
-Written as of v1.1 and revised at v1.7, the following are specified above but
+Written as of v1.1 and revised at v1.9, the following are specified above but
 **not yet implemented**: `goal_manager.py` (the control service gates a
 proposed goal, but nothing arbitrates between several sources yet),
-`supervisor_agent.py`, `supervisor_tools.py`, `speaker_profile.py` (FR-52),
-`simulated_actuators.py`, the whole of `src/assistance/`, `docs/adr/`, and the
-whole of `deploy/`. They are listed because they are the design, and named here so the
+`supervisor_agent.py` and `supervisor_tools.py` (the reasoning layer's own
+half; the surface it acts through exists and is tested),
+`speaker_profile.py` (FR-52), `simulated_actuators.py`, and `docs/adr/`. They are listed because they are the design, and named here so the
 gap between the document and the tree is explicit rather than discovered.
 
 `src/common/tools.py` exists as of v1.5; the providers it declares a Protocol

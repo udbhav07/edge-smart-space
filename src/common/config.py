@@ -596,6 +596,11 @@ class AssistanceConfig(_Section):
     result_timeout_s: float = Field(
         gt=0.0, description="Seconds to wait for a tool result before answering without"
     )
+    calendar_path: str = Field(
+        default="state/calendar.json",
+        min_length=1,
+        description="Where the first-party calendar is kept (FR-58)",
+    )
 
 
 class SensorNoiseConfig(_Section):

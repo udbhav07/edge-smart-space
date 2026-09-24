@@ -140,6 +140,7 @@ python -m sim.run_sim --steps 100     # room plant, sensors, actuator
 python -m src.estimation              # online RC identification
 python -m src.control                 # regulatory loop and safety gate
 python -m src.faults                  # fault detector bank (D1-D3)
+python -m src.assistance              # calendar and the booking gate
 python -m src.speech                  # wake word, transcription, reasoning
 ```
 
@@ -344,8 +345,12 @@ evaluation degenerates into the model predicting itself.
 
 Honest about the gaps, so nobody hunts for something that isn't there:
 
-- `src/faults/detectors/` — D4 drift and D5 actuator-response are not written
-- `src/faults/mode_manager.py` — degraded modes and control on prediction
+- `src/reasoning/supervisor_agent.py` — the model that proposes goals and
+  chooses tools. The surface it acts through is built and tested; this is the
+  half that needs an LLM behind it
+- `src/control/goal_manager.py` — arbitration when several sources propose a
+  setpoint at once
+- `docs/adr/` — the four decision records DESIGN.md references
 - `deploy/systemd/` — the unit files that supervise this on the Jetson
 - `eval/` — the baseline thermostat and the experiment harness
 

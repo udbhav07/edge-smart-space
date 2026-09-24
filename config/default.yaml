@@ -280,6 +280,10 @@ reasoning:
 # Section 5.7.6. The tool surface itself is a declaration in code; the only
 # policy number in it is how long an occupant has to answer.
 assistance:
+  # The calendar this system writes to (FR-58). A file on this machine rather
+  # than a hosted account: NFR-06 keeps the node self-contained, and a hosted
+  # calendar would put an OAuth credential on a device sitting in a room.
+  calendar_path: state/calendar.json
   # Seconds a proposed invocation stays confirmable. A confirmation arriving
   # after this is refused rather than run late: agreeing to a booking is
   # agreeing to the one that was described, not to whatever is still pending.

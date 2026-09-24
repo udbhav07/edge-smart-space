@@ -126,6 +126,11 @@ SERVICES = (
         description="Fault detector bank: dropout, stuck-at, out-of-range",
     ),
     Service(
+        name="assistance",
+        module="src.assistance",
+        description="Tool executor: the calendar and the booking gate",
+    ),
+    Service(
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",
