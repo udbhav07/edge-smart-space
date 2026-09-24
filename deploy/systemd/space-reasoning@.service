@@ -1,0 +1,26 @@
+[Unit]
+# Supervisor, Personal Context and Fault Diagnosis
+#
+# The process the demonstration kills (section 9.3). Losing it costs goals,
+# answers and explanations; the regulatory loop holds its last validated
+# setpoint and never notices (FR-11, FR-47). It does not require the model
+# server either: with no server every call is recorded UNAVAILABLE and the
+# process keeps listening, so it recovers by itself when the server returns.
+Description=Supervisor, Personal Context and Fault Diagnosis
+After=network-online.target docker.service space-llm.service
+Wants=network-online.target
+PartOf=space.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/edge-smart-space
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/edge-smart-space/.venv/bin/python -m src.reasoning --config config/default.yaml
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=space.target

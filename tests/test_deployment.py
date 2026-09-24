@@ -74,6 +74,8 @@ class TestUnitFiles:
             "src.control",
             "src.faults",
             "src.io",
+            "src.reasoning",
+            "src.assistance",
             "sim.run_sim",
         ):
             assert module in started

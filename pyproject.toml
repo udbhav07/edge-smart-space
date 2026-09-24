@@ -18,6 +18,10 @@ dependencies = [
     "paho-mqtt==2.1.0",
     "numpy==2.3.3",
     "PyYAML==6.0.3",
+    # The reasoning layer is mandatory (FR-40) and talks to a local
+    # OpenAI-compatible server -- llama.cpp or Ollama, never a hosted API
+    # (NFR-06). Pure Python, so it belongs in the core, not with torch.
+    "openai==1.68.2",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +35,6 @@ dev = [
 # installs the core only and the speech tests skip themselves. CI runs 3.11,
 # where the whole set installs and every test executes.
 speech = [
-    "openai==1.68.2",
     "openwakeword==0.6.0",
     "faster-whisper==1.1.1",
     "PyAudio==0.2.14",

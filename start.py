@@ -131,9 +131,14 @@ SERVICES = (
         description="Tool executor: the calendar and the booking gate",
     ),
     Service(
+        name="reasoning",
+        module="src.reasoning",
+        description="Supervisor, Personal Context and Fault Diagnosis",
+    ),
+    Service(
         name="speech",
         module="src.speech",
-        description="Wake word, transcription, and the Personal Context call",
+        description="Wake word and on-device transcription",
     ),
 )
 
