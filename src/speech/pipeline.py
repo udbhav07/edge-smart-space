@@ -1,10 +1,10 @@
 """Speech pipeline orchestration (DESIGN.md section 5.8).
 
-Wires the Layer 1 pieces together and stops. What it deliberately does not
-do is act: an utterance becomes at most a ``PreferenceHint``, which is a
-supervisory input for the goal path to weigh, never a device command
-(FR-45, FR-53). This class holds no reference to a driver or an actuator
-topic.
+Wires the Layer 1 pieces together and stops at text. An utterance becomes a
+transcript and nothing more: understanding it is Personal Context's job, in
+the reasoning process, reached over ``space/context/utterance`` (section
+5.7.1). Layer 1 turns sound into text; it does not import the reasoning layer,
+and it holds no reference to a driver or an actuator topic (FR-45).
 
 The capture window opens only after wake-word detection and closes at end of
 utterance or a hard timeout (FR-50). Audio is transcribed on the node and
@@ -18,7 +18,6 @@ from enum import Enum
 
 from src.common.clock import Clock
 from src.common.config import SpeechConfig
-from src.common.schemas import PreferenceHint
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,11 +34,10 @@ class PipelineState(str, Enum):
 
 
 class SpeechPipeline:
-    """Wake word, then capture, then transcribe, then extract.
+    """Wake word, then capture, then transcribe.
 
     Every collaborator is injected so the state machine and the timeout
-    arithmetic can be tested with synthetic frames and no microphone, GPU or
-    inference server.
+    arithmetic can be tested with synthetic frames and no microphone or GPU.
     """
 
     def __init__(
@@ -50,7 +48,6 @@ class SpeechPipeline:
         detector,
         utterance,
         transcriber,
-        personal_context,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -58,7 +55,6 @@ class SpeechPipeline:
         self._detector = detector
         self._utterance = utterance
         self._transcriber = transcriber
-        self._personal_context = personal_context
         self._state = PipelineState.WAITING_FOR_WAKE_WORD
         self._buffer: list = []
 
@@ -71,11 +67,11 @@ class SpeechPipeline:
         """Frames currently held. Zero outside an utterance (FR-51)."""
         return len(self._buffer)
 
-    def accept(self, frame) -> PreferenceHint | None:
+    def accept(self, frame) -> str | None:
         """Feed one audio frame.
 
-        :returns: a hint when an utterance completed and yielded one; None
-            otherwise, which is the common case.
+        :returns: the transcript when an utterance completed and said
+            something; None otherwise, which is the common case.
         """
         if self._state is PipelineState.WAITING_FOR_WAKE_WORD:
             self._maybe_wake(frame)
@@ -91,7 +87,7 @@ class SpeechPipeline:
         self._buffer = []
         self._state = PipelineState.LISTENING
 
-    def _listen(self, frame) -> PreferenceHint | None:
+    def _listen(self, frame) -> str | None:
         self._buffer.append(frame)
         finished = self._utterance.accept(frame)
 
@@ -103,7 +99,7 @@ class SpeechPipeline:
             return self._close(transcribe=True)
         return None
 
-    def _close(self, transcribe: bool) -> PreferenceHint | None:
+    def _close(self, transcribe: bool) -> str | None:
         """Close the capture window and discard the audio either way."""
         frames, self._buffer = self._buffer, []
         self._state = PipelineState.WAITING_FOR_WAKE_WORD
@@ -111,19 +107,8 @@ class SpeechPipeline:
 
         if not transcribe:
             return None
-        return self._understand(frames)
-
-    def _understand(self, frames: list) -> PreferenceHint | None:
-        transcript = self._transcriber.transcribe(frames)
+        transcript = self._transcriber.transcribe(frames).strip()
         if not transcript:
             return None
-
         LOGGER.info("heard: %s", transcript)
-        try:
-            return self._personal_context.extract(transcript)
-        except Exception as exc:
-            # Speech is the lowest-priority feature set and is cuttable
-            # without affecting the main results. It degrades on its own
-            # rather than taking the process with it.
-            LOGGER.warning("preference extraction unavailable: %s", exc)
-            return None
+        return transcript

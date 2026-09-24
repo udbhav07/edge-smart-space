@@ -12,8 +12,7 @@ import pytest
 from src.common import topics
 from src.common.clock import SimClock
 from src.common.config import load_config
-from src.common.schemas import Comfort, PreferenceHint
-from src.reasoning.single_shot import ReasoningUnavailableError
+from src.common.schemas import Utterance, UtteranceSource
 from src.speech import __main__ as runner
 from src.speech.audio_capture import AudioCapture
 
@@ -66,17 +65,8 @@ class RecordingBlackboard:
     def publish(self, spec, message):
         self.published.append((spec, message))
 
-
-def _hint(**overrides) -> PreferenceHint:
-    return PreferenceHint(
-        **{
-            "ts": TS,
-            "comfort": Comfort.COOLER,
-            "target_c": 24.0,
-            "rationale": "too warm",
-            **overrides,
-        }
-    )
+    def utterances(self) -> list[Utterance]:
+        return [m for spec, m in self.published if spec is topics.CONTEXT_UTTERANCE]
 
 
 def _run(config, results, frames=None):
@@ -111,35 +101,27 @@ class TestFramePump:
 
 
 class TestPublishing:
-    def test_a_hint_is_published_to_the_preference_topic(self, config):
-        _, _, blackboard = _run(config, [_hint()])
-        assert len(blackboard.published) == 1
-        spec, message = blackboard.published[0]
-        assert spec is topics.CONTEXT_PREFERENCE
-        assert message.target_c == 24.0
+    def test_a_transcript_is_published_as_an_utterance(self, config):
+        _, _, blackboard = _run(config, ["it is too warm in here"])
+        (utterance,) = blackboard.utterances()
+        assert utterance.text == "it is too warm in here"
 
-    def test_frames_producing_no_hint_publish_nothing(self, config):
+    def test_the_utterance_says_it_was_spoken(self, config):
+        _, _, blackboard = _run(config, ["hello"])
+        assert blackboard.utterances()[0].source is UtteranceSource.SPEECH
+
+    def test_frames_producing_no_transcript_publish_nothing(self, config):
         _, _, blackboard = _run(config, [None, None])
         assert blackboard.published == []
 
-    def test_the_preference_topic_is_not_an_actuator_topic(self):
-        """FR-45: the reasoning layer never writes to an actuator."""
-        assert "actuator" not in topics.CONTEXT_PREFERENCE.pattern
+    def test_nothing_but_utterances_is_published(self, config):
+        """Speech is Layer 1: it reports what was heard and decides nothing."""
+        _, _, blackboard = _run(config, ["a", None, "b"])
+        assert {spec for spec, _ in blackboard.published} == {topics.CONTEXT_UTTERANCE}
 
-
-class TestReasoningFailure:
-    def test_an_unavailable_reasoning_server_drops_only_the_utterance(self, config):
-        """FR-47: losing reasoning costs a hint, not the pipeline."""
-        results = [ReasoningUnavailableError("server down"), _hint()]
-        processed, _, blackboard = _run(config, results)
-        assert processed == 2
-        assert len(blackboard.published) == 1
-
-    def test_the_loop_survives_repeated_reasoning_failures(self, config):
-        results = [ReasoningUnavailableError("down")] * 5
-        processed, _, blackboard = _run(config, results)
-        assert processed == 5
-        assert blackboard.published == []
+    def test_an_overlong_transcript_is_cut_to_what_the_topic_carries(self, config):
+        _, _, blackboard = _run(config, ["x" * 5000])
+        assert len(blackboard.utterances()[0].text) == 2000
 
 
 class TestEmptyQueue:
@@ -179,23 +161,16 @@ class TestWiringAgainstTheRealInterfaces:
         )
         assert processed == 1
 
-    def test_build_pipeline_gives_personal_context_a_clock(self, config, monkeypatch):
-        """PersonalContext takes a clock; omitting it raises at construction."""
-        captured = {}
+    def test_build_pipeline_wires_no_reasoning_call(self, config, monkeypatch):
+        """Understanding happens in the reasoning process, not here."""
 
         class StubModel:
             def __init__(self, *args, **kwargs):
                 pass
 
-        def _personal_context(reasoning_config, clock, *args, **kwargs):
-            captured["clock"] = clock
-            return object()
-
         for name in ("WakeWordDetector", "UtteranceDetector", "Transcriber"):
             monkeypatch.setattr(runner, name, StubModel)
-        monkeypatch.setattr(runner, "PersonalContext", _personal_context)
         monkeypatch.setattr(runner, "SpeechPipeline", lambda **kwargs: kwargs)
 
-        clock = SimClock()
-        runner.build_pipeline(config, clock, FakeCapture([]))
-        assert captured["clock"] is clock
+        parts = runner.build_pipeline(config, SimClock(), FakeCapture([]))
+        assert "personal_context" not in parts

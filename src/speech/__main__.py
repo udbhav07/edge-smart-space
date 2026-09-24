@@ -2,14 +2,15 @@
 
 ``python -m src.speech``
 
-Wires the microphone to the wake word, the endpointer, on-device
-transcription and the single-shot Personal Context call, then publishes what
-comes out to ``space/context/preference``.
+Wires the microphone to the wake word, the endpointer and on-device
+transcription, then publishes each transcript to ``space/context/utterance``.
 
-What it publishes is a *hint*, not a command (FR-53). Nothing here can move
-an actuator: a spoken preference enters the blackboard exactly like any
-other supervisory input and is gated by the validator downstream, which is
-what FR-45 requires of every reasoning-layer output.
+What it publishes is *text*, not a request and not a command. Personal Context
+runs in the reasoning process and answers it there (section 5.7.1); this
+process is Layer 1 and does not import the reasoning layer. Nothing here can
+move an actuator (FR-45), and a typed request on the same topic is
+indistinguishable from a spoken one -- so everything speech can ask for can
+be asked for without a microphone.
 
 Speech is the lowest-priority feature in the system (R-05). This process
 failing must never affect regulatory control, so it is a separate process
@@ -29,7 +30,7 @@ from src.common.clock import Clock, RealClock
 from src.common.config import Config, load_config
 from src.common.device import resolve
 from src.common.mqtt_client import Blackboard, build_transport
-from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
+from src.common.schemas import Utterance, UtteranceSource
 from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
 from src.speech.pipeline import SpeechPipeline
@@ -51,8 +52,7 @@ def build_pipeline(
     """Assemble the pipeline from configuration.
 
     Every model is constructed here rather than inside the pipeline, so the
-    pipeline itself stays testable without a microphone, a GPU, or an
-    inference server.
+    pipeline itself stays testable without a microphone or a GPU.
     """
     return SpeechPipeline(
         config=config.speech,
@@ -61,13 +61,15 @@ def build_pipeline(
         detector=WakeWordDetector(config.speech),
         utterance=UtteranceDetector(config.speech),
         transcriber=Transcriber(config.speech),
-        personal_context=PersonalContext(config.reasoning, clock),
     )
 
 
-def _publish(blackboard: Blackboard, hint) -> None:
-    blackboard.publish(topics.CONTEXT_PREFERENCE, hint)
-    LOGGER.info("published preference hint: %s", hint.model_dump_json())
+def _publish(blackboard: Blackboard, clock: Clock, transcript: str) -> None:
+    utterance = Utterance(
+        ts=clock.now(), text=transcript[:2000], source=UtteranceSource.SPEECH
+    )
+    blackboard.publish(topics.CONTEXT_UTTERANCE, utterance)
+    LOGGER.info("published utterance: %s", utterance.text)
 
 
 def run(
@@ -91,16 +93,9 @@ def run(
             continue
 
         processed += 1
-        try:
-            hint = pipeline.accept(frame)
-        except ReasoningUnavailableError as exc:
-            # The reasoning server is optional to this loop. Losing it costs a
-            # preference hint, not the audio pipeline (FR-47).
-            LOGGER.warning("reasoning unavailable, dropping utterance: %s", exc)
-            continue
-
-        if hint is not None:
-            _publish(blackboard, hint)
+        transcript = pipeline.accept(frame)
+        if transcript:
+            _publish(blackboard, clock, transcript)
     return processed
 
 
@@ -130,9 +125,9 @@ def main(argv: list[str] | None = None) -> int:
     blackboard.start()
     capture.start()
     LOGGER.info(
-        "listening for %r; hints publish to %s",
+        "listening for %r; transcripts publish to %s",
         config.speech.wake_word,
-        topics.CONTEXT_PREFERENCE.pattern,
+        topics.CONTEXT_UTTERANCE.pattern,
     )
     try:
         run(config, clock, capture, pipeline, blackboard, frames=arguments.frames)
