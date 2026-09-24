@@ -178,6 +178,25 @@ hour of room time takes a couple of seconds, and narrates what happens. It is
 the quickest way to see the system work, and the fallback if a live
 demonstration fails.
 
+### Measuring it
+
+The experiments in `eval/experiments/` are the evidence behind the report.
+They run against the simulator with no broker and print what they measured:
+
+```bash
+python -m eval.experiments.e1_convergence    # does the model converge?
+python -m eval.experiments.e2_adaptation     # does adapting help tracking?
+python -m eval.experiments.e3_detection      # every fault class, repeated
+python -m eval.experiments.e4_degradation    # is the 1800 s budget right?
+python -m eval.experiments.e5_baseline       # do we beat a thermostat?
+```
+
+E5 is the one the project stands on. It runs the same faults against this
+system and against a fixed-deadband thermostat that shares the same plant,
+seed, sensors, control law and setpoint — the only differences are the
+identified model and the fault layer, so any difference in the result is
+attributable to them.
+
 ### Breaking it on purpose
 
 Every fault the detector bank can find is triggerable from a terminal while

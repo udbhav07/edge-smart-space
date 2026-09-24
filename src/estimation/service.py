@@ -346,6 +346,12 @@ class ThermalEstimatorService:
         if not self._history:
             return self._last_prediction_c
 
+        if self._sensor_fell_silent():
+            # A sensor that stopped reporting told the truth right up until it
+            # stopped, so the newest state is the best one available and going
+            # further back would only add staleness.
+            return self._history[-1].indoor_c
+
         temperature = self._history[0].indoor_c
         LOGGER.info(
             "seeding the free run at %.2f C, recorded %d sample(s) ago",
@@ -353,6 +359,20 @@ class ThermalEstimatorService:
             len(self._history),
         )
         return temperature
+
+    def _sensor_fell_silent(self) -> bool:
+        """Whether the sensor stopped reporting rather than started lying.
+
+        The two faults contaminate the recent past differently. A sensor that
+        goes quiet leaves its last reading intact; one that freezes at a
+        plausible value fills the window with the fault itself. Silence is
+        visible here without asking the detectors which of them fired: nothing
+        has arrived for longer than a sample period.
+        """
+        if self._indoor_ts is None:
+            return False
+        silent_for = self._clock.now() - self._indoor_ts
+        return silent_for > self._config.loop.sensor_period_s
 
     def _publish_free_running(self) -> None:
         """Publish a dead-reckoned estimate.
