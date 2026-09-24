@@ -24,7 +24,7 @@ from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import Config, load_config
+from src.common.config import Config, SensorNoiseConfig, load_config
 from src.common.injection import FaultInjection, InjectedFault
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
@@ -51,6 +51,7 @@ INDOOR_TEMPERATURE_ID = "temp_01"
 INDOOR_HUMIDITY_ID = "hum_01"
 OUTDOOR_TEMPERATURE_ID = "outdoor_01"
 OCCUPANCY_ID = "pir_01"
+POWER_ID = "pwr_01"
 
 #: The simulated air conditioner is not a real actuator, but it is the stand
 #: -in for the one that is, so it publishes under the real id and is *not*
@@ -87,6 +88,7 @@ class RoomSimulator:
         outdoor: SimulatedSensor,
         occupancy: BinarySensor,
         presence: OccupancyTracker,
+        power: SimulatedSensor | None = None,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -99,6 +101,7 @@ class RoomSimulator:
         self._outdoor = outdoor
         self._occupancy = occupancy
         self._presence = presence
+        self._power = power
         self._scheduled_occupancy = True
         self._occupancy_override: bool | None = None
         self._started_ts = clock.now()
@@ -219,6 +222,7 @@ class RoomSimulator:
                 self._humidity,
                 self._outdoor,
                 self._occupancy,
+                *((self._power,) if self._power is not None else ()),
             )
         }
         targets[topics.AIR_CONDITIONER_ID] = self._actuator
@@ -250,6 +254,7 @@ class RoomSimulator:
         self._publish_humidity()
         self._publish_outdoor(outdoor_c)
         self._publish_occupancy()
+        self._publish_power()
         self._publish_actuator_state()
 
     def _publish_indoor(self) -> None:
@@ -292,6 +297,33 @@ class RoomSimulator:
         self._publish_reading(
             self._occupancy.sample(self._presence.occupied), OCCUPANCY_ID
         )
+
+    def electrical_power_w(self) -> float:
+        """What the air conditioner is drawing, as a meter on its supply sees it.
+
+        Ground truth for the meter below. It follows the drive the room
+        actually receives, so a unit broken STUCK_OFF draws standby power --
+        which is what makes a power reading evidence about the actuator rather
+        than an echo of the command (R-02).
+        """
+        meter = self._config.sim.power_meter
+        return meter.standby_power_w + self._actuator.cooling_fraction * (
+            meter.rated_power_w - meter.standby_power_w
+        )
+
+    def _publish_power(self) -> None:
+        """Electrical power, from the same kind of meter hardware will carry."""
+        if self._power is None:
+            return
+        reading = self._power.sample(self.electrical_power_w())
+        if reading is not None and self._power.injected_fault is InjectedFault.NONE:
+            # A meter reports the magnitude of active power and never shows a
+            # negative draw. Gaussian noise around a 4 W standby would, and D3
+            # would then call a healthy meter wired backwards -- measured, it
+            # did within a minute. An injected fault is left as injected, so
+            # an examiner can still make the meter report the impossible.
+            reading = reading.model_copy(update={"value": max(0.0, reading.value)})
+        self._publish_reading(reading, POWER_ID)
 
     def _motion_this_step(self) -> bool:
         """Whether an occupant moved enough to trip the PIR this period."""
@@ -358,7 +390,35 @@ def build_simulator(
         presence=OccupancyTracker(
             hold_off_s=config.sensors.vacancy_hold_off_s, clock=clock
         ),
+        power=_power_meter(config, clock),
     )
+
+
+def _power_meter(config: Config, clock: Clock) -> SimulatedSensor | None:
+    """The meter on the air conditioner's supply, if one is configured.
+
+    It draws from its own random stream. Sharing the plant's would shift every
+    other instrument's noise by one draw per step, and every seeded result
+    already measured -- E1's coefficients, D2's latency -- would move for a
+    reason that has nothing to do with what was being measured.
+
+    SimulatedSensor's noise model is unit-agnostic; its fields are named for
+    the temperature sensors it was written for, so the meter's watts are
+    mapped onto them here rather than renamed everywhere.
+    """
+    configured = {sensor.sensor_id for sensor in config.sensors.adapters}
+    if POWER_ID not in configured:
+        return None
+    meter = config.sim.power_meter
+    noise = SensorNoiseConfig(
+        sigma_c=meter.sigma_w,
+        quantisation_c=meter.resolution_w,
+        jitter_s=config.sim.sensor_noise.jitter_s,
+        dropout_probability=meter.dropout_probability,
+        bias_c=0.0,
+    )
+    rng = random.Random(config.sim.random_seed + meter.seed_offset)
+    return SimulatedSensor(POWER_ID, Unit.WATT, noise, rng, clock)
 
 
 def main(argv: list[str] | None = None) -> int:

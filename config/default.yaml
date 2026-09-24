@@ -121,6 +121,11 @@ detectors:
   out_of_range:
     temperature_c: {low: -10.0, high: 60.0}
     humidity_pct: {low: 0.0, high: 100.0}
+    # An air conditioner cannot generate power, and a 4000 W cooling unit on a
+    # domestic circuit does not draw 5 kW. Anything outside is a meter wired
+    # backwards or broken. Re-derived from the real unit's nameplate at
+    # bring-up.
+    power_w: {low: 0.0, high: 5000.0}
     debounce_samples: 2
   # D4, section 5.5. A two-sided CUSUM on the residual divided by its own
   # standard deviation, so the thresholds are in sigma and survive a change of
@@ -215,6 +220,8 @@ io:
       topic: esphome/room/sensor/outdoor_temperature/state
     - sensor_id: pir_01
       topic: esphome/room/binary_sensor/occupancy/state
+    - sensor_id: pwr_01
+      topic: esphome/room/sensor/ac_power/state
   actuator:
     # What the IR bridge listens on. R-02: nothing comes back, so the driver
     # reports UNKNOWN and D5 decides whether it worked by watching the room.
@@ -246,6 +253,14 @@ sensors:
       unit: bool
       limits: {low: 0.0, high: 1.0}
       description: Occupancy from PIR and door reed switch
+    # Week 5. Nothing controls on it. It is measured because an IR path cannot
+    # acknowledge a command (R-02), and the air conditioner's own draw is the
+    # one reading that says whether the compressor is running at all. D1 and
+    # D3 watch it; D2 does not, because an idle meter is constant by design.
+    - sensor_id: pwr_01
+      unit: W
+      limits: {low: 0.0, high: 5000.0}
+      description: Air conditioner electrical power
 
 # Section 5.8. Capture opens only after the wake word and closes at end of
 # utterance or the hard timeout (FR-50).
@@ -336,6 +351,16 @@ sim:
     dead_time_s: 30.0
     command_loss_probability: 0.02
     acknowledges: false                     # R-02: open-loop IR cannot confirm
+  # The air conditioner's supply, metered. The draw follows the drive the room
+  # actually receives, so a unit broken STUCK_OFF reads standby power while
+  # still being commanded to cool.
+  power_meter:
+    rated_power_w: 1300.0       # 4000 W of cooling at a COP near three
+    standby_power_w: 4.0
+    sigma_w: 8.0                # Typical of a PZEM-004T at this load
+    resolution_w: 1.0
+    dropout_probability: 0.01
+    seed_offset: 1              # Its own random stream; see sim/run_sim.py
   # A room that is occupied forever is not a room, and it breaks
   # identification outright. Occupancy enters the model as a regressor, so a
   # constant one is a free intercept: the fit parks an offset in a4 and

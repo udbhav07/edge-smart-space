@@ -695,10 +695,51 @@ class OccupancyScheduleConfig(_Section):
     )
 
 
+class PowerMeterConfig(_Section):
+    """The air conditioner's electrical draw, and the meter that reads it.
+
+    Imperfect by default like every other simulated instrument. The draw is
+    what the unit consumes, not what it removes: at a coefficient of
+    performance near three, a 4000 W cooler draws about 1300 W.
+    """
+
+    rated_power_w: float = Field(
+        default=1300.0, gt=0.0, description="Draw at full cooling command, in W"
+    )
+    standby_power_w: float = Field(
+        default=4.0, ge=0.0, description="Draw with the compressor off, in W"
+    )
+    sigma_w: float = Field(
+        default=8.0, ge=0.0, description="Gaussian meter noise, in W"
+    )
+    resolution_w: float = Field(
+        default=1.0, ge=0.0, description="Meter resolution, in W; 0 disables it"
+    )
+    dropout_probability: float = Field(
+        default=0.01, ge=0.0, le=1.0, description="Chance a reading never arrives"
+    )
+    seed_offset: int = Field(
+        default=1,
+        ge=0,
+        description="Added to random_seed for the meter's own random stream, "
+        "so metering never shifts any other instrument's noise sequence",
+    )
+
+    @model_validator(mode="after")
+    def _standby_is_below_running(self) -> PowerMeterConfig:
+        if self.standby_power_w >= self.rated_power_w:
+            raise ValueError(
+                f"standby_power_w ({self.standby_power_w}) must be below "
+                f"rated_power_w ({self.rated_power_w})"
+            )
+        return self
+
+
 class SimConfig(_Section):
     room: RoomConfig
     sensor_noise: SensorNoiseConfig
     actuator: SimActuatorConfig
+    power_meter: PowerMeterConfig = PowerMeterConfig()
     occupancy: OccupancyScheduleConfig
     outdoor_mean_c: float
     outdoor_amplitude_c: float = Field(ge=0.0)

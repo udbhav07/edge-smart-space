@@ -1,11 +1,12 @@
-# ESP32 node: indoor temperature, humidity, occupancy, and the IR blaster.
+# ESP32 node: indoor temperature, humidity, occupancy, the air conditioner's
+# power draw, and the IR blaster.
 #
 # UNVERIFIED. No node has been flashed with this yet, and it is written to be
 # obviously unfinished rather than plausibly complete (R-03). Three things are
 # guesses until a board exists, and each one is a line in config/default.yaml
 # rather than a line in code, so settling them is an edit:
 #
-#   * the pins below,
+#   * the pins below, and the power meter's UART and address,
 #   * the topic each entity publishes on, which follows from `name` and
 #     `topic_prefix` and is mirrored in `io.devices`,
 #   * whether the air conditioner responds to the IR codes at all, which is
@@ -44,6 +45,15 @@ mqtt:
   # though it had just been measured.
   discovery: false
 
+# The air conditioner's own supply is metered by a PZEM-004T v3 on UART2
+# (the pzemac sensor below).
+uart:
+  tx_pin: GPIO17   # PLACEHOLDER
+  rx_pin: GPIO16   # PLACEHOLDER
+  baud_rate: 9600
+
+modbus:
+
 sensor:
   - platform: dht
     pin: GPIO4
@@ -69,6 +79,18 @@ sensor:
     # FR-03: 60 s or faster. Slower than indoor on purpose -- ambient moves
     # slowly, and D1's timeout for this sensor is derived from this cadence.
     update_interval: 60s
+
+  # Not a control input. It exists because the IR path cannot acknowledge a
+  # command (R-02): whether the compressor draws running current or standby
+  # is the only direct evidence the command landed.
+  - platform: pzemac
+    address: 1     # PLACEHOLDER: the meter's factory default
+    power:
+      name: ac power
+      state_topic: ${topic_prefix}/sensor/ac_power/state
+      filters:
+        - throttle: 5s
+    update_interval: 5s
 
 binary_sensor:
   - platform: gpio
