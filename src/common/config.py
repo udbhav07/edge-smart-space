@@ -256,6 +256,55 @@ class ValidatorConfig(_Section):
     goal_max_age_s: float = Field(gt=0.0, description="V-6 staleness horizon")
 
 
+class PeakWindow(_Section):
+    """One daily span of peak pricing, in local hours.
+
+    Must not wrap midnight: a window from 22 to 02 is written as two, so the
+    ordering check below can stay a comparison rather than a special case.
+    """
+
+    start_h: float = Field(ge=0.0, lt=24.0, description="Local hour peak begins")
+    end_h: float = Field(gt=0.0, le=24.0, description="Local hour peak ends")
+
+    @model_validator(mode="after")
+    def _starts_before_it_ends(self) -> PeakWindow:
+        if self.start_h >= self.end_h:
+            raise ValueError(
+                f"a peak window must start before it ends, got "
+                f"{self.start_h} to {self.end_h}"
+            )
+        return self
+
+
+class TariffConfig(_Section):
+    """The pricing schedule FR-16 reacts to."""
+
+    peak_windows: tuple[PeakWindow, ...] = ()
+    peak_offset_c: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="How far the comfort band shifts up while peak, in C",
+    )
+    utc_offset_h: float = Field(
+        default=0.0,
+        ge=-12.0,
+        le=14.0,
+        description="Local time minus UTC, in hours. Fixed: a room does not move",
+    )
+
+    @model_validator(mode="after")
+    def _windows_do_not_overlap(self) -> TariffConfig:
+        ordered = sorted(self.peak_windows, key=lambda window: window.start_h)
+        for earlier, later in zip(ordered, ordered[1:]):
+            if later.start_h <= earlier.end_h:
+                raise ValueError(
+                    f"peak windows overlap or touch: {earlier.start_h}-"
+                    f"{earlier.end_h} and {later.start_h}-{later.end_h}; "
+                    f"write adjacent windows as one"
+                )
+        return self
+
+
 class EvaluationConfig(_Section):
     """Policy for the experiments (section 8.3), not for the running system.
 
@@ -760,6 +809,7 @@ class Config(_Section):
     validator: ValidatorConfig
     detectors: DetectorsConfig
     evaluation: EvaluationConfig = EvaluationConfig()
+    tariff: TariffConfig = TariffConfig()
     mode: ModeConfig
     sensors: SensorsConfig
     io: IoConfig

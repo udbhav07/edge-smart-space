@@ -25,6 +25,7 @@ from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.control.goal_manager import GoalManager
 from src.control.service import ControlService, build_service
+from src.control.tariff import TariffPublisher, TariffSchedule
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def run(
     period_s: float,
     ticks: int | None = None,
     goals: GoalManager | None = None,
+    tariff: TariffPublisher | None = None,
 ) -> None:
     """Tick the loop until interrupted, or for a fixed number of cycles.
 
@@ -48,9 +50,14 @@ def run(
     precisely the case where no message arrives, so noticing it has to happen
     on the clock rather than on a callback -- otherwise a supervisor that
     crashed mid-proposal keeps steering the room.
+
+    The tariff is published from the same tick for the same reason: a band
+    changing is an event nothing else will announce (FR-16).
     """
     completed = 0
     while ticks is None or completed < ticks:
+        if tariff is not None:
+            tariff.tick()
         if goals is not None:
             goals.expire()
         service.tick()
@@ -92,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     # goal does (FR-45).
     goals = GoalManager(config, clock, blackboard)
     goals.subscribe()
+    tariff = TariffPublisher(TariffSchedule(config.tariff), clock, blackboard)
     blackboard.start()
     LOGGER.info(
         "controlling to %.1f C every %.0f s; commands appear on %s",
@@ -106,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             config.loop.regulatory_period_s,
             arguments.ticks,
             goals=goals,
+            tariff=tariff,
         )
     except KeyboardInterrupt:
         LOGGER.info("stopping")

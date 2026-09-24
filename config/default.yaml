@@ -102,6 +102,17 @@ validator:
   min_command_interval_s: 30.0
   goal_max_age_s: 600.0
 
+# FR-16. The pricing schedule the supervisor reasons about. While peak, it
+# may propose the comfort band shifted up by peak_offset_c, and that proposal
+# is gated by the validator like any other. Local time is epoch plus a fixed
+# offset rather than the machine's zone, so a simulated day replays from its
+# seed and the answer does not depend on how the Orin was provisioned.
+tariff:
+  utc_offset_h: 5.5             # Hyderabad; the room does not move
+  peak_offset_c: 1.0
+  peak_windows:
+    - {start_h: 18.0, end_h: 22.0}
+
 # Section 8.3. Evaluation policy, used by the experiments and by nothing that
 # runs in production. The comfort band is what success criterion 4 is measured
 # against: the room is comfortable while it is within this of the setpoint.
