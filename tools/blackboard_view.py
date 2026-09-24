@@ -37,15 +37,20 @@ from src.common.mqtt_client import PAYLOAD_ENCODING, topic_matches
 from src.common.schemas import (
     ActuatorState,
     Coefficients,
+    FaultDiagnosis,
     FaultEvent,
     Goal,
     ModeState,
     PreferenceHint,
+    ReasoningRecord,
     SensorHealth,
     SensorReading,
+    TariffState,
     ThermalEstimate,
+    Utterance,
     ValidationVerdict,
 )
+from src.common.tools import ToolCatalogue, ToolInvocation, ToolResult
 from pathlib import Path
 
 LOGGER = logging.getLogger("blackboard_view")
@@ -68,7 +73,15 @@ _SCHEMAS = (
     (topics.GOAL_ACTIVE, Goal),
     (topics.ACTUATOR_STATE, ActuatorState),
     (topics.CONTEXT_PREFERENCE, PreferenceHint),
+    (topics.CONTEXT_UTTERANCE, Utterance),
+    (topics.CONTEXT_TARIFF, TariffState),
+    (topics.DIAGNOSIS, FaultDiagnosis),
+    (topics.ASSIST_PROPOSED, ToolInvocation),
+    (topics.ASSIST_CONFIRMED, ToolInvocation),
+    (topics.ASSIST_RESULT, ToolResult),
+    (topics.ASSIST_CATALOGUE, ToolCatalogue),
     (topics.AUDIT_VALIDATION, ValidationVerdict),
+    (topics.AUDIT_REASONING, ReasoningRecord),
 )
 
 #: Every topic this build declares, for the silence report.
@@ -262,6 +275,24 @@ def summarise(view: BlackboardView) -> str:
     else:
         lines.append("FAULTS    none")
 
+    for entry in view.matching(topics.CONTEXT_TARIFF).values():
+        if entry.latest is not None:
+            lines.append(f"TARIFF    {entry.latest.band.value}")
+    for entry in view.matching(topics.DIAGNOSIS).values():
+        if entry.latest is not None:
+            origin = "model" if entry.latest.generated else "generic"
+            lines.append(f"DIAGNOSIS {entry.latest.user_message} ({origin})")
+    for entry in view.matching(topics.AUDIT_REASONING).values():
+        record = entry.latest
+        if record is not None:
+            lines.append(
+                f"REASONING {record.call_site.value} {record.outcome.value} "
+                f"in {record.latency_s:.1f} s  {record.applied or record.reason}"
+            )
+    for entry in view.matching(topics.CONTEXT_PREFERENCE).values():
+        if entry.latest is not None and entry.latest.spoken_reply:
+            lines.append(f"SAID      {entry.latest.spoken_reply}")
+
     broken = {t: e for t, e in view.activity.items() if e.decode_failures}
     if broken:
         lines += ["", "DECODE FAILURES  (a publisher has drifted from the contract)"]
@@ -311,6 +342,31 @@ def describe(topic: str, entry: TopicActivity) -> str:
         return (
             f"[verdict  ] {message.verdict.value} {message.reason.value} "
             f"{dict(message.proposed)} -> {dict(message.applied)}"
+        )
+    if isinstance(message, Goal):
+        return (
+            f"[goal     ] {message.setpoint_c:.1f} C from {message.source.value}: "
+            f"{message.rationale}"
+        )
+    if isinstance(message, Utterance):
+        return f"[heard    ] ({message.source.value}) {message.text}"
+    if isinstance(message, PreferenceHint):
+        return f"[reply    ] {message.intent.value}: {message.spoken_reply}"
+    if isinstance(message, TariffState):
+        return f"[tariff   ] {message.band.value}"
+    if isinstance(message, FaultDiagnosis):
+        origin = "model" if message.generated else "generic"
+        return f"[diagnosis] {message.primary_hypothesis.value} ({origin}): {message.user_message}"
+    if isinstance(message, ToolInvocation):
+        return f"[tool ask ] {message.tool} {dict(message.arguments)}"
+    if isinstance(message, ToolResult):
+        mock = " MOCK" if message.simulated else ""
+        return f"[tool     ] {message.tool} {message.status.value}{mock}: {message.message}"
+    if isinstance(message, ReasoningRecord):
+        return (
+            f"[reasoning] {message.call_site.value} {message.outcome.value} "
+            f"{message.latency_s:.1f} s {message.prompt_tokens}+"
+            f"{message.completion_tokens} tok  {message.applied or message.reason}"
         )
     return f"[{topic}] {message}"
 
