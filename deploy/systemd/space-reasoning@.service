@@ -7,7 +7,7 @@
 # server either: with no server every call is recorded UNAVAILABLE and the
 # process keeps listening, so it recovers by itself when the server returns.
 Description=Supervisor, Personal Context and Fault Diagnosis
-After=network-online.target docker.service space-llm.service
+After=network-online.target docker.service llama-server.service
 Wants=network-online.target
 PartOf=space.target
 

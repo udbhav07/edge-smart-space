@@ -507,3 +507,18 @@ class TestPowerMeter:
         simulator, transport, _, _ = _running(without)
         simulator.step()
         assert _power_readings(transport) == []
+
+
+class TestLayerOneIsExclusive:
+    def test_the_simulator_refuses_to_run_beside_real_hardware(self, tmp_path):
+        """With io.source esphome, real sensors own the topics (section 9.1);
+        a simulator beside them would be a second room contradicting the
+        first."""
+        from sim.run_sim import main
+
+        text = Path("config/default.yaml").read_text(encoding="utf-8")
+        hardware = tmp_path / "hardware.yaml"
+        hardware.write_text(
+            text.replace("  source: simulated", "  source: esphome", 1), encoding="utf-8"
+        )
+        assert main(["--config", str(hardware)]) == 2

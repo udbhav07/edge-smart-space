@@ -1,0 +1,34 @@
+[Unit]
+# The one inference server every reasoning call site shares (section 5.7.5).
+#
+# llama.cpp built with CUDA by deploy/provision.sh. --jinja is not optional:
+# the Environmental Supervisor relies on the model's own tool-call template
+# (section 5.7.3), and without it tool calls come back as prose.
+#
+# All layers are offloaded (--n-gpu-layers 999). Section 9.2: a model running
+# at half its expected speed has usually fallen back to the CPU silently, so
+# check the journal for "offloaded" after the first start:
+#
+#   journalctl -u llama-server | grep -i offloaded
+#
+# Not part of space.target's hard path. The reasoning process starts without
+# it and records every call UNAVAILABLE until it answers (FR-47).
+Description=llama.cpp inference server (CUDA) for the reasoning layer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=space
+EnvironmentFile=-/etc/edge-smart-space/llm.env
+# LLM_MODEL_PATH and LLM_PORT come from llm.env, written by provision.sh. The
+# port must match reasoning.base_url in config/default.yaml; a test holds them
+# together.
+ExecStart=/opt/llama.cpp/build/bin/llama-server --jinja --model ${LLM_MODEL_PATH} --host 127.0.0.1 --port ${LLM_PORT} --n-gpu-layers 999 --ctx-size 8192 --alias qwen2.5:7b
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

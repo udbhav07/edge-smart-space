@@ -24,7 +24,7 @@ from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import Config, SensorNoiseConfig, load_config
+from src.common.config import Config, Layer1Source, SensorNoiseConfig, load_config
 from src.common.injection import FaultInjection, InjectedFault
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
@@ -432,6 +432,17 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_config(arguments.config)
+    if config.io.source is not Layer1Source.SIMULATED:
+        # The mirror of src.io's own refusal. With real sensors publishing,
+        # a simulator on the same topics is a second room contradicting the
+        # first, and nothing above Layer 1 could tell which one to believe.
+        LOGGER.error(
+            "io.source is %r; this process is the simulator. Set it to %r to "
+            "run without hardware (section 9.1).",
+            config.io.source.value,
+            Layer1Source.SIMULATED.value,
+        )
+        return 2
 
     clock = RealClock()
     holder: list = []

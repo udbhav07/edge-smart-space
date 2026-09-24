@@ -1,0 +1,6 @@
+# Files that run on the Orin must keep LF endings whatever the checkout
+# machine prefers: bash and systemd both read a trailing  as part of the
+# value, and fail on it in ways that do not mention line endings.
+*.sh text eol=lf
+deploy/systemd/* text eol=lf
+deploy/*.conf text eol=lf

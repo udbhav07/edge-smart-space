@@ -7,8 +7,14 @@
 # failing unit degrades the system instead of refusing to bring it up. That is
 # the same rule the code follows: a missing speech stack costs speech, not
 # control.
+#
+# Layer 1 is deliberately not listed. Exactly one of space-layer1@ (the
+# hardware bridge) and space-simulator@ runs, and which is decided by
+# `systemctl enable`-ing one of them into this target -- deploy/provision.sh
+# does so from --source. A static Wants= here would start the bridge on every
+# boot whatever was enabled, and two Layer 1s on the same topics look from
+# above like one sensor contradicting itself.
 Description=Edge smart space
-Wants=space-layer1@space.service
 Wants=space-estimator@space.service
 Wants=space-control@space.service
 Wants=space-detectors@space.service
