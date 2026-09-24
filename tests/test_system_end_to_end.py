@@ -55,6 +55,12 @@ from sim.run_sim import INDOOR_TEMPERATURE_ID, build_simulator
 
 STUCK_VALUE_C = 27.0
 
+#: How long to allow for D5 after the unit dies. Longer than its evaluation
+#: window: as the room heats the ambient term grows, so the cooling the model
+#: expects per step shrinks and the expectation takes longer to reach the floor
+#: worth judging. Measured at about 1750 s in this scenario.
+_ACTUATOR_DETECTION_S = 2400.0
+
 
 class System:
     """Four services and a plant, on one in-process bus."""
@@ -374,7 +380,7 @@ class TestAnActuatorThatIsNotCooling:
         """No acknowledgement anywhere (R-02): the plant is told to cool, the
         room fails to respond, and that is the whole of the evidence."""
         self._break_the_actuator(system)
-        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
+        system.run_for(_ACTUATOR_DETECTION_S)
         assert DetectorId.D5_ACTUATOR_NO_RESPONSE in {
             event.detector for event in system.faults()
         }
@@ -383,7 +389,7 @@ class TestAnActuatorThatIsNotCooling:
         """The counterfactual is the evidence: a fixed number of degrees would
         blame the actuator whenever the room was near its equilibrium."""
         self._break_the_actuator(system)
-        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
+        system.run_for(_ACTUATOR_DETECTION_S)
         event = [
             fault
             for fault in system.faults()
@@ -397,7 +403,7 @@ class TestAnActuatorThatIsNotCooling:
     ):
         """FR-28: cease closed-loop actuation and hold."""
         self._break_the_actuator(system)
-        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
+        system.run_for(_ACTUATOR_DETECTION_S)
         assert system.mode() in (Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD)
 
         before = len(system.commands())
@@ -413,7 +419,7 @@ class TestAnActuatorThatIsNotCooling:
         """FR-28 asks for a safe state, and a compressor left at full power
         with nobody watching is not one."""
         self._break_the_actuator(system)
-        system.run_for(config.detectors.actuator.evaluation_window_s + 900.0)
+        system.run_for(_ACTUATOR_DETECTION_S)
         system.run_for(600.0)
         assert system.simulator._actuator.cooling_fraction == 0.0
 

@@ -206,7 +206,10 @@ def _dead_actuator(demo: Demo) -> None:
         "command, and no acknowledgement exists to say otherwise (R-02)."
     )
     demo.injector.inject(topics.AIR_CONDITIONER_ID, InjectedFault.STUCK_OFF)
-    demo.run_for(window_s + 900.0)
+    # Longer than the evaluation window: as the room heats, the cooling the
+    # model expects per step shrinks, so the expectation worth judging takes
+    # longer to build. Measured at about half an hour in this scenario.
+    demo.run_for(window_s + 1800.0)
     demo.report_room("after the evaluation window")
     demo.narrator.say(
         "NOTE    the fault came from the room not responding, "

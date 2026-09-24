@@ -14,9 +14,22 @@ SETPOINT_C = 25.0
 UNUSED_PREDICTION_C = -999.0
 
 
-@pytest.fixture(name="config")
-def _config() -> ControllerConfig:
+@pytest.fixture(name="shipped_config")
+def _shipped_config() -> ControllerConfig:
+    """Configuration exactly as shipped, excitation included."""
     return load_config(Path("config/default.yaml")).controller
+
+
+@pytest.fixture(name="config")
+def _config(shipped_config: ControllerConfig) -> ControllerConfig:
+    """The deadband law on its own.
+
+    Excitation is switched off for most of these tests because it replaces the
+    control law for its duration: a test of the deadband that ran during the
+    identification phase would be measuring the schedule instead. It gets its
+    own section below, against the shipped configuration.
+    """
+    return shipped_config.model_copy(update={"excitation_duration_s": 0.0})
 
 
 @pytest.fixture(name="clock")
@@ -288,3 +301,117 @@ class TestReassertingIntent:
             SETPOINT_C + 2.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD
         )
         assert command.kind is CommandKind.HOLD
+
+
+class TestExcitation:
+    """R-01: a deadband law cannot identify the plant it is controlling.
+
+    The compressor runs precisely when the room is warm, so the drive and the
+    ambient gap move together and the fit cannot tell them apart. Measured, it
+    inflates both coefficients about threefold, and control on that model
+    shuts the compressor off too early.
+    """
+
+    @pytest.fixture(name="excited")
+    def _excited(self, shipped_config, clock) -> RegulatoryController:
+        return RegulatoryController(shipped_config, clock, ACTUATOR_ID)
+
+    def test_it_is_on_at_startup(self, excited):
+        assert excited.exciting
+
+    def test_it_ends_after_the_configured_duration(
+        self, excited, clock, shipped_config
+    ):
+        clock.advance(shipped_config.excitation_duration_s)
+        assert not excited.exciting
+
+    def test_it_cools_a_room_that_is_already_at_setpoint(self, excited):
+        """The whole point: the drive stops depending on the error."""
+        command = excited.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is CommandKind.COOL
+
+    def test_it_stops_cooling_in_the_second_half_of_the_cycle(
+        self, excited, clock, shipped_config
+    ):
+        excited.tick(SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL)
+        clock.advance(shipped_config.excitation_period_s / 2.0)
+        command = excited.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is CommandKind.OFF
+
+    def test_a_room_outside_the_envelope_is_controlled_not_excited(
+        self, excited, shipped_config
+    ):
+        """The envelope is the safety clause: excitation pushes the room away
+        from setpoint on purpose, and without a bound that is a licence to
+        make it arbitrarily uncomfortable for a better fit."""
+        command = excited.tick(
+            SETPOINT_C - shipped_config.excitation_envelope_c - 1.0,
+            UNUSED_PREDICTION_C,
+            SETPOINT_C,
+            Mode.NORMAL,
+        )
+        assert command.kind is not CommandKind.COOL
+
+    def test_the_envelope_applies_on_the_warm_side_too(
+        self, excited, shipped_config
+    ):
+        command = excited.tick(
+            SETPOINT_C + shipped_config.excitation_envelope_c + 1.0,
+            UNUSED_PREDICTION_C,
+            SETPOINT_C,
+            Mode.NORMAL,
+        )
+        assert command.kind is CommandKind.COOL
+        assert excited.compressor_on
+
+    def test_it_never_overrides_a_holding_mode(self, excited):
+        command = excited.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD
+        )
+        assert command.kind is CommandKind.HOLD
+
+    def test_it_respects_the_compressor_dwell(
+        self, excited, clock, shipped_config
+    ):
+        """The protection outranks the experiment."""
+        excited.tick(SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL)
+        clock.advance(shipped_config.excitation_period_s / 2.0)
+        excited.tick(SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL)
+
+        clock.advance(shipped_config.excitation_period_s / 2.0)
+        command = excited.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is not CommandKind.COOL or excited.compressor_on
+
+    def test_the_command_carries_the_setpoint_in_force(self, excited):
+        """The schedule decides whether to cool, not what to cool towards."""
+        command = excited.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.setpoint_c == SETPOINT_C
+
+    def test_the_deadband_takes_over_once_the_phase_ends(
+        self, excited, clock, shipped_config
+    ):
+        clock.advance(shipped_config.excitation_duration_s)
+        command = excited.tick(
+            SETPOINT_C, UNUSED_PREDICTION_C, SETPOINT_C, Mode.NORMAL
+        )
+        assert command.kind is not CommandKind.COOL
+
+    def test_an_envelope_inside_the_deadband_is_refused(self, shipped_config):
+        """It would abandon excitation exactly when the controller would have
+        acted anyway, so the phase would never run -- silently."""
+        with pytest.raises(ValueError):
+            shipped_config.model_copy(
+                update={"excitation_envelope_c": shipped_config.deadband_c}
+            ).model_validate(
+                shipped_config.model_copy(
+                    update={"excitation_envelope_c": shipped_config.deadband_c}
+                ).model_dump()
+            )

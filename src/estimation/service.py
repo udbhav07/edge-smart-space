@@ -22,6 +22,8 @@ continues, which is what leaves DEGRADED_SENSOR control something to run on
 from __future__ import annotations
 
 import logging
+from collections import deque
+from dataclasses import dataclass
 
 from src.common import topics
 from src.common.clock import Clock
@@ -46,6 +48,22 @@ from src.estimation.rc_model import Regressor
 from src.estimation.rls import ThermalEstimator, UpdateResult
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _Observed:
+    """One step's worth of what the room was doing, while it could be trusted.
+
+    Kept so that a fault found late can be rolled forward from a state that
+    predates it. A stuck sensor is not detected until its variance has
+    collapsed for a whole window, so by the time anyone knows, the newest
+    readings *are* the fault.
+    """
+
+    indoor_c: float
+    outdoor_c: float
+    command: float
+    occupancy: float
 
 #: Normalised drive the model sees. Section 5.3's law is bang-bang, so u[k]
 #: is binary; a3 is therefore identified against a two-valued input, which
@@ -93,6 +111,9 @@ class ThermalEstimatorService:
         self._skipped_pairs = 0
         self._free_running_c: float | None = None
         self._last_prediction_c: float | None = None
+        self._history: deque[_Observed] = deque(
+            maxlen=config.estimator.fault_history_samples
+        )
 
     # --- wiring -------------------------------------------------------
 
@@ -226,6 +247,14 @@ class ThermalEstimatorService:
             command=self._command,
             occupancy=self._occupancy,
         )
+        self._history.append(
+            _Observed(
+                indoor_c=previous_c,
+                outdoor_c=self._outdoor_c,
+                command=self._command,
+                occupancy=self._occupancy,
+            )
+        )
         result = self._estimator.update(regressor, reading.value)
         self._publish(result, reading.value)
         self._maybe_persist()
@@ -277,7 +306,7 @@ class ThermalEstimatorService:
 
         seed = self._free_running_c
         if seed is None:
-            seed = self._last_prediction_c if self._last_prediction_c is not None else self._indoor_c
+            seed = self._seed_from_before_the_fault()
         if seed is None:
             return False
 
@@ -290,6 +319,40 @@ class ThermalEstimatorService:
         self._free_running_c = self._estimator.predict(regressor)
         self._publish_free_running()
         return True
+
+    def _seed_from_before_the_fault(self) -> float | None:
+        """Where to start dead-reckoning from, and how to get to now.
+
+        Not from the latest reading, and not from the latest prediction: both
+        are anchored to a sensor already known to be lying. A stuck sensor is
+        only detected once its variance has collapsed for a whole window, so
+        everything recent is contaminated by construction.
+
+        Instead the oldest state still held is taken, which predates the fault
+        because the history is kept longer than the slowest detector's window.
+        It is used as-is rather than rolled forward through the intervening
+        samples: rolling compounds the model's own error once per step, and
+        over a hundred steps that costs more than the staleness it removes --
+        measured, it turned a dropout the system had been riding out perfectly
+        into one it could not hold.
+
+        The result is a free run that starts behind the room by however far it
+        moved during the detection window. That is a real error and it is why
+        the substitution is time-boxed.
+
+        :returns: the caught-up temperature, or None when nothing has been
+            recorded yet.
+        """
+        if not self._history:
+            return self._last_prediction_c
+
+        temperature = self._history[0].indoor_c
+        LOGGER.info(
+            "seeding the free run at %.2f C, recorded %d sample(s) ago",
+            temperature,
+            len(self._history),
+        )
+        return temperature
 
     def _publish_free_running(self) -> None:
         """Publish a dead-reckoned estimate.

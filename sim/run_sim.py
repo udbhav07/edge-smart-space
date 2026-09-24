@@ -99,7 +99,8 @@ class RoomSimulator:
         self._outdoor = outdoor
         self._occupancy = occupancy
         self._presence = presence
-        self._occupied = True
+        self._scheduled_occupancy = True
+        self._occupancy_override: bool | None = None
         self._started_ts = clock.now()
         self._last_outdoor_publish_ts: float | None = None
         self._last_ack = AckStatus.UNKNOWN
@@ -121,15 +122,37 @@ class RoomSimulator:
     def occupied(self) -> bool:
         """Whether someone is really in the room.
 
-        Ground truth, which the scenario sets. It is not what gets published:
-        the PIR sees motion, and what reaches the blackboard is occupancy
-        *derived* from that through the vacancy hold-off (FR-02).
+        Ground truth. It follows the configured schedule unless a scenario has
+        overridden it, and it is not what gets published: the PIR sees motion,
+        and what reaches the blackboard is occupancy *derived* from that
+        through the vacancy hold-off (FR-02).
         """
-        return self._occupied
+        if self._occupancy_override is not None:
+            return self._occupancy_override
+        return self._scheduled_occupancy
 
     @occupied.setter
     def occupied(self, value: bool) -> None:
-        self._occupied = value
+        """Pin occupancy, for a scenario that needs to control it.
+
+        Pinning it for a whole run is a thing to do knowingly: occupancy is a
+        model regressor, so a constant one is a free intercept and the
+        identification degrades badly (section 5.2.1).
+        """
+        self._occupancy_override = value
+
+    def release_occupancy(self) -> None:
+        """Hand occupancy back to the schedule."""
+        self._occupancy_override = None
+
+    def _advance_occupancy(self) -> None:
+        """Follow the configured pattern of coming and going."""
+        schedule = self._config.sim.occupancy
+        elapsed = self._clock.now() - self._started_ts
+        phase = elapsed % schedule.period_s
+        self._scheduled_occupancy = phase < (
+            schedule.period_s * schedule.occupied_fraction
+        )
 
     @property
     def reported_occupied(self) -> bool:
@@ -213,12 +236,13 @@ class RoomSimulator:
         """Advance the plant one sensor period and publish what came out."""
         period_s = self._config.loop.sensor_period_s
         self._actuator.apply_due_commands()
+        self._advance_occupancy()
         outdoor_c = self.outdoor_temperature_c()
 
         self._room.step(
             duration_s=period_s,
             cooling_fraction=self._actuator.cooling_fraction,
-            occupied=self._occupied,
+            occupied=self.occupied,
             outdoor_c=outdoor_c,
         )
 
@@ -263,7 +287,7 @@ class RoomSimulator:
         the hold-off turns that back into presence. Publishing ground truth
         here would hide the one behaviour this sensor actually has.
         """
-        if self._occupied and self._motion_this_step():
+        if self.occupied and self._motion_this_step():
             self._presence.motion()
         self._publish_reading(
             self._occupancy.sample(self._presence.occupied), OCCUPANCY_ID

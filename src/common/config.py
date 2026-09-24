@@ -117,6 +117,12 @@ class EstimatorConfig(_Section):
             "MODEL_DIVERGENCE is raised"
         ),
     )
+    fault_history_samples: int = Field(
+        default=130,
+        gt=1,
+        description="Samples of regressor history kept, so a free run can be "
+        "seeded from before a late-detected fault began",
+    )
     indoor_sensor_id: str = Field(
         min_length=1, description="Feeds T[k], the regressor's first entry"
     )
@@ -193,6 +199,42 @@ class ControllerConfig(_Section):
         description="How often the intended actuator state is re-sent, so a "
         "lost command on an open-loop path is not permanent (R-02)",
     )
+    excitation_duration_s: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Identification phase after startup during which the "
+        "compressor is driven on a schedule rather than by the error (R-01). "
+        "Zero disables it.",
+    )
+    excitation_period_s: float = Field(
+        default=900.0,
+        gt=0.0,
+        description="Full excitation cycle, half cooling and half off",
+    )
+    excitation_envelope_c: float = Field(
+        default=2.0,
+        gt=0.0,
+        description="Excitation is abandoned if the room is further than this "
+        "from setpoint, so identification never costs more comfort than stated",
+    )
+
+    @model_validator(mode="after")
+    def _excitation_stays_outside_the_deadband(self) -> ControllerConfig:
+        """An envelope inside the deadband would abandon excitation instantly.
+
+        The deadband is the band in which the controller does nothing, so an
+        envelope narrower than it means the room is outside the envelope
+        exactly when the controller would have acted anyway -- and the
+        excitation never runs, silently.
+        """
+        if self.excitation_duration_s > 0.0 and (
+            self.excitation_envelope_c <= self.deadband_c
+        ):
+            raise ValueError(
+                f"excitation_envelope_c ({self.excitation_envelope_c}) must "
+                f"exceed deadband_c ({self.deadband_c}), or excitation never runs"
+            )
+        return self
 
 
 class ValidatorConfig(_Section):
@@ -557,10 +599,28 @@ class RoomConfig(_Section):
     )
 
 
+class OccupancyScheduleConfig(_Section):
+    """How the room fills and empties (A-03).
+
+    Not a detail of the scenario but a precondition for identification:
+    occupancy is a regressor, and a constant regressor is an intercept the fit
+    will use to absorb everything it cannot otherwise explain.
+    """
+
+    period_s: float = Field(gt=0.0, description="One cycle of coming and going")
+    occupied_fraction: float = Field(
+        gt=0.0,
+        lt=1.0,
+        description="Share of each cycle somebody is present. Strictly between "
+        "zero and one: either end is a constant regressor again.",
+    )
+
+
 class SimConfig(_Section):
     room: RoomConfig
     sensor_noise: SensorNoiseConfig
     actuator: SimActuatorConfig
+    occupancy: OccupancyScheduleConfig
     outdoor_mean_c: float
     outdoor_amplitude_c: float = Field(ge=0.0)
     outdoor_period_s: float = Field(gt=0.0)

@@ -31,6 +31,13 @@ estimator:
   # them for ten minutes is not (section 5.2.3).
   divergence_window_samples: 120
   divergence_rejection_fraction: 0.5
+  # How far back the estimator keeps the inputs it was fitted on, so that a
+  # fault detected late can be rolled forward from a state that predates it.
+  # A stuck sensor is not detected until its variance has collapsed for a
+  # whole window, by which time the newest readings are the fault itself:
+  # seeding the free run from them makes the prediction follow the lie it was
+  # meant to replace. Longer than the slowest sensor detector's window.
+  fault_history_samples: 130
   indoor_sensor_id: temp_01
   outdoor_sensor_id: outdoor_01
   occupancy_sensor_id: pir_01
@@ -62,6 +69,22 @@ controller:
   # integration does. Longer than the validator's 30 s command rate so a
   # refresh is never throttled into a no-op.
   reassert_interval_s: 60.0
+  # R-01, weak excitation, and the measurement that made it urgent. Under
+  # plain deadband control the compressor runs precisely when the room is
+  # warm, so u and (T_out - T) are collinear and the fit inflates a2 and a3
+  # about threefold. That model over-predicts cooling, so control on
+  # prediction shuts the compressor off too early: measured, FR-27 left the
+  # room at 29.3 C during a sensor dropout, worse than a plain thermostat --
+  # while the same run given the true coefficients held the comfort band
+  # exactly. Identification is the whole difference.
+  #
+  # The fix is the one R-01 names: drive the compressor on a schedule that
+  # does not depend on the temperature, so the two stop being collinear. It
+  # costs comfort while it runs, which is why it is bounded in time and
+  # abandoned the moment the room leaves the envelope below.
+  excitation_duration_s: 5400.0   # Identification phase after startup
+  excitation_period_s: 900.0      # Full cycle; half on, half off
+  excitation_envelope_c: 2.0      # Never excite the room past this from setpoint
   deadband_c: 0.5
   min_off_s: 180.0
   default_setpoint_c: 24.0
@@ -274,6 +297,16 @@ sim:
     dead_time_s: 30.0
     command_loss_probability: 0.02
     acknowledges: false                     # R-02: open-loop IR cannot confirm
+  # A room that is occupied forever is not a room, and it breaks
+  # identification outright. Occupancy enters the model as a regressor, so a
+  # constant one is a free intercept: the fit parks an offset in a4 and
+  # inflates everything else to compensate. Measured over six hours, with
+  # occupancy pinned on, a2 came out 4.3x its true value and a3 3.6x; letting
+  # occupancy vary brought a3 to 0.98x. This is the single biggest influence
+  # on whether the model is worth controlling on (R-01).
+  occupancy:
+    period_s: 7200.0          # One cycle of coming and going
+    occupied_fraction: 0.6    # Share of the cycle somebody is present
   outdoor_mean_c: 31.0
   outdoor_amplitude_c: 4.0
   outdoor_period_s: 86400.0
