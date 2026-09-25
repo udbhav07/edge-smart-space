@@ -238,3 +238,17 @@ class TestTheTranscriptTravelsWithTheHint:
 
     def test_a_discarded_extraction_still_returns_nothing(self, config):
         assert _context(config, StubClient("not json")).extract(TRANSCRIPT) is None
+
+
+
+class TestClassifiesConsistently:
+    """Regression from a live run: a calendar question was a request on one
+    run and nothing on the next, and so was silently dropped."""
+
+    def test_a_question_about_the_schedule_is_a_service_request(self):
+        assert "a question about what is planned" in PERSONAL_CONTEXT_PROMPT
+
+    def test_the_extraction_asks_for_a_deterministic_decode(self, config):
+        client = StubClient('{"comfort": "cooler", "target_c": 23, "rationale": "x"}')
+        _context(config, client).extract(TRANSCRIPT)
+        assert client.calls[-1]["temperature"] == 0.0

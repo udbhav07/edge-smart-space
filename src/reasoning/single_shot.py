@@ -51,8 +51,9 @@ PERSONAL_CONTEXT_PROMPT = (
     "control anything: you describe the request so the control system can "
     "weigh it. Reply with a JSON object and nothing else, with keys: "
     '"intent" (one of "environment" for a request about the space, '
-    '"service" for an external action such as a booking, or "none" when '
-    "nothing was asked), "
+    '"service" for anything about their calendar, schedule, reminders, '
+    "meetings or bookings -- including a question about what is planned -- "
+    'or "none" when nothing was asked), '
     '"subject" (a short noun for what it was about, such as "temperature", '
     '"lights" or "booking", or "" for none), '
     '"comfort" (one of "warmer", "cooler", "unchanged"; use "unchanged" '
@@ -175,6 +176,11 @@ class PersonalContext:
                     {"role": "user", "content": transcript},
                 ],
                 response_format=_JSON_RESPONSE_FORMAT,
+                # An extraction, not a composition: the same words should give
+                # the same hint every time. At the default temperature a
+                # calendar question was classified as a request on one run
+                # and as nothing on the next, and was then silently dropped.
+                temperature=0.0,
             )
         except Exception as exc:
             raise ReasoningUnavailableError(f"inference failed: {exc}") from exc
