@@ -5,17 +5,18 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.5 |
+| Version | 2.0 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
-| Phase at time of writing | Simulation (pre-hardware) |
+| Phase at time of writing | Simulation; Orin provisioning written, sensors not yet wired |
 | Related documents | Formal Problem Statement v5, Professor Briefing, Review Deck (17 slides), 12-Week Work Plan |
 
 ### Revision history
 
 | Version | Change |
 |---|---|
+| 2.0 | Weeks 5 and 6. **The reasoning layer exists** (§5.7): the Environmental Supervisor reads the room through §5.7.2's four tools and proposes through the fifth, which now returns the gate's actual verdict; Personal Context runs assistance tools within one round through the executor's topics; Fault Diagnosis is single-shot and falls back to a generic, marked notification. All three run in `src.reasoning`, recorded on `space/audit/reasoning` as `ReasoningRecord` with latency and tokens (FR-46, FR-63). **Arbitration is corrected** (§5.4): it published its winner back onto `space/goal/proposed`, so a supervisor goal would have bypassed it and overridden an occupant; arbitration now sits inside the gate's component, as §4.4 always drew it, and a losing proposal is published `OUTRANKED`. **Speech stops at text**: transcripts go to `space/context/utterance` and Personal Context answers them in the reasoning process, removing a Layer 1 import of the reasoning layer and making every request typeable. New contracts in §6.1–6.2: `Utterance`, `TariffState` (FR-16, published by control), `FaultDiagnosis` on `space/diagnosis`. One local time for the room (`site.utc_offset_h`). A power meter (`pwr_01`, D1 and D3, never D2). `deploy/provision.sh` and `llama-server.service` bring the Orin up on boot; `space.target` no longer names a Layer 1, so exactly one is enabled. E6 is written (§8.3). |
 | 1.9 | Layer 1 becomes a configuration choice (§9.1): `io.source` selects the simulator or the ESPHome bridge, both publishing the same topics, so the phase transition is an edit and the whole test suite applies to either. `deploy/` exists — broker, systemd units and an ESPHome node definition marked UNVERIFIED, with a test asserting the device topics the configuration expects are ones the node publishes. `src/assistance/` exists: the calendar is first-party and real, travel is a mock that says so in every result, and the confirmation gate is carried by the topic rather than by a field. |
 | 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
 | 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
@@ -426,7 +427,7 @@ flowchart TB
         JET --- Q3["Control + fault processes"]
         JET --- Q4["llama.cpp server, CUDA build"]
         JET --- Q5["Whisper + wake word"]
-        ESP["ESP32 nodes<br/>PIR, reed, temp/humidity"] -->|WiFi MQTT| Q1
+        ESP["ESP32 nodes<br/>PIR, reed, temp/humidity, AC power"] -->|WiFi MQTT| Q1
         IR["IR blaster / ESPHome<br/>AC control"] --- Q1
     end
 
@@ -904,7 +905,7 @@ Mode transition is driven by the detector bank and completes within 2 s (FR-26).
 | Component | Type | Tools | Cadence | Failure behaviour |
 |---|---|---|---|---|
 | Environmental Supervisor | Tool-using agent | 4 read tools, 1 emit tool | 300 s + events | Retain previous goal |
-| Personal Context | Schema-constrained, bounded rounds | Assistance surface (§5.7.6); runs everything but `commit` | On transcript | Discard, no preference hint |
+| Personal Context | Schema-constrained, bounded rounds | Assistance surface (§5.7.6); runs everything but `commit` | On utterance (`space/context/utterance`) | Discard, no preference hint; if a tool already ran, the result's own words are spoken |
 | Fault Diagnosis | Single-shot, schema-constrained | none | On fault confirm | Generic notification text |
 
 Only the Environmental Supervisor needs an *open-ended* tool loop, deciding for itself how many times to look before it proposes. Personal Context runs tools too, but within a bounded number of rounds — default one (`assistance.max_tool_rounds`) — after which it must answer. That is the difference that matters for latency and for what can go wrong, and it is why calling all three "agents" would be a naming convention rather than an architecture. Fault Diagnosis has no tools at all.
@@ -919,7 +920,11 @@ Only the Environmental Supervisor needs an *open-ended* tool loop, deciding for 
 | `get_active_faults` | `()` | list of `{fault_id, class, sensor, since_ts, mode_impact}` |
 | `propose_setpoint` | `(setpoint_c: float, mode: str, rationale: str)` | validator verdict |
 
-`propose_setpoint` is the terminal tool. It writes to `space/goal/proposed` (§6.1), never to an actuator topic (FR-45).
+`propose_setpoint` is the terminal tool. It writes to `space/goal/proposed` (§6.1), never to an actuator topic (FR-45), and returns the gate's verdict as published on `space/audit/validation`, waiting up to `reasoning.verdict_timeout_s` for it.
+
+Before publishing, it applies a deliberately narrow post-decode check (FR-44): the setpoint must be a room temperature at all (`reasoning.plausible_setpoint_c`, wider than the validator's bounds), the mode must be the mode the system is in, and there must be a rationale. A request for 5 °C passes and is refused by the validator where everyone can see; 500 °C is discarded before the gate. A discarded proposal ends the run — discarded, not negotiated.
+
+The read tools answer from a snapshot of the blackboard's retained state and sensor stream, so the model sees exactly what an examiner with `mosquitto_sub` sees. Times are given as local clock times. Implemented in `src/reasoning/supervisor_tools.py` and `supervisor_agent.py`; the policy the model is told (comfort target, how far to relax an empty room, the peak shift) is configuration, not prompt prose.
 
 #### 5.7.3 Decoding Strategy
 
@@ -1177,6 +1182,8 @@ sequenceDiagram
 
 Audio never persists beyond transcription and never leaves the node (FR-51). The capture window opens only after wake-word detection (FR-50).
 
+**Since v2.0 the speech process stops at text.** The arrow from Speaker Verification to Personal Context crosses the blackboard: the transcript is published as an `Utterance` on `space/context/utterance`, and Personal Context answers it in the reasoning process. Layer 1 turns sound into text and does not import the reasoning layer, and a typed request (`tools/say.py`, later the console) is indistinguishable from a spoken one.
+
 #### 5.8.1 Wake-word threshold, and what it costs
 
 v1.0 claimed the system "is not always-listening in the sense that matters".
@@ -1316,6 +1323,7 @@ edge-smart-space/
 │   │   ├── device.py              # CUDA-first device selection
 │   │   ├── schemas.py             # pydantic message schemas
 │   │   ├── tools.py               # tool-calling contract and registry (§5.7.6)
+│   │   ├── localtime.py           # the room's one local time (site.utc_offset_h)
 │   │   ├── topics.py              # canonical topic constants
 │   │   └── mqtt_client.py
 │   ├── io/
@@ -1329,7 +1337,8 @@ edge-smart-space/
 │   ├── control/
 │   │   ├── regulatory.py
 │   │   ├── service.py              # the loop as a process (`python -m src.control`)
-│   │   ├── goal_manager.py
+│   │   ├── tariff.py               # schedule and retained topic (FR-16)
+│   │   ├── goal_manager.py         # arbitration, inside the gate's component
 │   │   └── validator.py
 │   ├── faults/
 │   │   ├── detectors/              # D1 to D5
@@ -1343,11 +1352,14 @@ edge-smart-space/
 │   │       ├── local_calendar.py  # what ships (FR-58)
 │   │       └── mock_travel.py     # flights and hotels (FR-55)
 │   ├── reasoning/
-│   │   ├── supervisor_agent.py
-│   │   ├── supervisor_tools.py    # the four read tools of §5.7.2
-│   │   ├── single_shot.py
-│   │   ├── grammars/*.gbnf
-│   │   └── prompts/
+│   │   ├── supervisor_agent.py    # the one tool-using agent, and its schedule
+│   │   ├── supervisor_tools.py    # the four read tools of §5.7.2, and propose
+│   │   ├── single_shot.py         # Personal Context, bounded tool rounds
+│   │   ├── diagnosis.py           # Fault Diagnosis, single-shot (§6.3)
+│   │   ├── tool_client.py         # assistance tools, over the blackboard only
+│   │   ├── endpoint.py            # the one server; latency and tokens (FR-63)
+│   │   ├── audit.py               # ReasoningRecord per invocation (FR-46)
+│   │   └── service.py             # the process (`python -m src.reasoning`)
 │   └── speech/
 │       ├── __main__.py            # `python -m src.speech` runs the pipeline
 │       ├── wakeword.py
@@ -1363,24 +1375,33 @@ edge-smart-space/
 │   └── run_sim.py
 ├── tools/
 │   ├── blackboard_view.py         # live terminal view of every topic (FR-60)
-│   └── inject.py                  # triggers any sensor fault (FR-31)
+│   ├── inject.py                  # triggers any sensor fault (FR-31)
+│   ├── say.py                     # an utterance from a keyboard
+│   ├── confirm.py                 # the occupant's yes or no to a booking (FR-54)
+│   └── bringup.py                 # is the hardware really there? sigma for R-04
 ├── eval/
 │   ├── baseline_thermostat.py
 │   ├── metrics.py
 │   └── experiments/
 ├── deploy/
+│   ├── provision.sh               # the Orin, up on boot (§9.2, §9.3)
 │   ├── docker-compose.yml
-│   ├── systemd/
+│   ├── systemd/                   # one unit per process, plus llama-server
 │   └── esphome/
 ├── .github/workflows/ci.yml
 └── tests/
 ```
 
-Written as of v1.1 and revised at v1.9, the following are specified above but
-**not yet implemented**: `supervisor_agent.py` and `supervisor_tools.py` (the
-reasoning layer's own half; the surface it acts through exists and is tested),
-`speaker_profile.py` (FR-52), `simulated_actuators.py`, and `docs/adr/`. They are listed because they are the design, and named here so the
-gap between the document and the tree is explicit rather than discovered.
+Revised at v2.0. Specified above but **not yet implemented**:
+`speaker_profile.py` (FR-52), `simulated_actuators.py`, and `docs/adr/`. They
+are listed because they are the design, and named here so the gap between the
+document and the tree is explicit rather than discovered.
+
+The v1.0 layout named `grammars/*.gbnf` and `prompts/`. Neither exists, by
+decision: the constrained decode is requested through the OpenAI-compatible
+JSON response format (§5.7.3), which both servers honour and which constrains
+exactly as a grammar would, and each prompt lives beside the one call site that
+uses it, built from configuration where it states policy.
 
 `src/common/tools.py` exists as of v1.5; the providers it declares a Protocol
 for do not. That is the intended order — the contract is what the reasoning
@@ -1644,6 +1665,7 @@ prompt that generates it forbids claiming anything was changed (FR-45).
 | Temperature sensor out of range | D3 | `DEGRADED_SENSOR` | FR-22 |
 | Temperature sensor drift | D4 | `DEGRADED_SENSOR`, flag for recalibration | FR-23 |
 | PIR failure | D1 only | Occupancy assumed `true` (conservative for comfort) | FR-02 |
+| Power meter failure | D1, D3 (never D2: an idle compressor's standby draw is constant by design) | `DEGRADED_SENSOR` like any sensor fault; the meter is not a control input, it is the only acknowledgement an IR path has (R-02) | FR-20, FR-22 |
 | Air conditioner no response | D5 | `DEGRADED_ACTUATOR`, hold, alert | FR-24, FR-28 |
 | MQTT broker down | Client disconnect callback | Each process holds last state; controller holds last setpoint | FR-11 |
 | LLM server down or slow | Invocation timeout (30 s) | Retain previous goal; regulatory loop unaffected | FR-47 |

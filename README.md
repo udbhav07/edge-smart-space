@@ -92,12 +92,17 @@ brew services start mosquitto                  # macOS
 net start mosquitto                            # Windows
 ```
 
-**Inference server** (only needed for voice and reasoning)
+**Inference server** (only needed for reasoning)
 
 ```bash
 ollama serve
 ollama pull qwen2.5:7b
 ```
+
+On the Orin it is `llama-server` built with CUDA, installed and started by
+`deploy/provision.sh` (see *Running on the Jetson* below). Either answers the
+same OpenAI-compatible protocol on `localhost:11434`, and nothing in the code
+knows which is running.
 
 ---
 
@@ -139,9 +144,10 @@ them all. `python start.py --help` lists what can currently be started.
 python -m sim.run_sim --steps 100     # room plant, sensors, actuator
 python -m src.estimation              # online RC identification
 python -m src.control                 # regulatory loop and safety gate
-python -m src.faults                  # fault detector bank (D1-D3)
+python -m src.faults                  # fault detector bank (D1-D5)
 python -m src.assistance              # calendar and the booking gate
-python -m src.speech                  # wake word, transcription, reasoning
+python -m src.reasoning               # supervisor, Personal Context, diagnosis
+python -m src.speech                  # wake word and transcription
 ```
 
 Both take `--config` and both stop cleanly on `Ctrl-C`.
@@ -167,6 +173,72 @@ A clamped setpoint appearing in `space/audit/validation` is the gate working,
 not a failure. Every verdict carries the proposal, the reason code, and the
 value actually applied.
 
+### Talking to it
+
+The reasoning process answers anything said to the room, whether it came from
+the microphone or a keyboard: speech publishes each transcript to
+`space/context/utterance`, and so does this:
+
+```bash
+python -m tools.say "it is too warm in here"
+python -m tools.say "put the design review in on Thursday at three"
+python -m tools.say "what have I got on Thursday?"
+python -m tools.say "book me a flight to Delhi on Friday"
+```
+
+A temperature request becomes a preference the gate still clamps — ask for
+5 °C and you get the validator's answer, not 5 °C. A meeting goes into the
+calendar at `state/calendar.json` and the reply says so. A flight comes back
+as a question, because a booking commits you to someone outside the system
+and only you can agree to that:
+
+```bash
+python -m tools.confirm        # describes each waiting booking, asks y/N
+```
+
+A yes reaches the mock endpoint, and every result it produces says it is a
+mock. Nothing real is ever booked.
+
+The Environmental Supervisor runs on its own every five minutes and whenever
+occupancy, the tariff or the fault state changes. It reads the room through
+four tools and proposes a setpoint through a fifth; the gate decides. Every
+call any of the three reasoning call sites makes — inputs, what the model
+said, which tools it used, the verdict, latency and tokens — is on
+`space/audit/reasoning`:
+
+```bash
+mosquitto_sub -t 'space/audit/reasoning' -v   # every reasoning decision
+mosquitto_sub -t 'space/diagnosis' -v         # what each fault means, in words
+```
+
+Kill `src.reasoning` mid-run and nothing but reasoning stops: the control loop
+holds the last setpoint the gate admitted, and an occupant's spoken request
+still reaches it.
+
+### Running on the Jetson
+
+One script provisions the Orin and makes the whole stack come up on boot —
+MAXN power mode, the broker, `llama-server` built with CUDA and the model it
+serves, a service user, every systemd unit:
+
+```bash
+sudo deploy/provision.sh --dry-run            # read every step first
+sudo deploy/provision.sh                      # simulator as Layer 1
+sudo deploy/provision.sh --source esphome     # the real sensors and AC
+```
+
+Then check the hardware is really there:
+
+```bash
+python -m tools.bringup                       # every sensor: rate, jitter, limits, sigma
+python -m tools.bringup --actuate             # and does the AC run when asked?
+```
+
+`--actuate` never sends a command itself. It asks the gate for cooling as an
+operator and watches the power meter for the compressor starting — an IR
+blaster cannot acknowledge, a watt-meter can. The sigma it reports per sensor
+is what Week 7 sets the detector thresholds from.
+
 ### Running on hardware instead of the simulator
 
 Layer 1 is chosen by configuration, not by code. Everything above it
@@ -190,11 +262,18 @@ What is real is the shape — and a test asserts that every device topic the
 config expects is one the node definition actually publishes, so a rename
 cannot silently disconnect them.
 
+`deploy/provision.sh` does the following and more; by hand it is:
+
 ```bash
 docker compose -f deploy/docker-compose.yml up -d    # the broker
 sudo cp deploy/systemd/* /etc/systemd/system/        # the components
+sudo systemctl enable space-layer1@space.service     # or space-simulator@
 sudo systemctl enable --now space.target
 ```
+
+`space.target` deliberately does not name a Layer 1: exactly one of the
+hardware bridge and the simulator is enabled into it, and each refuses to run
+if `io.source` names the other.
 
 Every unit restarts itself and none requires another, so killing any one
 process and watching the rest carry on is a thing you can demonstrate.
@@ -222,7 +301,13 @@ python -m eval.experiments.e2_adaptation     # does adapting help tracking?
 python -m eval.experiments.e3_detection      # every fault class, repeated
 python -m eval.experiments.e4_degradation    # is the 1800 s budget right?
 python -m eval.experiments.e5_baseline       # do we beat a thermostat?
+python -m eval.experiments.e6_tool_selection # does the model pick the right tool?
 ```
+
+E6 is the one that needs the inference server. It runs fifty hand-built
+scenarios through the real call sites and reports schema validity, tool
+selection and argument plausibility separately, because the first is close to
+100% by construction and is not a result.
 
 E5 is the one the project stands on. It runs the same faults against this
 system and against a fixed-deadband thermostat that shares the same plant,
@@ -322,17 +407,21 @@ simulated success predict nothing about real hardware.
 ## Layout
 
 ```
-src/common/      clock, config, schemas, topics, MQTT blackboard, device
-src/control/     safety validator, regulatory loop    (python -m src.control)
-src/estimation/  RC model, RLS, persistence          (python -m src.estimation)
-src/faults/      detector bank, aggregator           (python -m src.faults)
-src/speech/      wake word, capture, ASR, pipeline  (python -m src.speech)
-src/reasoning/   single-shot LLM calls
-src/io/          actuator driver contracts
-sim/             ground-truth room model, sensors, actuator, runner
-tests/           unit tests, mirroring the source layout
+src/common/      clock, config, schemas, topics, MQTT blackboard, tools, local time
+src/control/     arbitration, safety gate, regulatory loop, tariff (python -m src.control)
+src/estimation/  RC model, RLS, persistence                    (python -m src.estimation)
+src/faults/      detector bank D1-D5, aggregator, mode manager (python -m src.faults)
+src/reasoning/   supervisor, Personal Context, diagnosis       (python -m src.reasoning)
+src/assistance/  tool executor, calendar, travel mock          (python -m src.assistance)
+src/speech/      wake word, capture, ASR                       (python -m src.speech)
+src/io/          ESPHome bridge and actuator driver            (python -m src.io)
+sim/             ground-truth room model, sensors, actuator, power meter, runner
+eval/            baseline thermostat, harness, experiments E1-E6
+tools/           view, inject, reset, record, demo, say, confirm, bringup
+deploy/          provisioning, systemd units, broker, ESPHome node
+tests/           unit and system tests, mirroring the source layout
 config/          default.yaml
-docs/            DESIGN.md, coding-guidelines.md
+docs/            DESIGN.md, ROADMAP.md, coding-guidelines.md
 ```
 
 `sim/room_model.py` must never import from `src/estimation/`. The simulated
@@ -345,14 +434,16 @@ evaluation degenerates into the model predicting itself.
 
 Honest about the gaps, so nobody hunts for something that isn't there:
 
-- `src/reasoning/supervisor_agent.py` — the model that proposes goals and
-  chooses tools. The surface it acts through is built and tested; this is the
-  half that needs an LLM behind it
-- `src/control/goal_manager.py` — arbitration when several sources propose a
-  setpoint at once
-- `docs/adr/` — the four decision records DESIGN.md references
-- `deploy/systemd/` — the unit files that supervise this on the Jetson
-- `eval/` — the baseline thermostat and the experiment harness
+- **Anything that needs a person holding the board.** The ESP32 has not been
+  flashed; `deploy/esphome/room-node.yaml` is marked UNVERIFIED and its pins,
+  addresses and IR protocol are placeholders. `tools.bringup` is how the
+  wiring gets checked once it exists.
+- **E6 against a real model.** The experiment and its scoring are built and
+  tested against scripted models; the numbers need the Orin's server.
+- **The local console** (FR-56 to FR-58) — Week 8. `tools.confirm` stands in
+  for its confirmation half until then.
+- `src/speech/speaker_profile.py` (FR-52) and `docs/adr/` — specified in the
+  design, not written.
 
 `start.py` only lists services that exist, so its `--help` is the honest
 inventory.
