@@ -187,3 +187,41 @@ class TestBroaderThanTemperature:
         """Nothing here can switch a device, so the reply must not say one
         was switched (FR-45)."""
         assert "Never claim anything has been changed" in PERSONAL_CONTEXT_PROMPT
+
+
+class TestWhatServedModelsActuallySend:
+    """Regression, from a live run against qwen2.5:7b through Ollama."""
+
+    @pytest.mark.parametrize("blank", ['""', "null"], ids=["empty", "null"])
+    def test_a_service_request_with_a_blank_comfort_is_kept(self, config, blank):
+        """The model leaves comfort blank for a booking, where no temperature
+        preference exists; every service request was being discarded."""
+        client = StubClient(
+            '{"intent": "service", "subject": "booking", "comfort": ' + blank + ', '
+            '"target_c": null, "rationale": "book a flight", '
+            '"spoken_reply": "Shall I request that?"}'
+        )
+        hint = _context(config, client).extract(TRANSCRIPT)
+        assert hint is not None
+        assert hint.intent is Intent.SERVICE
+
+    def test_a_blank_comfort_reads_as_unchanged(self, config):
+        client = StubClient(
+            '{"intent": "environment", "subject": "temperature", "comfort": "", '
+            '"target_c": 40.0, "rationale": "make it 40", "spoken_reply": "Passed on."}'
+        )
+        hint = _context(config, client).extract(TRANSCRIPT)
+        assert hint.comfort is Comfort.UNCHANGED
+        assert hint.target_c == 40.0
+
+    def test_the_prompt_forbids_adjusting_the_number(self):
+        """The model turned "5 degrees" into 20: the validator must see what
+        was asked, or the clamp it exists to show never happens."""
+        assert "never adjust it" in PERSONAL_CONTEXT_PROMPT
+
+    def test_an_unsafe_target_is_forwarded_as_asked(self, config):
+        client = StubClient(
+            '{"intent": "environment", "subject": "temperature", "comfort": "cooler", '
+            '"target_c": 5.0, "rationale": "set it to 5", "spoken_reply": "Passed on."}'
+        )
+        assert _context(config, client).extract(TRANSCRIPT).target_c == 5.0
