@@ -14,6 +14,7 @@ import pytest
 from src.common.config import SpeechConfig, load_config
 from src.speech.asr import (
     INT16_FULL_SCALE,
+    ModelNotInstalledError,
     Transcriber,
     UtteranceDetector,
     to_float_audio,
@@ -178,3 +179,48 @@ class TestTranscriber:
     def test_surrounding_whitespace_is_trimmed(self, config):
         whisper = FakeWhisper("  spaced out  ")
         assert Transcriber(config, model=whisper).transcribe([FRAME]) == "spaced out"
+
+
+class RecordingWhisper:
+    """Stands in for faster_whisper.WhisperModel and remembers how it was built."""
+
+    calls: list[dict] = []
+
+    def __init__(self, model, **kwargs) -> None:
+        RecordingWhisper.calls.append({"model": model, **kwargs})
+
+
+class MissingWhisper:
+    def __init__(self, model, **kwargs) -> None:
+        raise OSError("not in the local cache")
+
+
+class TestLoadingOffline:
+    """NFR-06: the live run caught faster-whisper asking huggingface.co for
+    the latest revision on every start, with the model already cached."""
+
+    @pytest.fixture(name="cpu_config")
+    def _cpu_config(self, config) -> SpeechConfig:
+        return config.model_copy(update={"asr_device": "cpu"})
+
+    def test_the_model_is_loaded_with_network_access_refused(
+        self, cpu_config, monkeypatch
+    ):
+        faster_whisper = pytest.importorskip("faster_whisper")
+        RecordingWhisper.calls = []
+        monkeypatch.setattr(faster_whisper, "WhisperModel", RecordingWhisper)
+        Transcriber(cpu_config)
+        assert RecordingWhisper.calls[-1]["local_files_only"] is True
+
+    def test_the_configured_model_is_the_one_loaded(self, cpu_config, monkeypatch):
+        faster_whisper = pytest.importorskip("faster_whisper")
+        RecordingWhisper.calls = []
+        monkeypatch.setattr(faster_whisper, "WhisperModel", RecordingWhisper)
+        Transcriber(cpu_config)
+        assert RecordingWhisper.calls[-1]["model"] == cpu_config.asr_model
+
+    def test_a_missing_model_says_how_to_install_it(self, cpu_config, monkeypatch):
+        faster_whisper = pytest.importorskip("faster_whisper")
+        monkeypatch.setattr(faster_whisper, "WhisperModel", MissingWhisper)
+        with pytest.raises(ModelNotInstalledError, match="setup_models.py"):
+            Transcriber(cpu_config)
