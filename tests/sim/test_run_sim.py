@@ -19,6 +19,7 @@ from src.common.schemas import (
     Command,
     CommandKind,
     InjectionCommand,
+    Quality,
     SensorReading,
     Unit,
 )
@@ -317,6 +318,20 @@ class TestInjectionAtLayerOne:
             transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")[0]
         )
         assert reading.value == 999.0
+
+    def test_an_out_of_range_reading_is_flagged_by_the_configured_limits(
+        self, quiet_config
+    ):
+        """The limits come from config.sensors, the same ones D3 uses."""
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(
+            blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.OUT_OF_RANGE, 999.0
+        )
+        simulator.step()
+        reading = SensorReading.model_validate_json(
+            transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")[0]
+        )
+        assert reading.quality is Quality.SUSPECT
 
     def test_clearing_returns_the_sensor_to_the_plant(self, quiet_config):
         simulator, transport, _, blackboard = _running(quiet_config)

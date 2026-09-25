@@ -24,7 +24,7 @@ from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import Config, load_config
+from src.common.config import Bounds, Config, load_config
 from src.common.injection import FaultInjection, InjectedFault
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
@@ -299,6 +299,14 @@ class RoomSimulator:
             completed += 1
 
 
+def _limits_for(config: Config, sensor_id: str) -> Bounds | None:
+    """The configured physical limits of one sensor, if it is registered."""
+    for adapter in config.sensors.adapters:
+        if adapter.sensor_id == sensor_id:
+            return adapter.limits
+    return None
+
+
 def build_simulator(
     config: Config, clock: Clock, blackboard: Blackboard
 ) -> RoomSimulator:
@@ -312,13 +320,16 @@ def build_simulator(
         actuator=SimulatedActuator(config.sim.actuator, rng, clock),
         rng=rng,
         indoor=SimulatedSensor(
-            INDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
+            INDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, INDOOR_TEMPERATURE_ID),
         ),
         humidity=SimulatedSensor(
-            INDOOR_HUMIDITY_ID, Unit.PERCENT_RH, config.sim.sensor_noise, rng, clock
+            INDOOR_HUMIDITY_ID, Unit.PERCENT_RH, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, INDOOR_HUMIDITY_ID),
         ),
         outdoor=SimulatedSensor(
-            OUTDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
+            OUTDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, OUTDOOR_TEMPERATURE_ID),
         ),
         occupancy=BinarySensor(
             OCCUPANCY_ID, config.sim.sensor_noise, rng, clock
