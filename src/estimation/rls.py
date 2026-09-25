@@ -387,6 +387,13 @@ class ThermalEstimator:
         sitting essentially on a box edge, so short runs happen by chance
         constantly; a rate this high for this long does not.
         """
+        if self._consecutive_rejections >= self._config.divergence_window_samples:
+            # A stall: a whole window with no update adopted, whatever the
+            # coefficient. A rejection reverts P as well as theta, so an
+            # estimate parked where every update breaks a bound can never move
+            # again -- and if the bound was a4's it was exempt from the rate
+            # below, so nobody was told. Healthy runs reach 11 in a row.
+            return True
         window = self._recent_rejections
         if len(window) < window.maxlen:
             return False

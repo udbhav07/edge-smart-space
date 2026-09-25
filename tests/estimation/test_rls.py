@@ -441,3 +441,24 @@ class TestEdgeNoiseIsNotDivergence:
         candidate = np.array([0.002, 0.5, 0.001])
         estimator._reject(candidate, estimator.theta, estimator.covariance, 27.0, 0.0)
         assert estimator._recent_rejections[-1] is True
+
+
+
+class TestAStallIsDivergence:
+    """A full window with nothing adopted is a model that cannot move."""
+
+    def test_a_full_window_of_a4_only_rejections_diverges(self, config, clock, monkeypatch):
+        estimator = ThermalEstimator(config, clock)
+        diverged = False
+        for _ in range(config.divergence_window_samples):
+            estimator._consecutive_rejections += 1
+            estimator._record_outcome(UpdateStatus.REJECTED, ("a4",))
+            diverged = estimator.diverged
+        assert diverged is True
+
+    def test_a_short_run_of_a4_rejections_does_not(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        for _ in range(20):
+            estimator._consecutive_rejections += 1
+            estimator._record_outcome(UpdateStatus.REJECTED, ("a4",))
+        assert estimator.diverged is False
