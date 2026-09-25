@@ -320,7 +320,10 @@ class BringupConfig(_Section):
     """What ``tools/bringup.py`` accepts as a working instrument (Week 5)."""
 
     listen_s: float = Field(
-        default=60.0, gt=0.0, description="How long to listen by default, in s"
+        default=180.0,
+        gt=0.0,
+        description="How long to listen by default, in s. Several outdoor "
+        "periods, or the 60 s ambient sensor is seen once and judged unratable",
     )
     max_interval_factor: float = Field(
         default=1.5,

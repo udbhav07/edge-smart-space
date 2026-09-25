@@ -114,6 +114,7 @@ class FaultDiagnoser:
                 json_output=True,
             )
         except ReasoningUnavailableError as exc:
+            trace.add_failure(exc.latency_s)
             self._audit.publish(trace, ReasoningOutcome.UNAVAILABLE, reason=str(exc))
             return self.generic(event, current_mode)
 

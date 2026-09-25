@@ -46,7 +46,15 @@ class ReasoningUnavailableError(RuntimeError):
     Raised rather than swallowed so the caller can decide. The regulatory
     loop is unaffected either way: it holds the last validated setpoint and
     keeps running when the reasoning layer is absent (FR-11, FR-47).
+
+    Carries how long the failure took. A server that times out after thirty
+    seconds and one that refuses at once are different findings, and FR-63's
+    latency is only honest if the slow failures are in it.
     """
+
+    def __init__(self, message: str, latency_s: float = 0.0) -> None:
+        super().__init__(message)
+        self.latency_s = latency_s
 
 
 @dataclass(frozen=True)
@@ -95,10 +103,16 @@ class ChatEndpoint:
     def _connect(config: ReasoningConfig):
         from openai import OpenAI
 
+        # No retries. The client retries twice by default, which turns the
+        # configured timeout into three of them -- measured against a live
+        # stack, a refused connection took over a second before failing, and
+        # a hung server would hold a call for 90 s against section 7.1's 30.
+        # A failed call is recorded and the next cadence tries again.
         return OpenAI(
             base_url=config.base_url,
             api_key=LOCAL_API_KEY,
             timeout=config.timeout_s,
+            max_retries=0,
         )
 
     def complete(
@@ -129,14 +143,16 @@ class ChatEndpoint:
         try:
             response = self._client.chat.completions.create(**request)
         except Exception as exc:
-            raise ReasoningUnavailableError(f"inference failed: {exc}") from exc
+            raise ReasoningUnavailableError(
+                f"inference failed: {exc}", self._clock.monotonic() - started
+            ) from exc
         latency_s = self._clock.monotonic() - started
 
         try:
             message = response.choices[0].message
         except (AttributeError, IndexError) as exc:
             raise ReasoningUnavailableError(
-                f"inference returned no choices: {exc}"
+                f"inference returned no choices: {exc}", latency_s
             ) from exc
 
         usage = getattr(response, "usage", None)

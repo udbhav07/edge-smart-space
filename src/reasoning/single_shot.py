@@ -168,6 +168,7 @@ class PersonalContext:
         try:
             answer = self._converse(messages, trace, transcript, results)
         except ReasoningUnavailableError as exc:
+            trace.add_failure(exc.latency_s)
             self._audit.publish(trace, ReasoningOutcome.UNAVAILABLE, reason=str(exc))
             return self._fallback(transcript, results)
 

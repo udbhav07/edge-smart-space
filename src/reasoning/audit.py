@@ -67,6 +67,14 @@ class Trace:
             if len(self._tool_calls) < MAX_TURNS_KEPT * 4:
                 self._tool_calls.append(call.name)
 
+    def add_failure(self, latency_s: float) -> None:
+        """Account for a call that never came back with an answer.
+
+        Not a round -- the model said nothing -- but the time it cost is
+        latency like any other (FR-63).
+        """
+        self.latency_s += latency_s
+
     @property
     def tool_calls(self) -> tuple[str, ...]:
         return tuple(self._tool_calls)

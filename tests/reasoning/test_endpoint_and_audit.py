@@ -170,3 +170,35 @@ class TestAudit:
     def test_a_bound_too_small_for_any_text_is_refused(self, config):
         with pytest.raises(ValueError):
             self._audit(config, max_chars=3)
+
+
+class TestFailureLatency:
+    """Found on a live stack: a failed call reported 0.0 s."""
+
+    def test_a_failure_carries_how_long_it_took(self, config):
+        clock = SimClock()
+
+        class SlowRefusal:
+            def __init__(self):
+                from types import SimpleNamespace
+
+                self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+            def _create(self, **_request):
+                clock.advance(30.0)
+                raise TimeoutError("no answer")
+
+        with pytest.raises(ReasoningUnavailableError) as raised:
+            ChatEndpoint(config.reasoning, clock, SlowRefusal()).complete([])
+        assert raised.value.latency_s == 30.0
+
+    def test_a_failure_adds_latency_but_no_round(self):
+        trace = Trace(CallSite.SUPERVISOR, "cadence", "")
+        trace.add_failure(30.0)
+        assert (trace.latency_s, trace.rounds) == (30.0, 0)
+
+    def test_the_real_client_never_retries(self, config):
+        """Retries would turn the 30 s timeout into 90 (section 7.1)."""
+        pytest.importorskip("openai")
+        endpoint = ChatEndpoint(config.reasoning, SimClock())
+        assert endpoint._client.max_retries == 0

@@ -117,6 +117,7 @@ class EnvironmentalSupervisor:
             try:
                 completion = self._endpoint.complete(messages, tools=schemas)
             except ReasoningUnavailableError as exc:
+                trace.add_failure(exc.latency_s)
                 return self._finish(trace, ReasoningOutcome.UNAVAILABLE, str(exc))
             trace.add(completion)
             messages.append(completion.as_message())

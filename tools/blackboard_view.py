@@ -357,6 +357,12 @@ def describe(topic: str, entry: TopicActivity) -> str:
     if isinstance(message, FaultDiagnosis):
         origin = "model" if message.generated else "generic"
         return f"[diagnosis] {message.primary_hypothesis.value} ({origin}): {message.user_message}"
+    if isinstance(message, ToolCatalogue):
+        names = ", ".join(f"{spec.name} ({spec.effect.value})" for spec in message.tools)
+        return f"[catalogue] {names}"
+    if isinstance(message, SensorHealth):
+        fault = f" {message.active_fault_id}" if message.active_fault_id else ""
+        return f"[health   ] {message.sensor_id:<12} {message.quality.value}{fault}"
     if isinstance(message, ToolInvocation):
         return f"[tool ask ] {message.tool} {dict(message.arguments)}"
     if isinstance(message, ToolResult):
