@@ -81,6 +81,7 @@ class ChatClient:
         self,
         messages: Sequence[Mapping[str, object]],
         tools: Sequence[Mapping[str, object]] = (),
+        json_only: bool = False,
     ) -> ChatTurn:
         """Run one completion.
 
@@ -96,6 +97,10 @@ class ChatClient:
         }
         if tools:
             request["tools"] = list(tools)
+        if json_only:
+            # The constrained decode of section 5.7.3, as the OpenAI-compatible
+            # endpoint exposes it. It guarantees a parse, not sense.
+            request["response_format"] = {"type": "json_object"}
         try:
             response = self._client.chat.completions.create(**request)
         except Exception as exc:

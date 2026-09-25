@@ -25,6 +25,7 @@ from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.reasoning.assistant import Assistant
 from src.reasoning.chat import ChatClient
+from src.reasoning.diagnosis import FaultDiagnoser
 from src.reasoning.supervisor_agent import SupervisorAgent
 from src.reasoning.supervisor_tools import SupervisorState
 
@@ -33,6 +34,7 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 ASSISTANT_CLIENT_ID = "reasoning-assistant"
 SUPERVISOR_CLIENT_ID = "reasoning-supervisor"
+DIAGNOSIS_CLIENT_ID = "reasoning-diagnosis"
 
 #: How often the main loop looks for work. Short, so a spoken request is
 #: answered promptly; the supervisor's own cadence is far longer.
@@ -73,15 +75,20 @@ def supervise(
     clock: Clock,
     stop: threading.Event,
     iterations: int | None = None,
+    diagnoser: FaultDiagnoser | None = None,
 ) -> None:
-    """Run supervisory cycles when due, on a thread of their own.
+    """Run diagnoses and supervisory cycles, on a thread of their own.
 
     Separate from the assistant because a cycle is several completions long,
-    and a person asking for something must not wait behind one.
+    and a person asking for something must not wait behind one. Diagnosis
+    runs here too: it explains a fault after the mode has already changed,
+    so it is never on anyone's critical path (FR-26).
     """
     completed = 0
     while not stop.is_set() and (iterations is None or completed < iterations):
         try:
+            if diagnoser is not None:
+                diagnoser.process_pending()
             supervisor.maybe_run()
         except Exception:
             # A supervisor bug costs supervisory cycles, never the assistant.
@@ -119,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
     chat = ChatClient(config.reasoning, clock)
     assistant_board = _board(config, ASSISTANT_CLIENT_ID)
     supervisor_board = _board(config, SUPERVISOR_CLIENT_ID)
+    diagnosis_board = _board(config, DIAGNOSIS_CLIENT_ID)
+    diagnoser = FaultDiagnoser(clock, diagnosis_board, chat)
+    diagnoser.subscribe()
     assistant = build_assistant(config, clock, assistant_board, chat)
     supervisor = build_supervisor(config, clock, supervisor_board, chat)
     assistant.subscribe()
@@ -126,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         supervisor.subscribe()
     assistant_board.start()
     supervisor_board.start()
+    diagnosis_board.start()
     LOGGER.info(
         "reasoning on %s with %s; supervisor every %.0f s%s",
         config.reasoning.base_url,
@@ -135,10 +146,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     stop = threading.Event()
     supervising = threading.Thread(
-        target=supervise, args=(supervisor, clock, stop), name="supervisor", daemon=True
+        target=supervise,
+        args=(supervisor, clock, stop),
+        kwargs={"diagnoser": diagnoser},
+        name="supervisor",
+        daemon=True,
     )
-    if not arguments.no_supervisor:
-        supervising.start()
+    supervising.start()
     try:
         run(assistant, clock)
     except KeyboardInterrupt:
@@ -147,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         stop.set()
         assistant_board.stop()
         supervisor_board.stop()
+        diagnosis_board.stop()
     return 0
 
 

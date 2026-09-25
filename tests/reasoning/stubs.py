@@ -13,7 +13,7 @@ class ScriptedChat:
         self._turns = list(turns)
         self.requests: list[tuple[list, tuple]] = []
 
-    def complete(self, messages, tools=()):
+    def complete(self, messages, tools=(), json_only=False):
         self.requests.append((list(messages), tuple(tools)))
         if not self._turns:
             return ChatTurn(content="(nothing scripted)")

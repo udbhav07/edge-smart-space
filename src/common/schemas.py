@@ -94,6 +94,20 @@ class Mode(str, Enum):
     SAFE_HOLD = "SAFE_HOLD"
 
 
+#: Section 5.6's transitions, as data, for anything that must check one
+#: without owning the state machine -- the Fault Diagnosis call checks a
+#: recommended mode against it (section 6.3). Staying put is always legal.
+LEGAL_TRANSITIONS: dict[Mode, frozenset[Mode]] = {
+    Mode.INIT: frozenset({Mode.INIT, Mode.NORMAL}),
+    Mode.NORMAL: frozenset(
+        {Mode.NORMAL, Mode.DEGRADED_SENSOR, Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD}
+    ),
+    Mode.DEGRADED_SENSOR: frozenset({Mode.DEGRADED_SENSOR, Mode.NORMAL, Mode.SAFE_HOLD}),
+    Mode.DEGRADED_ACTUATOR: frozenset({Mode.DEGRADED_ACTUATOR, Mode.NORMAL, Mode.SAFE_HOLD}),
+    Mode.SAFE_HOLD: frozenset({Mode.SAFE_HOLD, Mode.NORMAL}),
+}
+
+
 class FaultClass(str, Enum):
     """What kind of thing failed."""
 
@@ -643,6 +657,7 @@ class ReasoningCaller(str, Enum):
 
     SUPERVISOR = "supervisor"
     ASSISTANT = "assistant"
+    DIAGNOSIS = "diagnosis"
 
 
 class ReasoningRecord(TimestampedMessage):
@@ -698,3 +713,50 @@ class TariffState(TimestampedMessage):
 
     band: TariffBand
     next_transition_ts: float = Field(gt=0.0, description="When the band next changes")
+
+
+# --- Fault diagnosis (FR-25, FR-43; section 6.3) ------------------------------
+
+
+class Hypothesis(str, Enum):
+    """What the Fault Diagnosis call may say is wrong. A fixed set (section 6.3)."""
+
+    SENSOR_STUCK = "sensor_stuck"
+    SENSOR_DROPOUT = "sensor_dropout"
+    SENSOR_OUT_OF_RANGE = "sensor_out_of_range"
+    SENSOR_DRIFT = "sensor_drift"
+    ACTUATOR_NO_RESPONSE = "actuator_no_response"
+    MODEL_DIVERGENCE = "model_divergence"
+    UNKNOWN = "unknown"
+
+
+class DiagnosisConfidence(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class FaultDiagnosis(TimestampedMessage):
+    """An explanation of a confirmed fault, for a person (section 6.3).
+
+    Published to ``space/diagnosis/{fault_id}`` after the mode has already
+    changed: it enriches the notification and never delays the response
+    (FR-26, section 5.9.2). ``recommended_mode`` is advice checked against the
+    state machine; ``recommendation_legal`` says whether it passed, and the
+    detector-derived mode stands either way.
+    """
+
+    fault_id: str = Field(min_length=1)
+    primary_hypothesis: Hypothesis
+    confidence: DiagnosisConfidence
+    supporting_evidence: tuple[str, ...] = ()
+    recommended_mode: Mode
+    user_message: str = Field(min_length=1)
+    recommendation_legal: bool = Field(
+        default=True, description="Whether the recommended mode is reachable"
+    )
+    generic: bool = Field(
+        default=False,
+        description="True when the model gave nothing usable and the text is "
+        "the fixed notification for the detector (section 5.7.1)",
+    )

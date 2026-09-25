@@ -24,6 +24,7 @@ from src.common.schemas import (
     AssistantReply,
     ReasoningRecord,
     TariffState,
+    FaultDiagnosis,
     Coefficients,
     PreferenceHint,
     FaultEvent,
@@ -120,6 +121,18 @@ PREFERENCE_HINT_PAYLOAD = {
     "transcript": "it is too warm in here, can you cool it down",
 }
 
+FAULT_DIAGNOSIS_PAYLOAD = {
+    "ts": 1756032301.8,
+    "fault_id": "f_temp01_stuck_1756032",
+    "primary_hypothesis": "sensor_stuck",
+    "confidence": "high",
+    "supporting_evidence": ["variance_collapse", "residual_step"],
+    "recommended_mode": "DEGRADED_SENSOR",
+    "user_message": "Temperature sensor appears stuck. Running on the room model.",
+    "recommendation_legal": True,
+    "generic": False,
+}
+
 TARIFF_STATE_PAYLOAD = {
     "ts": 1756032000.0,
     "band": "peak",
@@ -189,6 +202,7 @@ DOCUMENTED_PAYLOADS = [
     (AssistantReply, ASSISTANT_REPLY_PAYLOAD),
     (ReasoningRecord, REASONING_RECORD_PAYLOAD),
     (TariffState, TARIFF_STATE_PAYLOAD),
+    (FaultDiagnosis, FAULT_DIAGNOSIS_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -200,6 +214,7 @@ DOCUMENTED_TOPICS = frozenset(
         "space/estimate/thermal",
         "space/estimate/coefficients",
         "space/fault/{fault_id}",
+        "space/diagnosis/{fault_id}",
         "space/system/mode",
         "space/system/reset",
         "space/inject/{subject}",

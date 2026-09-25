@@ -1467,6 +1467,7 @@ startup, which NFR-06 forbids.
 | `space/estimate/thermal` | pub | yes | 0 | `ThermalEstimate` |
 | `space/estimate/coefficients` | pub | yes | 1 | `Coefficients` |
 | `space/fault/{fault_id}` | pub | yes | 1 | `FaultEvent` |
+| `space/diagnosis/{fault_id}` | pub | no | 1 | `FaultDiagnosis` |
 | `space/system/mode` | pub | yes | 1 | `ModeState` |
 | `space/goal/proposed` | pub | no | 1 | `Goal` |
 | `space/goal/active` | pub | yes | 1 | `Goal` |
@@ -1598,7 +1599,7 @@ startup, which NFR-06 forbids.
 // ReasoningRecord
 {
   "ts": 1756032003.2,
-  "caller": "assistant",             // supervisor | assistant
+  "caller": "assistant",             // supervisor | assistant | diagnosis
   "trigger": "utterance",
   "model": "qwen2.5:7b",
   "inputs": "put the design review in my calendar at three",
@@ -1651,6 +1652,23 @@ startup, which NFR-06 forbids.
 ```
 
 `recommended_mode` is checked against the state machine's legal transitions before use. An illegal recommendation is discarded and the detector-derived mode stands.
+
+As published to `space/diagnosis/{fault_id}` (v1.9), the message also carries its timestamp, the fault it explains, whether the recommendation was legal, and whether the text is the generic per-detector notification used when the model gives nothing usable (§5.7.1):
+
+```jsonc
+// FaultDiagnosis
+{
+  "ts": 1756032301.8,
+  "fault_id": "f_temp01_stuck_1756032",
+  "primary_hypothesis": "sensor_stuck",
+  "confidence": "high",
+  "supporting_evidence": ["variance_collapse", "residual_step"],
+  "recommended_mode": "DEGRADED_SENSOR",
+  "user_message": "Temperature sensor appears stuck. Running on the room model.",
+  "recommendation_legal": true,
+  "generic": false
+}
+```
 
 ### 6.4 On `PreferenceHint`
 
