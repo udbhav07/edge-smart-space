@@ -645,6 +645,49 @@ class TestOperatorReset:
         assert service.mode is Mode.DEGRADED_SENSOR
 
 
+class TestSuspectReadingsNeverJudgeTheActuator:
+    """Regression, found by running the system: D3 needs two samples to
+    confirm, and a single 999 C sample arriving as D5's window closed was read
+    as the room warming by 970 C. The air conditioner was blamed, the mode
+    went to DEGRADED_ACTUATOR, and FR-27 was switched off by a sensor fault."""
+
+    def _cool_for_a_window(self, service, blackboard, clock, config, last):
+        _deliver(blackboard, _reading(clock, value=29.0))
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+        window_s = config.detectors.actuator.evaluation_window_s
+        steps = int(window_s / config.loop.sensor_period_s)
+        for index in range(steps):
+            _deliver(blackboard, _reading(clock, value=29.0 - index * 0.01))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        _deliver(blackboard, last)
+        service.tick()
+
+    def test_a_suspect_reading_at_the_window_does_not_raise(
+        self, wired, clock, config
+    ):
+        service, transport, blackboard = wired
+        suspect = _reading(clock, value=999.0).model_copy(
+            update={"quality": Quality.SUSPECT, "ts": clock.now()}
+        )
+        self._cool_for_a_window(service, blackboard, clock, config, suspect)
+        assert DetectorId.D5_ACTUATOR_NO_RESPONSE not in {
+            event.detector for event in transport.faults()
+        }
+
+    def test_an_ok_reading_that_warmed_still_raises(self, wired, clock, config):
+        """The skip is on the flag, not the value: a room genuinely warming
+        under cooling is the actuator fault D5 exists for."""
+        service, transport, blackboard = wired
+        warmer = _reading(clock, value=31.0)
+        self._cool_for_a_window(service, blackboard, clock, config, warmer)
+        clock.advance(config.loop.sensor_period_s)
+        service.tick()
+        assert DetectorId.D5_ACTUATOR_NO_RESPONSE in {
+            event.detector for event in transport.faults()
+        }
+
+
 class TestDerivedDetectorsSuspendOnAnUntrustedSensor:
     """Regression: a broken sensor must not manufacture a second fault.
 
@@ -736,3 +779,163 @@ class TestDerivedDetectorsSuspendOnAnUntrustedSensor:
         assert DetectorId.D4_DRIFT not in {
             event.detector for event in transport.faults()
         }
+
+
+class TestDerivedFaultsAreNotRaisedOnADiscreditedSensor:
+    """Regression, found by running the system: two races between a sensor
+    detector and D5 that each turned one broken sensor into two faulted
+    subjects, SAFE_HOLD, and FR-27 switched off."""
+
+    def _tick_for(self, service, clock, config, seconds, deliver=None):
+        period_s = config.loop.sensor_period_s
+        for index in range(int(seconds / period_s)):
+            if deliver is not None:
+                deliver(index)
+            service.tick()
+            clock.advance(period_s)
+
+    def _cooling_room(self, blackboard, clock):
+        def deliver(index):
+            _deliver(blackboard, _reading(clock, value=29.0 - index * 0.01))
+
+        return deliver
+
+    def _stuck(self, blackboard, clock, value):
+        def deliver(_index):
+            _deliver(blackboard, _reading(clock, value=value))
+
+        return deliver
+
+    def test_a_dropped_sensor_does_not_raise_an_actuator_fault(
+        self, wired, clock, config
+    ):
+        """A silent sensor sends no readings, so D5 has to be suspended on the
+        tick rather than on reading arrival."""
+        service, transport, blackboard = wired
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+        self._tick_for(service, clock, config, 60.0, self._cooling_room(blackboard, clock))
+        window_s = config.detectors.actuator.evaluation_window_s
+        self._tick_for(service, clock, config, window_s + 120.0)
+        detectors = {event.detector for event in transport.faults()}
+        assert DetectorId.D1_DROPOUT in detectors
+        assert DetectorId.D5_ACTUATOR_NO_RESPONSE not in detectors
+
+    def _stuck_after_cooling(self, service, blackboard, clock, config, cool_s):
+        """Cool honestly for ``cool_s``, then freeze above where the room was.
+
+        D5's window closes on the frozen value and reads it as the room
+        warming; D2 confirms the freeze a few minutes later.
+        """
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+        self._tick_for(
+            service, clock, config, cool_s, self._cooling_room(blackboard, clock)
+        )
+        stuck = self._stuck(blackboard, clock, 29.5)
+        window = config.detectors.stuck_at.window_samples
+        confirm = config.detectors.stuck_at.consecutive_windows
+        self._tick_for(
+            service,
+            clock,
+            config,
+            (window + confirm + 4) * config.loop.sensor_period_s,
+            stuck,
+        )
+
+    def test_an_actuator_fault_judged_on_the_frozen_value_is_withdrawn(
+        self, wired, clock, config
+    ):
+        service, transport, blackboard = wired
+        self._stuck_after_cooling(service, blackboard, clock, config, 400.0)
+        detectors = [event.detector for event in transport.faults()]
+        assert detectors.index(DetectorId.D5_ACTUATOR_NO_RESPONSE) < detectors.index(
+            DetectorId.D2_STUCK_AT
+        ), "the race under test: D5 has to have been raised first"
+        assert {event.subject for event in service.active_faults} == {INDOOR}
+
+    def test_the_withdrawal_is_published(self, wired, clock, config):
+        service, transport, blackboard = wired
+        self._stuck_after_cooling(service, blackboard, clock, config, 400.0)
+        d5 = next(
+            event
+            for event in transport.faults()
+            if event.detector is DetectorId.D5_ACTUATOR_NO_RESPONSE
+        )
+        assert f"space/fault/{d5.fault_id}" in transport.withdrawals()
+
+    def test_the_mode_degrades_on_the_sensor_rather_than_holding(
+        self, wired, clock, config
+    ):
+        service, _, blackboard = wired
+        self._stuck_after_cooling(service, blackboard, clock, config, 400.0)
+        assert service.mode is Mode.DEGRADED_SENSOR
+
+    def test_an_actuator_fault_older_than_its_window_stands(
+        self, wired, clock, config
+    ):
+        """Raised well before the sensor broke, so judged on honest readings:
+        a genuine actuator fault followed by a sensor fault is two faults."""
+        service, _, blackboard = wired
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+
+        def wobble(index):
+            _deliver(blackboard, _reading(clock, value=29.0 + (index % 2) * 0.2))
+
+        window_s = config.detectors.actuator.evaluation_window_s
+        self._tick_for(service, clock, config, window_s + 30.0, wobble)
+        assert DetectorId.D5_ACTUATOR_NO_RESPONSE in {
+            event.detector for event in service.active_faults
+        }
+        self._tick_for(service, clock, config, window_s, wobble)
+        window = config.detectors.stuck_at.window_samples
+        confirm = config.detectors.stuck_at.consecutive_windows
+        self._tick_for(
+            service,
+            clock,
+            config,
+            (window + confirm + 4) * config.loop.sensor_period_s,
+            self._stuck(blackboard, clock, 29.5),
+        )
+        assert {event.subject for event in service.active_faults} == {INDOOR, "ac"}
+
+
+class TestDriftIsNotBlamedForAnActuatorFault:
+    """Regression, seen in the actuator demonstration: D4 raised drift on a
+    healthy sensor four minutes after D5, because the model's expectation of
+    cooling failed on every sample and the residual said so."""
+
+    def _faulted_actuator(self, service, transport, blackboard, clock, config):
+        _deliver(blackboard, _reading(clock, value=29.0))
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+        window_s = config.detectors.actuator.evaluation_window_s
+        for index in range(int(window_s / config.loop.sensor_period_s) + 2):
+            _deliver(blackboard, _reading(clock, value=29.0 + (index % 2) * 0.2))
+            _deliver_estimate(blackboard, clock, residual_c=0.4)
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert DetectorId.D5_ACTUATOR_NO_RESPONSE in {
+            event.detector for event in service.active_faults
+        }
+
+    def test_no_drift_is_raised_while_the_actuator_is_faulted(
+        self, wired, clock, config
+    ):
+        service, transport, blackboard = wired
+        self._faulted_actuator(service, transport, blackboard, clock, config)
+        for index in range(config.detectors.drift.warmup_samples + 120):
+            _deliver(blackboard, _reading(clock, value=29.0 + (index % 2) * 0.2))
+            _deliver_estimate(blackboard, clock, residual_c=0.4)
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert DetectorId.D4_DRIFT not in {
+            event.detector for event in transport.faults()
+        }
+
+    def test_the_mode_stays_on_the_actuator(self, wired, clock, config):
+        service, transport, blackboard = wired
+        self._faulted_actuator(service, transport, blackboard, clock, config)
+        for index in range(config.detectors.drift.warmup_samples + 120):
+            _deliver(blackboard, _reading(clock, value=29.0 + (index % 2) * 0.2))
+            _deliver_estimate(blackboard, clock, residual_c=0.4)
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert service.mode is Mode.DEGRADED_ACTUATOR

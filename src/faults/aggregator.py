@@ -188,6 +188,22 @@ class FaultAggregator:
             )
         return retired
 
+    def retract(self, detector: DetectorId, subject: str) -> FaultEvent | None:
+        """Withdraw one fault at once, without the clear confirmation.
+
+        For a finding whose evidence has been discredited rather than
+        contradicted: the input it was judged on turned out to be faulted.
+        Waiting for it to *clear* would wait for evidence the detector can no
+        longer gather, since it is suspended while that input is untrusted.
+
+        :returns: the retracted fault, or None when it was not active.
+        """
+        entry = self._active.pop((detector, subject), None)
+        if entry is None:
+            return None
+        LOGGER.warning("retracted %s", entry.event.fault_id)
+        return entry.event
+
     def _raise(
         self, key: tuple[DetectorId, str], finding: Finding, now: float
     ) -> FaultEvent:

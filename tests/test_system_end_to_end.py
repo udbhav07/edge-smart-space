@@ -417,3 +417,67 @@ class TestTheLoopSurvivesWhatIsAboveIt:
         started = system.clock.now()
         system.run_for(300.0)
         assert system.clock.now() - started == pytest.approx(300.0)
+
+
+class TestEverySensorFaultRidesThroughOnTheModel:
+    """FR-27 for every sensor fault class, not only the one the demo uses.
+
+    Regression, found by running the system live: the prediction handed to
+    the controller was built from the faulted reading itself, so it restated
+    the fault; a single 999 C sample landing on D5's window was blamed on the
+    air conditioner; and a dropped sensor let D5 judge a window on stale data
+    and escalate to SAFE_HOLD. Each case now degrades on the sensor and stays
+    there, controlling on a prediction that owes nothing to the fault.
+    """
+
+    #: Injected on the D5 evaluation boundary deliberately: that is the timing
+    #: which exposed the out-of-range race.
+    WARMUP_S = 600.0
+    RIDE_S = 1200.0
+
+    def _ride(self, system, kind, magnitude=None):
+        system.run_for(self.WARMUP_S)
+        if magnitude is None:
+            system.injector.inject(INDOOR_TEMPERATURE_ID, kind)
+        else:
+            system.injector.inject(INDOOR_TEMPERATURE_ID, kind, magnitude)
+        system.run_for(self.RIDE_S)
+
+    @pytest.mark.parametrize(
+        ("kind", "magnitude"),
+        [
+            (InjectedFault.OUT_OF_RANGE, 999.0),
+            (InjectedFault.DROPOUT, None),
+            (InjectedFault.STUCK_AT, STUCK_VALUE_C),
+        ],
+    )
+    def test_it_ends_degraded_on_the_sensor(self, system, kind, magnitude):
+        self._ride(system, kind, magnitude)
+        assert system.mode() is Mode.DEGRADED_SENSOR
+
+    @pytest.mark.parametrize(
+        ("kind", "magnitude"),
+        [(InjectedFault.OUT_OF_RANGE, 999.0), (InjectedFault.DROPOUT, None)],
+    )
+    def test_the_air_conditioner_is_never_blamed(self, system, kind, magnitude):
+        self._ride(system, kind, magnitude)
+        assert "ac" not in {event.subject for event in system.faults()}
+
+    def test_the_prediction_owes_nothing_to_an_impossible_reading(self, system):
+        self._ride(system, InjectedFault.OUT_OF_RANGE, 999.0)
+        latest = system.estimates()[-1]
+        assert latest.t_in == 999.0
+        assert abs(latest.t_pred - system.room_temperature_c()) < 10.0
+
+    def test_the_prediction_keeps_moving_through_a_dropout(self, system):
+        self._ride(system, InjectedFault.DROPOUT)
+        predictions = {round(e.t_pred, 6) for e in system.estimates()[-60:]}
+        assert len(predictions) > 1
+
+    def test_control_continues_through_a_dropout(self, system):
+        self._ride(system, InjectedFault.DROPOUT)
+        before = len(system.commands())
+        system.run_for(120.0)
+        issued = system.commands_since(before)
+        assert len(issued) >= 20
+        assert all(command.kind is not CommandKind.HOLD for command in issued)

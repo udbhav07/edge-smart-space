@@ -209,15 +209,36 @@ class TestActuatorFaults:
         state = manager.update([_ACTUATOR_FAULT, _fault()])
         assert state.mode is Mode.SAFE_HOLD
 
-    def test_the_system_does_not_leave_it_by_itself(self, manager):
+    def test_the_system_does_not_leave_it_while_the_fault_stands(self, manager):
         """Section 5.6 returns to NORMAL on an ack restored and a response
-        observed. There is no ack on an open-loop IR path (R-02) and the mode
-        blocks the cooling that would produce a response, so the transition as
-        written is unreachable."""
+        observed. There is no ack on an open-loop IR path (R-02), so while the
+        actuator fault is active the mode holds whatever else changes."""
         manager.update([])
         manager.update([_ACTUATOR_FAULT])
-        manager.update([])
+        manager.update([_ACTUATOR_FAULT])
         assert manager.mode is Mode.DEGRADED_ACTUATOR
+
+    def test_a_withdrawn_actuator_fault_releases_the_mode(self, manager):
+        """Regression: D5 judged on a sensor later found stuck is withdrawn.
+        The mode it caused has nothing holding it, and keeping it would leave
+        FR-27 switched off by a fault that was never real."""
+        manager.update([])
+        manager.update([_ACTUATOR_FAULT])
+        state = manager.update([_fault()])
+        assert state.mode is Mode.DEGRADED_SENSOR
+
+    def test_with_nothing_active_it_returns_to_normal(self, manager):
+        manager.update([])
+        manager.update([_ACTUATOR_FAULT])
+        assert manager.update([]).mode is Mode.NORMAL
+
+    def test_safe_hold_still_needs_an_operator_with_nothing_active(self, manager):
+        """SAFE_HOLD can be entered on a count or a budget, neither of which
+        is a fault that could be withdrawn."""
+        manager.update([])
+        manager.update([_DIVERGENCE])
+        manager.update([])
+        assert manager.mode is Mode.SAFE_HOLD
 
 
 class TestModelDivergence:

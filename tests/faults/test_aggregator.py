@@ -317,3 +317,37 @@ class TestRetiringOnReset:
         aggregator.ingest([_finding()])
         aggregator.retire_all()
         assert aggregator.dominant is None
+
+
+class TestRetracting:
+    """A finding whose input was discredited is withdrawn at once."""
+
+    def test_a_retracted_fault_is_no_longer_active(self, aggregator):
+        aggregator.ingest([_finding()])
+        aggregator.retract(DetectorId.D2_STUCK_AT, SUBJECT)
+        assert aggregator.active == ()
+
+    def test_the_retracted_fault_is_returned_for_withdrawal(self, aggregator):
+        raised = aggregator.ingest([_finding()]).raised[0]
+        assert aggregator.retract(DetectorId.D2_STUCK_AT, SUBJECT) == raised
+
+    def test_retraction_needs_no_clear_confirmation(self, aggregator, clock):
+        aggregator.ingest([_finding()])
+        assert aggregator.retract(DetectorId.D2_STUCK_AT, SUBJECT) is not None
+
+    def test_retracting_an_inactive_fault_returns_none(self, aggregator):
+        assert aggregator.retract(DetectorId.D2_STUCK_AT, SUBJECT) is None
+
+    def test_only_the_named_fault_is_retracted(self, aggregator):
+        aggregator.ingest(
+            [_finding(), _finding(detector=DetectorId.D1_DROPOUT)]
+        )
+        aggregator.retract(DetectorId.D2_STUCK_AT, SUBJECT)
+        assert [event.detector for event in aggregator.active] == [
+            DetectorId.D1_DROPOUT
+        ]
+
+    def test_a_retracted_fault_can_be_raised_again(self, aggregator):
+        aggregator.ingest([_finding()])
+        aggregator.retract(DetectorId.D2_STUCK_AT, SUBJECT)
+        assert len(aggregator.ingest([_finding()]).raised) == 1
