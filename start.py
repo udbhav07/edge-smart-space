@@ -114,6 +114,11 @@ SERVICES = (
         description="Tool executor: local calendar and mock travel bookings",
     ),
     Service(
+        name="reasoning",
+        module="src.reasoning",
+        description="Supervisor agent and assistant (needs the inference server)",
+    ),
+    Service(
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",
