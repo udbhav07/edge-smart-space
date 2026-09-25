@@ -438,3 +438,16 @@ class TestPeakTariff:
         """The shift is on top of what the validator admitted, not a new goal."""
         service, *_ = self._wired_at(config, 19)
         assert service.setpoint_c == config.controller.default_setpoint_c
+
+
+class TestPursuingAPreference:
+    def test_a_distant_request_is_reached_step_by_step(self, wired, clock, config):
+        """ "Make it 20" from 24: V-2 grants 22, and the goal path goes on to 20."""
+        service, transport, blackboard = wired
+        _send_reading(blackboard, clock, 27.0)
+        _send_preference(blackboard, clock, target_c=20.0)
+        assert service.setpoint_c == 22.0
+        for _ in range(int(config.goals.pursue_interval_s / 5.0) + 1):
+            clock.advance(5.0)
+            service.tick()
+        assert service.setpoint_c == 20.0

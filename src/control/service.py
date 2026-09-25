@@ -45,6 +45,7 @@ from src.common.schemas import (
     Command,
     CommandKind,
     Goal,
+    GoalSource,
     Mode,
     ModeState,
     PreferenceHint,
@@ -177,6 +178,8 @@ class ControlService:
 
     def _adopt(self, goal: Goal) -> None:
         verdict = self._goal_validator.validate(goal)
+        if goal.source is GoalSource.PREFERENCE:
+            self._goal_manager.settle(verdict)
         self._blackboard.publish(topics.AUDIT_VALIDATION, verdict)
         self._publish_active_goal(goal)
         LOGGER.info(
@@ -233,6 +236,9 @@ class ControlService:
             return None
 
         self._publish_tariff_if_changed()
+        pursuit = self._goal_manager.next_pursuit(self._mode)
+        if pursuit is not None:
+            self._adopt(pursuit)
         proposed = self._controller.tick(
             measured_c=self._measured_c,
             predicted_c=self._effective_prediction_c(),

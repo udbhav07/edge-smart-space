@@ -7,6 +7,9 @@ import pytest
 from src.common.clock import SimClock
 from src.common.config import load_config
 from src.common.schemas import (
+    ReasonCode,
+    ValidationVerdict,
+    Verdict,
     Comfort,
     Goal,
     GoalSource,
@@ -136,3 +139,55 @@ class TestArbitration:
         manager.from_preference(_hint(clock, target_c=22.0), IN_FORCE_C, Mode.NORMAL)
         operator = _supervisor_goal(clock).model_copy(update={"source": GoalSource.OPERATOR})
         assert manager.admits(operator) is True
+
+
+def _verdict(clock, reason: ReasonCode) -> ValidationVerdict:
+    verdict = Verdict.ACCEPTED if reason is ReasonCode.NONE else Verdict.CLAMPED
+    applied = 22.0 if reason is ReasonCode.NONE else 24.0
+    return ValidationVerdict(
+        ts=clock.now(),
+        proposed={"setpoint_c": 22.0, "source": "preference"},
+        verdict=verdict,
+        reason=reason,
+        applied={"setpoint_c": applied},
+    )
+
+
+class TestPursuit:
+    """A part-granted preference is proposed again until it is settled."""
+
+    def _asked(self, manager, clock):
+        return manager.from_preference(_hint(clock, target_c=22.0), 26.0, Mode.NORMAL)
+
+    def test_a_rate_limited_preference_is_pursued(self, manager, clock, config):
+        self._asked(manager, clock)
+        manager.settle(_verdict(clock, ReasonCode.RATE_LIMIT))
+        clock.advance(config.pursue_interval_s)
+        assert manager.next_pursuit(Mode.NORMAL).setpoint_c == 22.0
+
+    def test_pursuit_waits_for_its_interval(self, manager, clock, config):
+        self._asked(manager, clock)
+        manager.settle(_verdict(clock, ReasonCode.RATE_LIMIT))
+        clock.advance(config.pursue_interval_s - 1.0)
+        assert manager.next_pursuit(Mode.NORMAL) is None
+
+    def test_each_pursuit_is_a_fresh_proposal(self, manager, clock, config):
+        first = self._asked(manager, clock)
+        manager.settle(_verdict(clock, ReasonCode.RATE_LIMIT))
+        clock.advance(config.pursue_interval_s)
+        assert manager.next_pursuit(Mode.NORMAL).ts > first.ts
+
+    @pytest.mark.parametrize(
+        "reason", [ReasonCode.NONE, ReasonCode.BOUND_CLAMP, ReasonCode.STALE_GOAL]
+    )
+    def test_anything_but_a_rate_limit_settles_it(self, manager, clock, config, reason):
+        self._asked(manager, clock)
+        manager.settle(_verdict(clock, reason))
+        clock.advance(config.pursue_interval_s)
+        assert manager.next_pursuit(Mode.NORMAL) is None
+
+    def test_a_lapsed_preference_is_no_longer_pursued(self, manager, clock, config):
+        self._asked(manager, clock)
+        manager.settle(_verdict(clock, ReasonCode.RATE_LIMIT))
+        clock.advance(config.preference_ttl_s + 1.0)
+        assert manager.next_pursuit(Mode.NORMAL) is None

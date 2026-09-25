@@ -55,6 +55,15 @@ def describe_time(moment: datetime) -> str:
     return f"{moment:%H:%M} on {moment:%A} {moment.day} {moment:%B}"
 
 
+def describe_day(moment: datetime) -> str:
+    """A date the way a person says it: ``Thursday 1 October``, and the time
+    too only if one was given -- a flight on a day is not a flight at midnight."""
+    day = f"{moment:%A} {moment.day} {moment:%B}"
+    if moment.hour or moment.minute:
+        return f"{day} at {moment:%H:%M}"
+    return day
+
+
 class LocalCalendar:
     """Calendar entries in a local file."""
 

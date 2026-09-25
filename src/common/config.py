@@ -501,6 +501,11 @@ class GoalsConfig(_Section):
         ge=0.0,
         description="Seconds an occupant's preference outranks the supervisor",
     )
+    pursue_interval_s: float = Field(
+        gt=0.0,
+        description="Seconds between re-proposals of a preference the rate "
+        "limit has only part-granted",
+    )
 
 
 class SupervisorConfig(_Section):
@@ -517,6 +522,11 @@ class SupervisorConfig(_Section):
         ge=0.0,
         description="Minimum seconds between event-triggered cycles, so a "
         "flapping sensor cannot make the supervisor run every tick",
+    )
+    occupied_setpoint_c: float = Field(description="Policy target while occupied")
+    vacant_setpoint_c: float = Field(description="Policy target once set back")
+    setback_after_s: float = Field(
+        ge=0.0, description="Seconds empty before the vacant target applies"
     )
 
 

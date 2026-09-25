@@ -13,7 +13,7 @@ import logging
 from collections.abc import Mapping
 from datetime import datetime
 
-from src.assistance.providers.local_calendar import describe_time
+from src.assistance.providers.local_calendar import describe_day
 from src.common.tools import BOOK_TRAVEL, ArgumentValue, ProviderOutcome
 
 LOGGER = logging.getLogger(__name__)
@@ -51,12 +51,19 @@ class MockTravel:
         )
         kind = str(arguments["kind"])
         destination = str(arguments["destination"])
-        what = f"{kind} to {destination}" if kind == "flight" else f"hotel in {destination}"
+        origin = str(arguments.get("origin") or "").strip()
+        if kind == "flight":
+            what = f"flight {'from ' + origin + ' ' if origin else ''}to {destination}"
+        else:
+            what = f"hotel in {destination}"
+            nights = arguments.get("nights")
+            if nights:
+                what += f" for {nights} night{'s' if int(nights) != 1 else ''}"
         LOGGER.info("MOCK booking %s: %s on %s", reference, what, departs.date())
         return ProviderOutcome(
             message=(
                 f"Mock booking {reference} recorded for a {what} on "
-                f"{describe_time(departs)}. This is a mock: no real "
+                f"{describe_day(departs)}. This is a mock: no real "
                 f"reservation was made."
             ),
             detail={"reference": reference, "kind": kind, "destination": destination},

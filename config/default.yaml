@@ -219,6 +219,11 @@ goals:
   # Without a hold, the next supervisory cycle would undo what the occupant
   # just asked for, and the system would appear to ignore them.
   preference_hold_s: 3600.0
+  # V-2 grants at most max_step_c per proposal, so "make it 22" from 26 is
+  # granted 24 and would stop there. A part-granted preference is proposed
+  # again this often -- each time a fresh invocation the validator judges --
+  # until it is reached, meets a bound, or lapses.
+  pursue_interval_s: 60.0
 
 # FR-16. Peak pricing, as a local-time timetable. During peak the setpoint in
 # force rises by the offset -- never past the validator's upper bound.
@@ -233,6 +238,12 @@ supervisor:
   max_steps: 6              # four reads and a proposal, with one to spare
   goal_ttl_s: 900.0         # a proposal outlives three cycles, then lapses
   event_holdoff_s: 60.0     # a flapping sensor cannot trigger every tick
+  # The policy the supervisor is asked to apply. Stated to the model as
+  # numbers, and the occupancy tool reports whether the setback applies, so a
+  # 7B model reads the decision rather than doing arithmetic.
+  occupied_setpoint_c: 24.0
+  vacant_setpoint_c: 27.0
+  setback_after_s: 600.0
 
 # Adversarial by default. Every value here is switched on, not off: a kind
 # simulator makes simulated success predict nothing about hardware.

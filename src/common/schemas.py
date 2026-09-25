@@ -473,6 +473,15 @@ class Intent(str, Enum):
     NONE = "none"
 
 
+#: Subjects a spoken preference may name and still be about the temperature.
+#: Empty covers the common case of the model leaving it blank. One definition,
+#: read by the goal path and by the assistant, so the two cannot disagree about
+#: whether a request will produce a setpoint.
+THERMAL_SUBJECTS = frozenset(
+    {"", "temperature", "heat", "cooling", "air conditioner", "ac", "air conditioning"}
+)
+
+
 class PreferenceHint(TimestampedMessage):
     """A spoken preference, forwarded as a supervisory input (FR-53).
 
