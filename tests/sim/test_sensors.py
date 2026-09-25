@@ -302,3 +302,10 @@ class TestBinarySensor:
 
     def test_reports_its_own_id(self, noise, clock):
         assert self._binary(noise, clock).sensor_id == "pir_01"
+
+
+
+def test_a_sensor_refuses_to_be_unresponsive(noise, clock):
+    """An injection a sensor cannot honour must fail loudly, not do nothing."""
+    with pytest.raises(ValueError):
+        _sensor(noise, clock).inject(FaultInjection(kind=InjectedFault.NO_RESPONSE))

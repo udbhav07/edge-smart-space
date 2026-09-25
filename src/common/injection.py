@@ -37,6 +37,10 @@ class InjectedFault(str, Enum):
     DROPOUT = "DROPOUT"
     OUT_OF_RANGE = "OUT_OF_RANGE"
     DRIFT = "DRIFT"
+    #: The actuator accepts every command and cools nothing (FR-24). Applied
+    #: to the unit, not a sensor, so D5 finds it the way it finds a real one:
+    #: from the room not responding, never from an acknowledgement.
+    NO_RESPONSE = "NO_RESPONSE"
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,9 @@ class FaultInjection:
 FAULTS_REQUIRING_MAGNITUDE = frozenset(
     {InjectedFault.STUCK_AT, InjectedFault.OUT_OF_RANGE, InjectedFault.DRIFT}
 )
+
+#: Faults an actuator can be given. It has no reading to freeze or drift.
+ACTUATOR_SUPPORTED_FAULTS = frozenset({InjectedFault.NONE, InjectedFault.NO_RESPONSE})
 
 #: The absence of an injected fault. A sensor in this state still exhibits
 #: whatever nominal imperfection its implementation models.

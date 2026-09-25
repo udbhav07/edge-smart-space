@@ -71,7 +71,13 @@ class SimulatedSensor:
         return self._injection.kind
 
     def inject(self, injection: FaultInjection) -> None:
-        """Begin injecting a fault. Replaces any fault already active."""
+        """Begin injecting a fault. Replaces any fault already active.
+
+        :raises ValueError: for a fault a sensor cannot have. Accepting it
+            and doing nothing would look like a fault the detectors missed.
+        """
+        if injection.kind is InjectedFault.NO_RESPONSE:
+            raise ValueError(f"{self._sensor_id} is a sensor; only an actuator can be unresponsive")
         self._injection = injection
         self._injected_at_ts = self._clock.now()
 

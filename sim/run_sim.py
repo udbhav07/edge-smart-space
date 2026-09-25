@@ -25,7 +25,11 @@ from pathlib import Path
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Bounds, Config, load_config
-from src.common.injection import FaultInjection, InjectedFault
+from src.common.injection import (
+    ACTUATOR_SUPPORTED_FAULTS,
+    FaultInjection,
+    InjectedFault,
+)
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -158,6 +162,25 @@ class RoomSimulator:
             self._last_kind = command.kind
         self._last_ack = self._actuator.command(command.kind, command.setpoint_c)
 
+    def _inject_actuator(self, command: InjectionCommand) -> None:
+        """Break or repair the unit itself (FR-24, FR-31).
+
+        A dead unit keeps accepting commands -- an IR blaster has no idea the
+        compressor failed -- so D5 has to find it from the room.
+        """
+        if command.kind not in ACTUATOR_SUPPORTED_FAULTS:
+            LOGGER.warning(
+                "injection on %s refused: an actuator cannot be %s",
+                command.subject,
+                command.kind.value,
+            )
+            return
+        failed = command.kind is InjectedFault.NO_RESPONSE
+        self._actuator.inject_failure(failed)
+        LOGGER.info(
+            "%s the unit %s", "failing" if failed else "restoring", command.subject
+        )
+
     def _on_injection(self, _topic: str, command: InjectionCommand) -> None:
         """Obey an injection (FR-31).
 
@@ -167,6 +190,9 @@ class RoomSimulator:
         logged rather than ignored: an injection that appears to work and does
         nothing turns a detection trial into a phantom missed detection.
         """
+        if command.subject == topics.AIR_CONDITIONER_ID:
+            self._inject_actuator(command)
+            return
         sensor = self._sensors_by_id().get(command.subject)
         if sensor is None:
             LOGGER.warning(

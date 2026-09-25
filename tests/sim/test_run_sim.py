@@ -310,6 +310,37 @@ class TestInjectionAtLayerOne:
             f"space/inject/{subject}", command.model_dump_json().encode()
         )
 
+    def test_a_dead_unit_cools_nothing(self, quiet_config):
+        """FR-24, FR-31: the actuator fault is injectable like any other."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.NO_RESPONSE)
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=22.0
+        )
+        blackboard.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        start = simulator.room_temperature_c
+        for _ in range(120):
+            simulator.step()
+            clock.advance(quiet_config.loop.sensor_period_s)
+        assert simulator.room_temperature_c >= start
+
+    def test_a_dead_unit_still_reports_what_it_was_told(self, quiet_config):
+        """No acknowledgement betrays it (R-02): D5 must find it from the room."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.NO_RESPONSE)
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=22.0
+        )
+        blackboard.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        simulator.step()
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        assert ActuatorState.model_validate_json(payload).kind is CommandKind.COOL
+
+    def test_a_sensor_fault_on_the_unit_is_refused(self, quiet_config):
+        simulator, _, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.STUCK_AT, 27.0)
+        assert simulator._actuator.is_failed is False
+
     def test_the_simulator_listens_for_injections(self, config):
         simulator, transport, _, blackboard = _running(config)
         blackboard.on_connected()

@@ -27,6 +27,7 @@ import argparse
 import logging
 from pathlib import Path
 
+from src.common import topics
 from src.common.clock import RealClock
 from src.common.config import ConfigError, load_config
 from src.common.injection import FAULTS_REQUIRING_MAGNITUDE, InjectedFault
@@ -46,6 +47,7 @@ FAULT_NAMES: dict[str, InjectedFault] = {
     "dropout": InjectedFault.DROPOUT,
     "range": InjectedFault.OUT_OF_RANGE,
     "drift": InjectedFault.DRIFT,
+    "dead": InjectedFault.NO_RESPONSE,
     "clear": InjectedFault.NONE,
 }
 
@@ -113,7 +115,11 @@ def _list_targets(config) -> str:
         f"  {sensor.sensor_id:<12} {sensor.unit.value:<5} {sensor.description}"
         for sensor in config.sensors.adapters
     )
-    return f"{_describe_faults()}\n\nConfigured sensors:\n{sensors}"
+    actuator = f"  {topics.AIR_CONDITIONER_ID:<12} {'':<5} Air conditioner: 'dead' or 'clear' only"
+    return (
+        f"{_describe_faults()}\n\nConfigured sensors:\n{sensors}"
+        f"\n\nActuator:\n{actuator}"
+    )
 
 
 def _validate(arguments) -> str:
@@ -162,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     known = {sensor.sensor_id for sensor in config.sensors.adapters}
+    known.add(topics.AIR_CONDITIONER_ID)
     if arguments.subject not in known:
         # A warning rather than a refusal: the configured list is what this
         # machine expects, and a subject published by something else is a
