@@ -142,10 +142,30 @@ python -m sim.run_sim --steps 100     # room plant, sensors, actuator
 python -m src.estimation              # online RC identification
 python -m src.control                 # regulatory loop and safety gate
 python -m src.faults                  # fault detector bank (D1-D5) and mode
-python -m src.speech                  # wake word, transcription, reasoning
+python -m src.speech                  # wake word, transcription, Personal Context
+python -m src.reasoning               # supervisor, assistant, fault diagnosis
+python -m src.assistance              # tool executor: local calendar, mock travel
+python -m src.io                      # the real devices, when devices.source is esphome
 ```
 
 Both take `--config` and both stop cleanly on `Ctrl-C`.
+
+### Talking to it without a microphone
+
+```bash
+python -m tools.say "make it 22 degrees"
+python -m tools.say "put a meeting with Ravi on Thursday at 3"
+python -m tools.say "what's on my calendar on Thursday"
+python -m tools.say "book me a flight to Delhi next Monday"   # asks first
+python -m tools.say                                          # a conversation
+```
+
+A stand-in for a voice, not a change to one: it runs the same Personal
+Context call the speech pipeline runs after Whisper and publishes the same
+hint to the same topic, so nothing downstream can tell a typed sentence from
+a spoken one. It prints what the system said back on `space/context/reply`,
+and when a booking needs confirming it plays the console's part. Needs the
+`assistance` and `reasoning` services and the inference server running.
 
 ### Watching what happens
 
@@ -192,6 +212,8 @@ python -m tools.inject temp_01 dropout       # make it go quiet
 python -m tools.inject temp_01 range 999.0   # report something impossible
 python -m tools.inject temp_01 drift 0.01    # 0.01 C per second, invisible per sample
 python -m tools.inject temp_01 clear         # stop injecting
+python -m tools.inject ac dead               # the unit accepts commands and cools nothing
+python -m tools.inject ac clear
 ```
 
 Then watch what the detectors make of it:
@@ -291,29 +313,46 @@ evaluation degenerates into the model predicting itself.
 
 ---
 
+## Recording and replaying
+
+```bash
+python -m tools.record runs/demo.jsonl       # everything on space/#, verbatim
+python -m sim.replay runs/demo.jsonl --speed 10
+```
+
+A replay publishes each message on its original topic, in order and in time,
+taking retain and QoS from the topic table. Run it against a separate broker
+or restrict it with `--only`: replayed onto a live system it feeds it the past.
+
+## Experiments
+
+```bash
+python -m eval.experiments.e1_convergence    # does identification converge?
+python -m eval.experiments.e3_detection      # every fault class, found by its own detector
+python -m eval.experiments.e6_tool_selection # the supervisor against the served model
+```
+
+---
+
 ## Not built yet
 
 Honest about the gaps, so nobody hunts for something that isn't there:
 
-- `src/reasoning/` — the Environmental Supervisor (FR-40, FR-41) and the Fault
-  Diagnosis call (FR-25, FR-43); Personal Context is the only reasoning call
-- a goal manager — spoken preferences reach `space/context/preference` and
-  nothing yet turns them into a proposed setpoint
-- `src/assistance/` — the calendar and mock booking providers behind the tool
-  surface in `src/common/tools.py`, and the local console (FR-54 to FR-58)
-- the tariff offset (FR-16), the reasoning audit log (FR-46), and the
-  recorder and replay (FR-62)
-- `deploy/systemd/` — the unit files that supervise this on the Jetson
-- `eval/` — the baseline thermostat and experiments E2 to E7; only E1 exists
-- drift detection that works at realistic rates — D4 catches drift of about
-  3 C/min and faster and misses slower drift entirely; DESIGN.md §5.5 has the
-  measurements and the reason
+- hardware: nothing has run on the Jetson or the ESPHome nodes yet. The
+  bridge (`src/io/devices.py`) and the systemd units (`deploy/`) exist and are
+  tested against simulated device messages; the node topics in config are
+  placeholders until the nodes are flashed
+- the local console (FR-56 to FR-58) — Week 8; `tools.say` stands in for
+  confirming a booking meanwhile
+- speaker profiles (FR-52) — the speech pipeline is deliberately untouched
+- the baseline thermostat and experiments E2, E4, E5 and E7
+- drift slower than about 0.3 C/min is not separable from a weak unit with
+  one indoor sensor; DESIGN.md section 5.5 has the measurements
 - scheduled excitation (R-01) — under ordinary closed-loop control the model
-  identifies `a3` poorly for its first hour, which limits how long control on
-  prediction stays accurate
+  is poor for its first hour, which limits how long control on prediction
+  stays accurate early in a run
 
-`start.py` only lists services that exist, so its `--help` is the honest
-inventory.
+`start.py --help` lists the services that exist.
 
 ---
 

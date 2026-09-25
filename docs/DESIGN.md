@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.9 |
+| Version | 1.10 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.10 | Weeks 5 and 6, and the gaps of Weeks 1–6 closed. **Week 6:** the Environmental Supervisor (§5.7.2; FR-40, FR-41), the assistant that acts on what the speech pipeline heard (FR-42), the goal path from a spoken preference to a gated setpoint — pursued step by step when V-2 only part-grants it, and outranking the supervisor for `goals.preference_hold_s` with a new `PREFERENCE_HOLD` verdict (§5.4) — the assistance executor with a local calendar and a mock travel desk (§5.7.6; FR-54, FR-55, FR-58, FR-70 to FR-75), and Fault Diagnosis (§6.3; FR-25, FR-43). Every reasoning call is audited (FR-46, FR-63) on `space/audit/reasoning`, and replies go to a new `space/context/reply`. The day an occupant names is resolved from their words, not by the model, and a tool call on the wrong day is corrected (FR-44). **FR-16:** a peak-tariff schedule and a new `space/tariff/state`. **FR-23:** D4 now runs on a horizon residual accumulated once per non-overlapping horizon (§5.5), which exposed and forced a fix of the errors-in-variables bias in §5.2.1 — the ambient gap is measured from `T[k−1]` — with a2's edge crossings weighed by the heat flow they imply before they count toward divergence (§5.2.3); D5 no longer blames the unit for a reading that rose faster than a dead unit allows. A stalled estimate now counts as divergence. **Week 5 software:** `devices.source` selects the simulator or an ESPHome bridge (`python -m src.io`), `deploy/systemd` holds one unit per service, and `start.py` restarts a service that exits (NFR-08). The actuator fault is injectable (`tools.inject ac dead`; FR-31). **FR-62:** `tools.record` and `sim/replay.py`. **E3** and **E6** exist and pass (§8.3). |
 | 1.9 | Defects found by running the whole system live against a broker and a served model. **FR-27 was not what it claimed:** the prediction substituted in `DEGRADED_SENSOR` was one step ahead of the previous *reading*, so it restated the fault — a stuck value, something derived from 999 °C, or a value frozen through a dropout. The estimator now steps the model forward on its own output from the last trusted reading, once per sensor period (§5.2.3). Readings a sensor flags `suspect` are no longer fitted, and the simulated sensors now flag them as the real adapter does. §5.5 gains three more cases of one broken thing being blamed on another: D5 skips suspect readings, is suspended on every tick rather than on reading arrival, and a D5 fault raised within one window of D1–D3 confirming the indoor sensor is withdrawn; D4 is suspended while the actuator is faulted. §5.6: `DEGRADED_ACTUATOR` is released once no actuator fault holds it. §7.1's divergence response is now implemented — `MODEL_DIVERGENCE` reached nothing that decides the mode, and the coefficients were never reset — and a restarted detector bank withdraws faults retained by its predecessor. §8.4's E1 figures were one seed's; they are restated over nine, and `a3` misses its tolerance. Two more found in the final live run: `P0` falls from 100 to 0.01, because near-collinear regressors at startup let the first samples throw the estimate anywhere in the box (live, `a2` = 0.997 within 35 s); and D5 no longer faults a working unit at capacity, which every healthy two-hour run had done. The simulator's actuator state now reports the last state-changing command rather than echoing `MAINTAIN`. |
 | 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
 | 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
@@ -575,6 +576,8 @@ Substituting the steady-state identity `a2 = 1 − a1` into the model and rearra
 T[k+1] − T[k] = a2·(T_out[k] − T[k]) + a3·u[k] + a4·o[k]        a1 := 1 − a2
 ```
 
+**The gap is measured from `T[k−1]` (v1.10).** Differencing removed the attenuation of `a1` but not all of the errors-in-variables bias: `ΔT = T[k+1] − T[k]` and the regressor `T_out − T[k]` still share the noise on `T[k]` with opposite signs. Over nine seeds that left `a2` about 60% high and `a3` about 50% high — invisible in a one-step fit, but enough to bias every multi-step prediction and so to blind D4 (§5.5). The regressor's gap is therefore taken from the reading one step earlier, whose noise is independent; it differs from `T[k]` by one step's movement, about 0.02 °C against a gap of several degrees. Prediction still uses `T[k]`.
+
 Identical physics, the same four coefficients, still linear in the parameters, still ordinary recursive least squares. What changes is that the fit is asked for a small number (`a2` ≈ 0.002) instead of a number near 1, and small coefficients are what survive a noisy regressor. `a1` is then recovered rather than fitted, which makes steady-state consistency **structural**: `a1 + a2 = 1` holds exactly, by construction, instead of being a soft constraint that has to be checked afterwards.
 
 Measured over a 24 h simulated run against a plant with known R and C (E1, §8.3):
@@ -639,7 +642,8 @@ These implement FR-06 and are the difference between "we ran RLS" and "we ran RL
 | Model divergence | A *sustained rate* of meaningful rejections, not a run of them: `MODEL_DIVERGENCE` is raised when at least `divergence_rejection_fraction` of a full `divergence_window_samples` window was rejected. See below. The coefficients are then reset to `θ₀` (§7.1), which also empties the window, so a divergence is announced once. |
 | Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). A reading its own sensor flags `suspect` is never fitted either. Never adapt to bad data. |
 | Prediction on a faulted sensor | While the indoor sensor is faulted, the one-step prediction would be built from the faulted reading and restate it. The model instead steps forward on its own output from the last trusted reading, once per sensor period and independently of readings, since a dropped sensor delivers none. This is what `DEGRADED_SENSOR` controls on (FR-27). |
-| A stalled estimate | **Open.** Because a rejection reverts `P` as well as `θ`, an estimate that lands where every update breaks a bound cannot move again, and if the bound is `a4`'s it is excluded from divergence and nobody is told. Seen live at startup, where the three regressors are nearly collinear. Healthy runs reach 110 consecutive rejections, so a run-length rule needs a window of about 30 minutes; whether a stalled model should then force `SAFE_HOLD` while the sensor is healthy is undecided. |
+| A stalled estimate | Because a rejection reverts `P` as well as `θ`, an estimate that lands where every update breaks a bound cannot move again. A full `divergence_window_samples` of *consecutive* rejections, on any coefficient, is therefore divergence (v1.10). Healthy runs reach at most 11 in a row. |
+| Edge noise on `a2` | `a2` sits unbiased on its lower bound once §5.2.1's gap is taken from `T[k−1]`, and noise crosses it. An `a1`/`a2` rejection counts toward divergence only when the heat flow against the gradient it implies — the excursion times the gap — exceeds `edge_noise_c_per_step`: healthy runs never claim more than 0.083 °C per step, a room warming while cooled claims a median 0.13. `a3` rejections always count. |
 
 ##### Why divergence is a rate and not a run
 
@@ -720,6 +724,10 @@ The validator is the only component permitted to be paranoid. It has no knowledg
 | V-6 Staleness | Reject any goal whose source timestamp is older than 600 s | Retain previous goal. Reason: `STALE_GOAL`. |
 
 Every verdict is published to `space/audit/validation` with the proposal, the verdict, the reason code, and the applied value. A clamped supervisor proposal is a finding, not a failure — it is evidence the gate works, and the review deck should present it that way.
+
+**Ahead of the rules: the goal path (v1.10).** Proposals reach the validator through `src/control/goal_manager.py`, which does two things and neither is a safety rule. It turns a spoken preference into a proposal (FR-53) — a named temperature as named, "cooler" or "warmer" as one `goals.comfort_step_c` — and, because V-2 grants at most one step per invocation, it *pursues* a part-granted preference by proposing it again every `goals.pursue_interval_s` until a verdict other than `RATE_LIMIT` settles it. Each pursuit is a fresh invocation the rules judge, so V-2 still paces it. And it arbitrates: for `goals.preference_hold_s` after an occupant asked for something, a supervisor proposal is refused with verdict `BLOCKED`, reason `PREFERENCE_HOLD`, published like any other verdict so the override is visible. A goal verdict's `proposed` also carries its `source`, so a reply to an occupant can say what became of their own request.
+
+During peak tariff (FR-16) the loop tracks the setpoint in force plus `tariff.peak_offset_c`, clamped to V-1's upper bound; the validated setpoint itself is unchanged.
 
 ### 5.5 Fault Detection
 
@@ -846,18 +854,9 @@ load, or an ambient high enough that a working unit is at capacity and holds
 the room level rather than cooling it. R-04 settles the window and the
 threshold against measured data during bring-up.
 
-**D4 does not detect realistic drift, found at v1.9 and left open.** The
-CUSUM runs on the *one-step* residual, and a one-step prediction is built from
-the previous reading, so a drifting sensor contributes only its per-step
-increment: 0.01 °C/s is 0.05 °C per sample, about 0.26 σ, inside the 0.5 σ
-slack, and nothing accumulates. The adapting model absorbs the rest. Measured
-in simulation after a 30-minute warm-up, D4 found drift of 3 °C/min and faster
-within 50 s and missed 0.06, 0.3 and 0.6 °C/min entirely over 30 minutes — and
-the drifting reading made the room look as though it warmed under cooling, so
-D5 raised an actuator fault instead. A residual over a longer horizon is the
-obvious direction, but its sensitivity is bounded by how far the identified
-model can predict unaided, which is R-01's problem; so this is recorded rather
-than patched.
+**D4 on a horizon residual (v1.10).** D4 once ran on the *one-step* residual, and a one-step prediction is built from the previous reading, so a drifting sensor contributed only its per-step increment — 0.05 °C at 0.01 °C/s, a quarter of the noise, inside the slack — and nothing accumulated: only drift of 3 °C/min or faster was found. The estimator now also predicts each reading from the one `drift_horizon_samples` earlier, through the inputs actually applied, and publishes that *horizon residual* on `ThermalEstimate`. D4 accumulates it once per non-overlapping horizon: consecutive horizon residuals share all but one step and are one piece of evidence, and a CUSUM counting them twelve times alarmed on every healthy run. The thresholds are measured — six healthy four-hour runs peak at 2.0 to 6.3 against 8 — and so is the reach: drift is found in about 2.5 min at 3 °C/min and 8 to 15 min at 0.6 °C/min. Below about 0.3 °C/min it is not separable, with one indoor sensor, from a weak unit, and D5 may name the unit first; that is the limit, stated.
+
+**D5 and a drifting sensor (v1.10).** A dead unit lets the room warm passively toward ambient, at a rate set by its time constant; a drifting sensor rises at any rate. D5 takes the identified `a2`, bounds how far a room with a dead unit could have warmed over the window, and abstains when the reading rose faster than `passive_warming_factor` times that plus `passive_warming_slack_c`: the unit cannot explain the reading, so the reading is D4's to judge.
 
 **A working unit at capacity, found at v1.9.** Near the setpoint a working
 unit cools toward its capacity asymptotically, and every healthy two-hour run
@@ -1427,18 +1426,9 @@ edge-smart-space/
 └── tests/
 ```
 
-Written as of v1.1 and revised at v1.7, the following are specified above but
-**not yet implemented**: `goal_manager.py` (the control service gates a
-proposed goal, but nothing arbitrates between several sources yet),
-`supervisor_agent.py`, `supervisor_tools.py`, `speaker_profile.py` (FR-52),
-`simulated_actuators.py`, the whole of `src/assistance/`, `docs/adr/`, and the
-whole of `deploy/`. They are listed because they are the design, and named here so the
-gap between the document and the tree is explicit rather than discovered.
+As of v1.10 the following are specified above but **not yet implemented**: `speaker_profile.py` (FR-52) — the speech pipeline is left untouched until it is re-verified on the microphone — `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, and `deploy/esphome/` (node firmware is written at bring-up). They are named so the gap is explicit.
 
-`src/common/tools.py` exists as of v1.5; the providers it declares a Protocol
-for do not. That is the intended order — the contract is what the reasoning
-layer and the executor are both written against, so it is settled first and
-the calendar can then be written without renegotiating anything.
+Added beyond the v1.1 layout, as of v1.10: `src/reasoning/` holds `supervisor_agent.py`, `supervisor_tools.py`, `assistant.py` (acting on what the speech pipeline heard), `diagnosis.py` (§6.3), `chat.py` (one timed, counted completion) and `dates.py` (the day an occupant named); `src/control/goal_manager.py`; `src/assistance/` with `executor.py`, `providers/local_calendar.py` and `providers/mock_travel.py`; `src/io/devices.py` with `python -m src.io` (Week 5); `src/common/tariff.py`; `deploy/systemd/`; `sim/replay.py`; `tools/say.py` (a typed stand-in for a voice, publishing exactly what the speech pipeline does) and `tools/record.py`; and `eval/system.py` with E3 and E6.
 
 **`src/reasoning/` must not import `src/assistance/`.** It is the same rule
 that keeps Layer 2 out of `src/io/`, for the same reason: the moment the
@@ -1757,21 +1747,12 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 
    | Coefficient | Tolerance | Measured, 24 h, identifiable plant, nine seeds (median / worst) |
    |---|---|---|
-   | `a1` | 0.01 | 0.0015 / 0.0021 |
-   | `a2` | 0.01 | 0.0015 / 0.0021 |
-   | `a3` | 0.005 | **0.0094 / 0.0113 — misses** |
-   | `a4` | 0.05 | 0.0092 / 0.0158 |
+   | `a1` | 0.01 | 0.0005 / 0.0006 |
+   | `a2` | 0.01 | 0.0005 / 0.0006 |
+   | `a3` | 0.005 | 0.0023 / 0.0053 |
+   | `a4` | 0.05 | 0.0021 / 0.0055 |
 
-   Until v1.9 this column held one seed's run, and that seed happened to put
-   `a3` at 0.00013. Over nine it is overestimated by about half, consistently.
-   The cause is errors-in-variables bias that §5.2.1's reformulation reduced
-   but did not remove: `ΔT = T[k+1] − T[k]` and the regressor `T_out − T[k]`
-   share the noise on `T[k]` with opposite signs. Taking the ambient gap from
-   `T[k−1]` instead removes it — `a3`'s median error falls to about 0.002 —
-   but leaves `a2` unbiased at 0.0024 against a bound of zero, and the
-   resulting rejections trip §5.2.3's divergence rule. Fixing it is a choice
-   between the identification form and the divergence rule, and is left open
-   rather than made quietly.
+   Until v1.9 this column held one seed's run, which happened to put `a3` at 0.00013; over nine seeds `a3` was overestimated by about half. v1.10 removed the errors-in-variables bias behind it (§5.2.1). The median now meets every tolerance; `a3`'s worst case, 0.0053 on two seeds of nine, is just outside 0.005 and is reported rather than rounded away. No run diverged.
 
    `a4` is loose deliberately and is the weakest of the four. Occupancy gain is around 0.0008 for a single occupant, far below the sensor noise floor, and no formulation identifies it well at that signal level (§5.2.1). It contributes roughly 0.03 °C to a prediction, so the error is affordable; stating a tight tolerance nobody can meet would be worse than stating a loose one honestly.
 3. Every injected fault class is detected in a clear majority of trials, with false-positive rate on fault-free runs below a stated bound (E3).
