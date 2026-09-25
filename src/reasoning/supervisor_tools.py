@@ -282,7 +282,13 @@ class SupervisorState:
         :raises ToolArgumentError: if the arguments fail the declaration.
         :raises SemanticRejection: if they parse and make no sense.
         """
-        accepted = PROPOSE_SETPOINT.validate_arguments(dict(arguments))
+        arguments = dict(arguments)
+        if not str(arguments.get("mode") or "").strip():
+            # The mode can only ever be restated, so a blank one is
+            # unambiguous; seen live on a fault-confirmation cycle, where it
+            # discarded an otherwise correct proposal.
+            arguments["mode"] = self._mode.mode.value
+        accepted = PROPOSE_SETPOINT.validate_arguments(arguments)
         setpoint_c = float(accepted["setpoint_c"])
         if not math.isfinite(setpoint_c):
             raise SemanticRejection(f"setpoint {setpoint_c!r} is not a temperature")

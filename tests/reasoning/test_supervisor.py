@@ -248,3 +248,26 @@ class TestTheAudit:
         assert record.trigger == "startup"
         assert record.tool_calls[-1] == "propose_setpoint"
         assert record.latency_s == 3.0
+
+
+
+class TestABlankModeIsTheModeInForce:
+    """Live: the model left mode empty on a fault cycle and a correct
+    proposal was discarded. A blank can only mean 'as it is'."""
+
+    def test_a_blank_mode_is_read_as_the_current_one(self, config):
+        chat = ScriptedChat(*_cycle(("setpoint_c", 25.0), ("mode", ""), ("rationale", "fault active")))
+        room = Room(config, chat)
+        room.estimate()
+        room.mode(Mode.DEGRADED_SENSOR, faults=("f_1",))
+        room.supervisor.maybe_run()
+        goals = room.published(topics.GOAL_PROPOSED, Goal)
+        assert [goal.mode for goal in goals] == [Mode.DEGRADED_SENSOR]
+
+    def test_a_wrong_mode_is_still_discarded(self, config):
+        chat = ScriptedChat(*_cycle(("setpoint_c", 25.0), ("mode", "NORMAL"), ("rationale", "x")))
+        room = Room(config, chat)
+        room.estimate()
+        room.mode(Mode.DEGRADED_SENSOR, faults=("f_1",))
+        room.supervisor.maybe_run()
+        assert room.published(topics.GOAL_PROPOSED, Goal) == []
