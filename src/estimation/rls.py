@@ -76,6 +76,16 @@ _FULL_CONFIDENCE = 1.0
 #: worth refusing the update over; it is not evidence the model is wrong.
 _NON_DIAGNOSTIC_REJECTIONS = frozenset({("a4",)})
 
+#: Rejections that are edge noise when what they imply is small. a2 is 0.0024
+#: against a bound of zero and drags a1 = 1 - a2 with it; once the
+#: identification stopped biasing a2 upward, noise crossed that edge
+#: routinely. How far a2 crossed is not the measure -- with a large gap a tiny
+#: a2 explains anything -- so the excursion is weighed by the gap: the heat
+#: flow against the gradient the estimate claims, in C per step. Healthy runs
+#: never claimed more than 0.083; a room warming while cooled claims a median
+#: 0.13. a3 is never exempt.
+_EDGE_REJECTIONS = frozenset({("a1", "a2"), ("a1", "a2", "a4")})
+
 
 class UpdateStatus(str, Enum):
     """What happened to the parameter vector on one sample."""
@@ -116,6 +126,8 @@ class ThermalEstimator:
         self._theta = np.array(config.initial_theta, dtype=float)
         self._covariance = np.eye(IDENTIFIED_COUNT) * config.initial_covariance
         self._frozen = False
+        self._edge_noise = False
+        self._last_gap_c = 0.0
         self._consecutive_rejections = 0
         self._samples_since_reset = 0
         self._magnitudes: deque[float] = deque(
@@ -251,6 +263,7 @@ class ThermalEstimator:
         previous_covariance = self._covariance.copy()
 
         phi = regressor.as_array()
+        self._last_gap_c = regressor.ambient_gap_c
         forgetting = self._config.forgetting_factor
         covariance_phi = self._covariance @ phi
         denominator = forgetting + float(phi @ covariance_phi)
@@ -291,6 +304,12 @@ class ThermalEstimator:
         """
         offenders = implausible_coefficients(
             candidate, self._config.coefficient_bounds
+        )
+        excursion = self._config.bounds_a2.low - full_coefficients(candidate)[1]
+        implied_c = max(0.0, excursion) * abs(self._last_gap_c)
+        self._edge_noise = (
+            offenders in _EDGE_REJECTIONS
+            and implied_c <= self._config.edge_noise_c_per_step
         )
         self._theta = previous_theta
         self._covariance = previous_covariance
@@ -347,7 +366,9 @@ class ThermalEstimator:
         diagnostic = (
             status is UpdateStatus.REJECTED
             and rejected_coefficients not in _NON_DIAGNOSTIC_REJECTIONS
+            and not self._edge_noise
         )
+        self._edge_noise = False
         self._recent_rejections.append(diagnostic)
 
     @property

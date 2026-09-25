@@ -490,3 +490,28 @@ class TestEverySensorFaultRidesThroughOnTheModel:
         issued = system.commands_since(before)
         assert len(issued) >= 20
         assert all(command.kind is not CommandKind.HOLD for command in issued)
+
+
+class TestDriftIsFoundAndNamed:
+    """FR-23 end to end, which nothing tested until the detector had been
+    shown blind to it: a one-step residual never accumulated a realistic
+    drift, and a drifting reading was blamed on the air conditioner."""
+
+    def _drift(self, system, rate_c_per_s, ride_s):
+        system.run_for(1800.0)
+        system.injector.inject(INDOOR_TEMPERATURE_ID, InjectedFault.DRIFT, rate_c_per_s)
+        system.run_for(ride_s)
+        return {event.detector.value for event in system.faults()}
+
+    def test_a_fast_drift_is_found_within_five_minutes(self, system):
+        assert "D4_DRIFT" in self._drift(system, 0.05, 300.0)
+
+    def test_a_drift_of_0_6_c_per_minute_is_found_within_twenty(self, system):
+        assert "D4_DRIFT" in self._drift(system, 0.01, 1200.0)
+
+    def test_the_air_conditioner_is_not_blamed_for_it(self, system):
+        assert "D5_ACTUATOR_NO_RESPONSE" not in self._drift(system, 0.01, 1200.0)
+
+    def test_the_system_degrades_on_the_sensor(self, system):
+        self._drift(system, 0.01, 1200.0)
+        assert system.mode() is Mode.DEGRADED_SENSOR

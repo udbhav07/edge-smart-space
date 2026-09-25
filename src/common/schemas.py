@@ -262,6 +262,14 @@ class ThermalEstimate(TimestampedMessage):
         ge=0.0, le=1.0, description="Derived from trace(P). Not a probability."
     )
     adaptation: AdaptationState
+    horizon_residual: float = Field(
+        default=0.0,
+        description="Reading minus the model's prediction of it from the reading "
+        "drift_horizon_samples earlier; what D4 accumulates (FR-23)",
+    )
+    horizon_residual_sigma: float = Field(
+        default=0.0, ge=0.0, description="Spread of recent horizon residuals; 0 until measured"
+    )
 
     @model_validator(mode="after")
     def _residual_agrees_with_the_values_it_is_derived_from(self) -> ThermalEstimate:

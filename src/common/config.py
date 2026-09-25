@@ -125,6 +125,18 @@ class EstimatorConfig(_Section):
     excitation_window_samples: int = Field(
         gt=1, description="Samples over which regressor variation is judged"
     )
+    edge_noise_c_per_step: float = Field(
+        ge=0.0,
+        description="Heat flow against the gradient, in C per step, an a2 "
+        "rejection may imply and still count as edge noise, not divergence",
+    )
+    drift_horizon_samples: int = Field(
+        gt=0,
+        description="Steps over which the horizon residual D4 uses is predicted",
+    )
+    horizon_sigma_window_samples: int = Field(
+        gt=1, description="Horizon residuals kept to measure their spread"
+    )
     residual_sigma_window_samples: int = Field(
         gt=1, description="Samples backing the published residual_sigma"
     )
@@ -309,6 +321,14 @@ class ActuatorDetectorConfig(_Section):
         gt=0.0,
         description="Ambient minus room, in C, beyond which a working unit may "
         "be at capacity and hold the room level; there only warming is a fault",
+    )
+    passive_warming_factor: float = Field(
+        ge=1.0,
+        description="How far beyond the fastest a room with a dead unit could "
+        "warm a reading may rise before the sensor, not the unit, is suspected",
+    )
+    passive_warming_slack_c: float = Field(
+        ge=0.0, description="Added to that bound, for noise and unmodelled gains, in C"
     )
 
 

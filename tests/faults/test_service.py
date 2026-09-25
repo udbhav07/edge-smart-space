@@ -440,7 +440,7 @@ class TestDriftWiring:
         """Past the warm-up first: the detector ignores the samples taken
         while the model is still converging."""
         service, transport, blackboard = wired
-        for index in range(config.detectors.drift.warmup_samples + 30):
+        for index in range(config.detectors.drift.warmup_samples + 12 * 12):
             _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
             _deliver_estimate(blackboard, clock, residual_c=0.3)
             service.tick()
@@ -450,7 +450,7 @@ class TestDriftWiring:
 
     def test_the_drift_fault_names_the_indoor_sensor(self, wired, clock, config):
         service, transport, blackboard = wired
-        for index in range(config.detectors.drift.warmup_samples + 30):
+        for index in range(config.detectors.drift.warmup_samples + 12 * 12):
             _deliver(blackboard, _reading(clock, value=27.4 + (index % 2) * 0.2))
             _deliver_estimate(blackboard, clock, residual_c=0.3)
             service.tick()

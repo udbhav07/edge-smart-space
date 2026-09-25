@@ -415,3 +415,29 @@ class TestResetAndRestore:
             np.eye(3) * config.max_covariance_trace,
         )
         assert estimator.trace <= config.max_covariance_trace * 1.0001
+
+
+
+class TestEdgeNoiseIsNotDivergence:
+    """a2 sits on its bound; crossing it slightly is refused, not counted."""
+
+    def test_a_small_implied_flow_is_not_diagnostic(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        estimator._last_gap_c = 1.0
+        candidate = np.array([-0.01, -0.02, 0.001])
+        estimator._reject(candidate, estimator.theta, estimator.covariance, 27.0, 0.0)
+        assert estimator._recent_rejections[-1] is False
+
+    def test_a_large_implied_flow_is_diagnostic(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        estimator._last_gap_c = 10.0
+        candidate = np.array([-0.05, -0.02, 0.001])
+        estimator._reject(candidate, estimator.theta, estimator.covariance, 27.0, 0.0)
+        assert estimator._recent_rejections[-1] is True
+
+    def test_an_a3_rejection_is_never_edge_noise(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        estimator._last_gap_c = 0.1
+        candidate = np.array([0.002, 0.5, 0.001])
+        estimator._reject(candidate, estimator.theta, estimator.covariance, 27.0, 0.0)
+        assert estimator._recent_rejections[-1] is True

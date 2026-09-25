@@ -30,6 +30,8 @@ rather than readings drive it because a dropped sensor delivers no readings.
 from __future__ import annotations
 
 import logging
+import statistics
+from collections import deque
 
 from src.common import topics
 from src.common.clock import Clock
@@ -92,6 +94,9 @@ class ThermalEstimatorService:
         self._store = store
 
         self._indoor_c: float | None = None
+        #: The reading before ``_indoor_c``, when the two were one step apart:
+        #: the instrument the ambient gap is measured from.
+        self._earlier_c: float | None = None
         self._indoor_ts: float | None = None
         self._outdoor_c: float | None = None
         self._command = COOLING_OFF
@@ -106,6 +111,16 @@ class ThermalEstimatorService:
         #: The latest indoor value heard, trusted or not. Only published as
         #: t_in while running open loop, never fitted.
         self._last_heard_c: float | None = None
+        #: Inputs of the last contiguous trusted steps, for the horizon
+        #: residual D4 uses (FR-23). Emptied at any gap: a horizon spanning
+        #: one would predict across an interval the model never saw.
+        self._horizon: deque[Regressor] = deque(
+            maxlen=config.estimator.drift_horizon_samples
+        )
+        self._horizon_residuals: deque[float] = deque(
+            maxlen=config.estimator.horizon_sigma_window_samples
+        )
+        self._horizon_residual = 0.0
 
     # --- wiring -------------------------------------------------------
 
@@ -185,6 +200,8 @@ class ThermalEstimatorService:
             self._open_loop_c = None
             # The last trusted reading predates the fault. Pairing it with the
             # first reading after would fit an interval the model never saw.
+            self._horizon.clear()
+            self._earlier_c = None
             self._indoor_c = None
             self._indoor_ts = None
             LOGGER.info("indoor sensor trusted again; predicting from readings")
@@ -234,6 +251,7 @@ class ThermalEstimatorService:
             # The sensor is faulted; tick() is predicting without it.
             return
         if reading.quality is not Quality.OK:
+            self._horizon.clear()
             # Flagged by its own sensor. Kept out of the fit, the residual
             # window and the anchor alike; the interval check then refuses
             # the next pair, since it spans the gap this leaves.
@@ -241,28 +259,65 @@ class ThermalEstimatorService:
             LOGGER.debug("refusing a %s indoor reading", reading.quality.value)
             return
 
+        earlier_c = self._earlier_c
         previous_c, previous_ts = self._indoor_c, self._indoor_ts
         self._indoor_c, self._indoor_ts = reading.value, reading.ts
+        self._earlier_c = None
 
         if previous_c is None or previous_ts is None or self._outdoor_c is None:
             return
 
         if not self._interval_is_usable(previous_ts, reading.ts):
             self._skipped_pairs += 1
+            self._horizon.clear()
             return
+        # A usable pair makes the previous reading a usable instrument for
+        # the next one: one step earlier, on a uniform step.
+        self._earlier_c = previous_c
 
         regressor = Regressor(
             indoor_c=previous_c,
             outdoor_c=self._outdoor_c,
             command=self._command,
             occupancy=self._occupancy,
+            gap_indoor_c=earlier_c,
         )
         result = self._estimator.update(regressor, reading.value)
+        self._horizon.append(regressor)
+        self._measure_horizon(reading.value)
         self._publish(result, reading.value)
         self._maybe_persist()
         if result.diverged:
             self._publish_divergence(result)
             self._restart_from_prior()
+
+    def _measure_horizon(self, measured_c: float) -> None:
+        """Predict this reading from the one a horizon ago, through the
+        inputs actually applied since, and keep the error (FR-23).
+
+        Once the horizon is full; until then the last value stands and D4 is
+        still in its warm-up, which is far longer than any horizon.
+        """
+        if len(self._horizon) < self._horizon.maxlen:
+            return
+        predicted_c = self._horizon[0].indoor_c
+        for step in self._horizon:
+            predicted_c = self._estimator.predict(
+                Regressor(
+                    indoor_c=predicted_c,
+                    outdoor_c=step.outdoor_c,
+                    command=step.command,
+                    occupancy=step.occupancy,
+                )
+            )
+        self._horizon_residual = measured_c - predicted_c
+        self._horizon_residuals.append(self._horizon_residual)
+
+    @property
+    def horizon_residual_sigma(self) -> float:
+        if len(self._horizon_residuals) < 2:
+            return 0.0
+        return float(statistics.pstdev(self._horizon_residuals))
 
     def tick(self) -> ThermalEstimate | None:
         """Advance the open-loop prediction one model step (FR-27).
@@ -322,6 +377,8 @@ class ThermalEstimatorService:
             residual_sigma=self._estimator.residual_sigma,
             model_confidence=self._estimator.model_confidence,
             adaptation=self._estimator.adaptation,
+            horizon_residual=self._horizon_residual,
+            horizon_residual_sigma=self.horizon_residual_sigma,
         )
         self._blackboard.publish(topics.ESTIMATE_THERMAL, estimate)
         self._blackboard.publish(

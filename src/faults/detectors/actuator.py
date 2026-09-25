@@ -48,6 +48,7 @@ reading in it, which cuts that noise to about 0.05 C and needs no tunable.
 
 from __future__ import annotations
 
+import math
 from collections import deque
 
 from src.common.clock import Clock
@@ -81,17 +82,20 @@ class ActuatorResponseDetector:
         subject: str,
         config: ActuatorDetectorConfig,
         clock: Clock,
+        sample_period_s: float = 5.0,
     ) -> None:
         if not subject:
             raise ValueError("a detector must name the subject it watches")
         self._subject = subject
         self._config = config
         self._clock = clock
+        self._sample_period_s = sample_period_s
         self._cooling = False
         self._started_s: float | None = None
         self._start_temperature_c: float | None = None
         self._latest_temperature_c: float | None = None
         self._ambient_c: float | None = None
+        self._coupling: float | None = None
         self._window: deque[tuple[float, float]] = deque(maxlen=_MAX_WINDOW_READINGS)
 
     @property
@@ -131,6 +135,15 @@ class ActuatorResponseDetector:
             self._start_temperature_c = reading.value
             self._started_s = self._clock.monotonic()
         self._window.append((self._clock.monotonic(), reading.value))
+
+    def observe_coupling(self, a2: float) -> None:
+        """Note the identified ambient coupling, a2, per sample (FR-23, FR-24).
+
+        It sets how fast a room with a dead unit can warm, which is what tells
+        a failed unit from a sensor drifting upward. Ignored unless physical.
+        """
+        if 0.0 < a2 < 1.0:
+            self._coupling = a2
 
     def observe_ambient(self, ambient_c: float) -> None:
         """Note the outdoor temperature, which decides whether the unit may be
@@ -177,7 +190,31 @@ class ActuatorResponseDetector:
             self._anchor_window()
             return self._finding(Judgment.CLEAR, cooled_c, elapsed_s)
 
+        bound_c = self._passive_warming_bound_c(elapsed_s)
+        if bound_c is not None and -cooled_c > bound_c:
+            # Faster than any room with a dead unit could warm: the unit
+            # cannot explain the reading, so the reading is the suspect, and
+            # judging it is D4's job. Blaming the unit here was how a drifting
+            # sensor ended up diagnosed as a failed air conditioner.
+            return self._finding(Judgment.UNKNOWN, cooled_c, elapsed_s)
         return self._finding(Judgment.FAULTED, cooled_c, elapsed_s)
+
+    def _passive_warming_bound_c(self, elapsed_s: float) -> float | None:
+        """The most a room with a dead unit could have warmed over the window,
+        with the configured allowance; None without the model or ambient."""
+        if (
+            self._coupling is None
+            or self._ambient_c is None
+            or self._start_temperature_c is None
+        ):
+            return None
+        time_constant_s = -self._sample_period_s / math.log(1.0 - self._coupling)
+        gap_c = max(0.0, self._ambient_c - self._start_temperature_c)
+        passive_c = gap_c * (1.0 - math.exp(-elapsed_s / time_constant_s))
+        return (
+            self._config.passive_warming_factor * passive_c
+            + self._config.passive_warming_slack_c
+        )
 
     def _required_cooling_c(self) -> float:
         """How much the room must have cooled for the unit to count as working.

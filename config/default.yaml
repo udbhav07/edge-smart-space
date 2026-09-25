@@ -44,6 +44,20 @@ estimator:
   occupancy_sensor_id: pir_01
   excitation_window_samples: 20
   residual_sigma_window_samples: 60
+  # FR-23. A one-step residual sees a drifting sensor only by its increment
+  # per sample -- 0.05 C at 0.01 C/s, a quarter of the noise -- so D4 never
+  # accumulated anything. Predicting each reading from the one this many
+  # samples earlier shows the same drift as the whole offset built up over
+  # the horizon (0.6 C over 60 s), while a healthy model's one-minute error
+  # stays small.
+  drift_horizon_samples: 12
+  # a2 sits on its lower bound and noise crosses it. A crossing is weighed by
+  # the gap, as the heat flow against the gradient it claims: healthy runs
+  # never claimed more than 0.083 C per step, a room warming while cooled a
+  # median 0.13. Below this the rejection is refused but not counted toward
+  # divergence (section 5.2.3).
+  edge_noise_c_per_step: 0.1
+  horizon_sigma_window_samples: 240
   sample_interval_tolerance: 0.4   # +/-40% of the nominal period (A-02)
   # Plausibility box, section 5.2.1. a3 stays negative: an estimate crossing
   # zero claims the air conditioner heats the room.
@@ -91,8 +105,13 @@ detectors:
   # sensor. R-04 re-derives both from measured sigma during bring-up; these are
   # the textbook starting pair.
   drift:
-    slack_sigma: 0.5              # k: drift smaller than this is absorbed, not accumulated
-    threshold_sigma: 5.0          # h: cumulative sum at which drift is called
+    # Measured on the horizon residual, accumulated once per non-overlapping
+    # horizon (FR-23). Six healthy four-hour runs peaked at 2.0 to 6.3; drift
+    # was found in 2-3 min at 3 C/min, 8-16 min at 0.6 C/min, 25-28 min at
+    # 0.18 C/min, and not within 30 min at 0.06 C/min -- the floor, set by how
+    # far the identified model can predict unaided. R-04 re-derives these.
+    slack_sigma: 1.0              # k: drift smaller than this is absorbed, not accumulated
+    threshold_sigma: 8.0          # h: cumulative sum at which drift is called
     min_residual_sigma_c: 0.02    # Below this the noise floor is not characterised yet
     # No single sample may carry the test on its own. A cumulative test is
     # meant to be driven by persistence, not by magnitude; without a cap one
@@ -122,6 +141,12 @@ detectors:
     # min_cooling_c is a fault. Within it the room must still cool. Derived
     # from the simulated plant's capacity; R-04 re-derives it on hardware.
     capacity_gap_c: 4.0
+    # A dead unit lets the room warm passively toward ambient, at a rate set by
+    # its time constant; a drifting sensor rises at any rate. A reading that
+    # rose faster than this multiple of the passive bound, plus the slack, is
+    # not the unit's doing, and D5 leaves it to D4 (FR-23, FR-24).
+    passive_warming_factor: 1.5
+    passive_warming_slack_c: 0.5
 
 mode:
   degraded_sensor_budget_s: 1800.0   # Section 7.2; E4 tests whether this is right

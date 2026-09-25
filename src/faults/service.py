@@ -35,6 +35,7 @@ from src.common.clock import Clock
 from src.common.config import Bounds, Config, SensorConfig
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    Coefficients,
     Command,
     DetectorId,
     FaultEvent,
@@ -169,6 +170,9 @@ class DetectorBankService:
             topics.ESTIMATE_THERMAL, ThermalEstimate, self._on_estimate
         )
         self._blackboard.subscribe(
+            topics.ESTIMATE_COEFFICIENTS, Coefficients, self._on_coefficients
+        )
+        self._blackboard.subscribe(
             topics.ACTUATOR_COMMAND, Command, self._on_command
         )
         self._blackboard.subscribe(
@@ -227,6 +231,10 @@ class DetectorBankService:
             self._actuator.reset()
         elif reading.quality is Quality.OK:
             self._actuator.observe_reading(reading)
+
+    def _on_coefficients(self, _topic: str, coefficients: Coefficients) -> None:
+        """Hand D5 the identified coupling, which bounds passive warming."""
+        self._actuator.observe_coupling(coefficients.a2)
 
     def _on_estimate(self, _topic: str, estimate: ThermalEstimate) -> None:
         """Route the model's prediction error to D4.
@@ -590,7 +598,9 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
             ),
             drift=(
                 DriftDetector(
-                    subject=sensor.sensor_id, config=config.detectors.drift
+                    subject=sensor.sensor_id,
+                    config=config.detectors.drift,
+                    accumulate_every=config.estimator.drift_horizon_samples,
                 )
                 if sensor.sensor_id == config.estimator.indoor_sensor_id
                 else None
@@ -615,6 +625,7 @@ def build_service(
             subject=topics.AIR_CONDITIONER_ID,
             config=config.detectors.actuator,
             clock=clock,
+            sample_period_s=config.loop.sensor_period_s,
         ),
         mode_manager=ModeManager(config=config.mode, clock=clock),
     )

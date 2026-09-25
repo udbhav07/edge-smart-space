@@ -29,6 +29,8 @@ def _config(**overrides) -> ActuatorDetectorConfig:
             "evaluation_window_s": WINDOW_S,
             "min_cooling_c": MIN_COOLING_C,
             "capacity_gap_c": CAPACITY_GAP_C,
+            "passive_warming_factor": 1.5,
+            "passive_warming_slack_c": 0.5,
             **overrides,
         }
     )
@@ -303,3 +305,32 @@ class TestCoolingIsFittedAcrossTheWindow:
         ]
         _cool_through(detector, clock, values)
         assert detector.evaluate().evidence["cooled_c"] == pytest.approx(0.6, abs=0.05)
+
+
+
+class TestADriftingSensorIsNotBlamedOnTheUnit:
+    """FR-23, FR-24: a dead unit warms the room passively, toward ambient and
+    no faster than its time constant allows; a drifting sensor rises at any
+    rate. A reading rising faster than a dead unit permits is left to D4."""
+
+    #: About a 35-minute time constant at 5 s steps.
+    COUPLING = 0.0024
+
+    def test_warming_within_passive_physics_is_the_units_fault(self, detector, clock):
+        detector.observe_coupling(self.COUPLING)
+        _cool_through(detector, clock, _steps(29.0, 0.6), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_warming_faster_than_a_dead_unit_allows_is_not(self, detector, clock):
+        detector.observe_coupling(self.COUPLING)
+        _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.UNKNOWN
+
+    def test_without_a_model_the_unit_is_still_judged(self, detector, clock):
+        _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_an_unphysical_coupling_is_ignored(self, detector, clock):
+        detector.observe_coupling(-0.1)
+        _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
