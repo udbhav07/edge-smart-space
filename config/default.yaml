@@ -204,6 +204,11 @@ assistance:
   # answering without it. A calendar that has stopped responding must not hold
   # a reply to the occupant open indefinitely.
   result_timeout_s: 5.0
+  # FR-58. The occupant's own calendar, kept on the node: a hosted one needs
+  # the outbound connection NFR-06 forbids. Bounded so a misheard request
+  # repeated in a loop cannot fill the disk.
+  calendar_path: state/calendar.json
+  calendar_max_events: 500
 
 # Adversarial by default. Every value here is switched on, not off: a kind
 # simulator makes simulated success predict nothing about hardware.

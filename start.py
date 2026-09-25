@@ -109,6 +109,11 @@ SERVICES = (
         description="Fault detector bank D1-D5 and the degradation mode",
     ),
     Service(
+        name="assistance",
+        module="src.assistance",
+        description="Tool executor: local calendar and mock travel bookings",
+    ),
+    Service(
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",

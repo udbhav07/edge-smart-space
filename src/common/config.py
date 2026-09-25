@@ -464,6 +464,12 @@ class AssistanceConfig(_Section):
     result_timeout_s: float = Field(
         gt=0.0, description="Seconds to wait for a tool result before answering without"
     )
+    calendar_path: str = Field(
+        min_length=1, description="Where the local calendar is kept (FR-58)"
+    )
+    calendar_max_events: int = Field(
+        gt=0, description="Entries the local calendar holds before refusing more"
+    )
 
 
 class SensorNoiseConfig(_Section):
