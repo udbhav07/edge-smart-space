@@ -59,6 +59,13 @@ _SIMULATED_PLANT = True
 
 _FULL_CYCLE_RADIANS = 2.0 * math.pi
 
+#: Commands that change what the unit is doing. The published state reports
+#: the last of these: MAINTAIN and HOLD mean "carry on", and echoing them as
+#: the state left a late subscriber -- a restarted estimator -- unable to
+#: tell that the compressor was running, so it fitted and predicted with
+#: cooling off while the room was being cooled.
+_STATE_CHANGING_COMMANDS = frozenset({CommandKind.COOL, CommandKind.OFF})
+
 #: Chance that a present occupant trips the PIR in one sampling period. A
 #: person at a desk moves enough to be seen every minute or so, which at a 5 s
 #: period is about one step in twelve. This is what makes the hold-off do
@@ -147,7 +154,8 @@ class RoomSimulator:
 
     def _on_command(self, topic: str, command: Command) -> None:
         LOGGER.debug("command on %s: %s", topic, command.kind.value)
-        self._last_kind = command.kind
+        if command.kind in _STATE_CHANGING_COMMANDS:
+            self._last_kind = command.kind
         self._last_ack = self._actuator.command(command.kind, command.setpoint_c)
 
     def _on_injection(self, _topic: str, command: InjectionCommand) -> None:

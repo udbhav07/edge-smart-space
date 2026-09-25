@@ -231,6 +231,42 @@ class TestClosedLoop:
         payload = transport.payloads_on("space/actuator/ac/state")[-1]
         assert ActuatorState.model_validate_json(payload).kind is CommandKind.COOL
 
+    def _command(self, blackboard, clock, kind):
+        command = Command(
+            ts=clock.now(),
+            actuator_id=topics.AIR_CONDITIONER_ID,
+            kind=kind,
+            setpoint_c=22.0 if kind is CommandKind.COOL else None,
+        )
+        blackboard.dispatch(
+            "space/actuator/ac/command", command.model_dump_json().encode()
+        )
+
+    def _published_kind(self, transport):
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        return ActuatorState.model_validate_json(payload).kind
+
+    @pytest.mark.parametrize("carry_on", [CommandKind.MAINTAIN, CommandKind.HOLD])
+    def test_carrying_on_leaves_the_published_state_as_it_was(
+        self, quiet_config, carry_on
+    ):
+        """Regression: the state echoed MAINTAIN, so a subscriber that missed
+        the one COOL -- a restarted estimator -- believed cooling was off."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._command(blackboard, clock, CommandKind.COOL)
+        simulator.step()
+        self._command(blackboard, clock, carry_on)
+        simulator.step()
+        assert self._published_kind(transport) is CommandKind.COOL
+
+    def test_switching_off_is_published_as_off(self, quiet_config):
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._command(blackboard, clock, CommandKind.COOL)
+        simulator.step()
+        self._command(blackboard, clock, CommandKind.OFF)
+        simulator.step()
+        assert self._published_kind(transport) is CommandKind.OFF
+
 
 class TestRunLoop:
     def test_run_executes_the_requested_number_of_steps(self, quiet_config):
