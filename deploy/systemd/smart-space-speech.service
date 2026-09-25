@@ -1,0 +1,20 @@
+[Unit]
+Description=Edge smart space: Wake word, transcription, and the Personal Context call
+After=network-online.target mosquitto.service
+Wants=mosquitto.service
+PartOf=smart-space.target
+
+[Service]
+Type=simple
+User=smartspace
+WorkingDirectory=/opt/edge-smart-space
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/edge-smart-space/.venv/bin/python -m src.speech --config /opt/edge-smart-space/config/default.yaml
+# NFR-08 and section 9.3: restart independence is a requirement. Killing one
+# service -- the reasoning layer, in the demonstration -- must leave the others
+# running and bring it back on its own.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=smart-space.target

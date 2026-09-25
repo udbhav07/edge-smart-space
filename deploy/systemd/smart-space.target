@@ -1,0 +1,8 @@
+[Unit]
+Description=Edge smart space: every service
+Wants=smart-space-estimator.service smart-space-control.service smart-space-detectors.service smart-space-assistance.service smart-space-reasoning.service smart-space-speech.service
+# Layer 1 is one of these two, never both; enable the one devices.source names.
+Wants=smart-space-simulator.service
+
+[Install]
+WantedBy=multi-user.target
