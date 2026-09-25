@@ -305,6 +305,9 @@ Honest about the gaps, so nobody hunts for something that isn't there:
   recorder and replay (FR-62)
 - `deploy/systemd/` — the unit files that supervise this on the Jetson
 - `eval/` — the baseline thermostat and experiments E2 to E7; only E1 exists
+- drift detection that works at realistic rates — D4 catches drift of about
+  3 C/min and faster and misses slower drift entirely; DESIGN.md §5.5 has the
+  measurements and the reason
 - scheduled excitation (R-01) — under ordinary closed-loop control the model
   identifies `a3` poorly for its first hour, which limits how long control on
   prediction stays accurate

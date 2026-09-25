@@ -846,6 +846,19 @@ load, or an ambient high enough that a working unit is at capacity and holds
 the room level rather than cooling it. R-04 settles the window and the
 threshold against measured data during bring-up.
 
+**D4 does not detect realistic drift, found at v1.9 and left open.** The
+CUSUM runs on the *one-step* residual, and a one-step prediction is built from
+the previous reading, so a drifting sensor contributes only its per-step
+increment: 0.01 °C/s is 0.05 °C per sample, about 0.26 σ, inside the 0.5 σ
+slack, and nothing accumulates. The adapting model absorbs the rest. Measured
+in simulation after a 30-minute warm-up, D4 found drift of 3 °C/min and faster
+within 50 s and missed 0.06, 0.3 and 0.6 °C/min entirely over 30 minutes — and
+the drifting reading made the room look as though it warmed under cooling, so
+D5 raised an actuator fault instead. A residual over a longer horizon is the
+obvious direction, but its sensitivity is bounded by how far the identified
+model can predict unaided, which is R-01's problem; so this is recorded rather
+than patched.
+
 **A working unit at capacity, found at v1.9.** Near the setpoint a working
 unit cools toward its capacity asymptotically, and every healthy two-hour run
 in the shipped simulation failed the fixed 0.3 °C per window and ended in
