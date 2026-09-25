@@ -144,3 +144,66 @@ class TestCommandLine:
 
     def test_a_missing_config_file_is_reported_clearly(self, tmp_path):
         assert start.main(["--config", str(tmp_path / "absent.yaml")]) == 2
+
+
+
+class TestLayerOneFollowsTheConfiguration:
+    def test_simulation_runs_the_simulator_not_the_bridge(self):
+        from src.common.config import DeviceSource
+
+        names = [s.name for s in start.select(None, None, DeviceSource.SIMULATED)]
+        assert "simulator" in names and "devices" not in names
+
+    def test_hardware_runs_the_bridge_not_the_simulator(self):
+        from src.common.config import DeviceSource
+
+        names = [s.name for s in start.select(None, None, DeviceSource.ESPHOME)]
+        assert "devices" in names and "simulator" not in names
+
+    def test_naming_a_service_overrides_the_source(self):
+        from src.common.config import DeviceSource
+
+        names = [s.name for s in start.select(["devices"], None, DeviceSource.SIMULATED)]
+        assert names == ["devices"]
+
+
+class FakeProcess:
+    def __init__(self, code=None) -> None:
+        self._code = code
+
+    def poll(self):
+        return self._code
+
+
+class TestRestarts:
+    """NFR-08: a service that exits is brought back, as systemd would."""
+
+    def test_an_exited_service_is_relaunched(self, monkeypatch):
+        monkeypatch.setattr(start, "RESTART_DELAY_S", 0.0)
+        monkeypatch.setattr(start, "_SUPERVISE_INTERVAL_S", 0.0)
+        relaunched = []
+
+        def relaunch(name):
+            relaunched.append(name)
+            raise KeyboardInterrupt  # stop the loop once it has acted
+
+        start.supervise({"reasoning": FakeProcess(code=1)}, relaunch=relaunch)
+        assert relaunched == ["reasoning"]
+
+    def test_restarts_can_be_turned_off(self, monkeypatch):
+        monkeypatch.setattr(start, "_SUPERVISE_INTERVAL_S", 0.0)
+        relaunched = []
+        start.supervise({"reasoning": FakeProcess(code=1)}, relaunch=relaunched.append, restart=False)
+        assert relaunched == []
+
+    def test_a_crash_loop_is_left_down(self, monkeypatch):
+        monkeypatch.setattr(start, "RESTART_DELAY_S", 0.0)
+        monkeypatch.setattr(start, "_SUPERVISE_INTERVAL_S", 0.0)
+        relaunched = []
+
+        def relaunch(name):
+            relaunched.append(name)
+            return FakeProcess(code=1)
+
+        start.supervise({"reasoning": FakeProcess(code=1)}, relaunch=relaunch)
+        assert len(relaunched) == start.MAX_RESTARTS

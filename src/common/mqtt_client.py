@@ -78,6 +78,7 @@ class Blackboard:
         self._config = config
         self._transport = transport
         self._handlers: dict[str, tuple[type[BlackboardMessage], Callable]] = {}
+        self._device_handlers: dict[str, Callable[[str, str], None]] = {}
         self._subscriptions: dict[str, int] = {}
         self._connected = False
 
@@ -144,6 +145,25 @@ class Blackboard:
             self._transport.subscribe(pattern, spec.qos.value)
         return pattern
 
+    def subscribe_device(
+        self, topic: str, handler: Callable[[str, str], None], qos: int = 0
+    ) -> None:
+        """Listen to a device's own topic, outside the blackboard's schemas.
+
+        For Layer 1 only. An ESPHome node publishes ``27.4`` or ``ON``, not a
+        :class:`SensorReading`; the bridge that owns the device turns that
+        into one. The topic comes from configuration, never from code, and is
+        matched exactly -- a device topic is not a blackboard pattern.
+        """
+        self._device_handlers[topic] = handler
+        self._subscriptions[topic] = qos
+        if self._connected:
+            self._transport.subscribe(topic, qos)
+
+    def publish_device(self, topic: str, text: str, qos: int = 1) -> None:
+        """Send a device its own command, as plain text (Layer 1 only)."""
+        self._transport.publish(topic, text.encode(PAYLOAD_ENCODING), qos, False)
+
     def on_connected(self) -> None:
         """Issue every registered subscription. Called on each connect.
 
@@ -186,6 +206,14 @@ class Blackboard:
         that fails, so no component above this boundary has to defend itself
         against a malformed publisher.
         """
+        device_handler = self._device_handlers.get(topic)
+        if device_handler is not None:
+            try:
+                device_handler(topic, payload.decode(PAYLOAD_ENCODING).strip())
+            except Exception:
+                LOGGER.exception("device handler for %s raised", topic)
+            return
+
         registration = self._match(topic)
         if registration is None:
             LOGGER.debug("no handler for %s", topic)

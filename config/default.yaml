@@ -250,6 +250,23 @@ goals:
   # until it is reached, meets a bound, or lapses.
   pursue_interval_s: 60.0
 
+# Week 5. Layer 1 is the simulator or the real nodes, and nothing above Layer 1
+# can tell which (section 4.2). The topics are the nodes' ESPHome MQTT topics,
+# placeholders until the nodes are flashed; ESPHome publishes plain values
+# ("27.4", "ON") under <node>/<component>/<name>/state.
+devices:
+  source: simulated
+  sensor_topics:
+    temp_01: room-node/sensor/temperature/state
+    hum_01: room-node/sensor/humidity/state
+    outdoor_01: outdoor-node/sensor/temperature/state
+    pir_01: room-node/binary_sensor/motion/state
+  door_topic: room-node/binary_sensor/door/state
+  stale_after_s: 20.0
+  ac_mode_command_topic: ac-node/climate/air_conditioner/mode/command
+  ac_target_command_topic: ac-node/climate/air_conditioner/target_temperature/command
+  ac_mode_state_topic: ""   # IR has no readback (R-02); set it if the path has one
+
 # FR-16. Peak pricing, as a local-time timetable. During peak the setpoint in
 # force rises by the offset -- never past the validator's upper bound.
 tariff:

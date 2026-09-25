@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-from src.common.config import Config, ConfigError, load_config
+from src.common.config import Config, ConfigError, DeviceSource, load_config
 
 LOGGER = logging.getLogger("start")
 
@@ -68,6 +68,8 @@ class Service:
     name: str
     module: str
     description: str
+    #: Run only when Layer 1 is this source; None runs whatever the source.
+    source: DeviceSource | None = None
 
     def command(self, config_path: Path) -> list[str]:
         return [sys.executable, "-m", self.module, "--config", str(config_path)]
@@ -92,6 +94,13 @@ SERVICES = (
         name="simulator",
         module="sim.run_sim",
         description="Room plant, sensors and actuator (simulation mode)",
+        source=DeviceSource.SIMULATED,
+    ),
+    Service(
+        name="devices",
+        module="src.io",
+        description="ESPHome nodes and the air conditioner (hardware mode)",
+        source=DeviceSource.ESPHOME,
     ),
     Service(
         name="estimator",
@@ -212,8 +221,15 @@ def preflight(config: Config, system: str) -> bool:
     return satisfied
 
 
-def select(only: list[str] | None, skip: list[str] | None) -> tuple[Service, ...]:
+def select(
+    only: list[str] | None,
+    skip: list[str] | None,
+    source: DeviceSource | None = None,
+) -> tuple[Service, ...]:
     """Choose which services to run.
+
+    Layer 1 follows ``devices.source`` -- the simulator or the real devices,
+    never both -- unless a service is named explicitly with ``--only``.
 
     :raises ValueError: if a name does not match a known service, rather than
         silently starting nothing.
@@ -224,7 +240,12 @@ def select(only: list[str] | None, skip: list[str] | None) -> tuple[Service, ...
                 f"unknown service {name!r}; choose from {list(SERVICE_NAMES)}"
             )
 
-    chosen = SERVICES if not only else tuple(s for s in SERVICES if s.name in only)
+    if only:
+        chosen = tuple(s for s in SERVICES if s.name in only)
+    else:
+        chosen = tuple(
+            s for s in SERVICES if s.source is None or source is None or s.source is source
+        )
     if skip:
         chosen = tuple(service for service in chosen if service.name not in skip)
     return chosen
@@ -275,20 +296,53 @@ def shutdown(running: dict[str, subprocess.Popen]) -> None:
             process.kill()
 
 
-def supervise(running: dict[str, subprocess.Popen]) -> int:
-    """Watch children until one exits or the operator interrupts.
+#: Seconds to wait before relaunching a service that exited (NFR-08).
+RESTART_DELAY_S = 2.0
 
-    A child exiting is reported but does not tear the others down. That is
-    the point of separate processes: the demonstration includes killing the
-    reasoning process and showing regulatory control continue (section 9.3).
+#: Restarts allowed within RESTART_WINDOW_S before a crash-looping service is
+#: left down. A service that dies on start would otherwise spin forever, and
+#: hide the one line of the log that says why.
+MAX_RESTARTS = 5
+RESTART_WINDOW_S = 60.0
+
+
+def supervise(
+    running: dict[str, subprocess.Popen],
+    relaunch=None,
+    restart: bool = True,
+) -> int:
+    """Watch children, restarting any that exit, until interrupted (NFR-08).
+
+    Separate processes are the point: killing the reasoning process during
+    the demonstration shows regulatory control carry on (section 9.3). On the
+    Jetson systemd restarts it (``Restart=always``); this does the same on a
+    development machine, so the demonstration behaves the same on both.
+
+    :param relaunch: starts a service again by name; None disables restarts.
     """
+    history: dict[str, list[float]] = {}
     try:
         while running:
             for name, process in list(running.items()):
                 code = process.poll()
-                if code is not None:
-                    LOGGER.warning("%s exited with code %s", name, code)
-                    del running[name]
+                if code is None:
+                    continue
+                LOGGER.warning("%s exited with code %s", name, code)
+                del running[name]
+                if not restart or relaunch is None:
+                    continue
+                now = time.monotonic()
+                recent = [t for t in history.get(name, []) if now - t < RESTART_WINDOW_S]
+                if len(recent) >= MAX_RESTARTS:
+                    LOGGER.error(
+                        "%s exited %d times in %.0f s; leaving it down", name,
+                        len(recent), RESTART_WINDOW_S,
+                    )
+                    continue
+                time.sleep(RESTART_DELAY_S)
+                history[name] = recent + [now]
+                running[name] = relaunch(name)
+                LOGGER.warning("restarted %s", name)
             time.sleep(_SUPERVISE_INTERVAL_S)
         LOGGER.info("all services have exited")
         return 0
@@ -311,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-preflight", action="store_true", help="Start without checking anything."
     )
+    parser.add_argument(
+        "--no-restart",
+        action="store_true",
+        help="Leave a service down if it exits (the default restarts it, NFR-08).",
+    )
     arguments = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)-8s %(message)s")
@@ -323,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        services = select(arguments.only, arguments.skip)
+        services = select(arguments.only, arguments.skip, config.devices.source)
     except ValueError as exc:
         LOGGER.error("%s", exc)
         return 2
@@ -344,7 +403,12 @@ def main(argv: list[str] | None = None) -> int:
         for service in services:
             running[service.name] = launch(service, arguments.config)
         LOGGER.info("watch the blackboard with: mosquitto_sub -t 'space/#' -v")
-        return supervise(running)
+        by_name = {service.name: service for service in services}
+        return supervise(
+            running,
+            relaunch=lambda name: launch(by_name[name], arguments.config),
+            restart=not arguments.no_restart,
+        )
     finally:
         shutdown(running)
 

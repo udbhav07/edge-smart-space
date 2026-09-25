@@ -14,6 +14,8 @@ sections 5.2.2, 5.3, 5.4 and 5.5.
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pathlib import Path
 
 import yaml
@@ -492,6 +494,37 @@ class AssistanceConfig(_Section):
     )
 
 
+class DeviceSource(str, Enum):
+    """Where Layer 1 comes from. Nothing above Layer 1 reads this."""
+
+    SIMULATED = "simulated"
+    ESPHOME = "esphome"
+
+
+class DevicesConfig(_Section):
+    """Layer 1 selection and the real devices' own topics (Week 5).
+
+    The topics are the nodes' ESPHome MQTT state and command topics. They are
+    configuration, not code: what a node publishes under is decided when it
+    is flashed, and guessing it in code would produce a bridge that looks
+    finished and silently matches nothing.
+    """
+
+    source: DeviceSource = Field(description="simulated or esphome")
+    sensor_topics: dict[str, str] = Field(
+        default_factory=dict, description="Sensor id to the device state topic"
+    )
+    door_topic: str = Field(default="", description="Reed switch state topic, if any")
+    stale_after_s: float = Field(
+        gt=0.0, description="A device value older than this is absence, not a reading"
+    )
+    ac_mode_command_topic: str = Field(default="")
+    ac_target_command_topic: str = Field(default="")
+    ac_mode_state_topic: str = Field(
+        default="", description="Readback of the unit's mode, if the path has one (R-02)"
+    )
+
+
 class TariffConfig(_Section):
     """Peak-tariff schedule and the comfort shift it asks for (FR-16)."""
 
@@ -644,6 +677,7 @@ class Config(_Section):
     assistance: AssistanceConfig
     goals: GoalsConfig
     tariff: TariffConfig
+    devices: DevicesConfig
     supervisor: SupervisorConfig
     sim: SimConfig
 
