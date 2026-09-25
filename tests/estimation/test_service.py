@@ -409,6 +409,48 @@ class TestDivergence:
             assert event.fault_class.value == "model"
 
 
+class TestDivergenceRecovery:
+    """Section 7.1: divergence resets the coefficients to theta_0."""
+
+    def _diverge(self, config, extra_samples: int = 10):
+        service, transport, clock, board, estimator, _ = _service(config)
+        board.dispatch(
+            topics.SENSOR_STATE.format(sensor_id=OUTDOOR),
+            _reading(clock, OUTDOOR, 25.0).model_dump_json().encode(),
+        )
+        temperature = 25.0
+        for _ in range(config.estimator.divergence_window_samples + extra_samples):
+            board.dispatch(
+                topics.SENSOR_STATE.format(sensor_id=INDOOR),
+                _reading(clock, INDOOR, temperature).model_dump_json().encode(),
+            )
+            temperature += 40.0
+            clock.advance(config.loop.sensor_period_s)
+        return service, transport, estimator
+
+    def _divergence_faults(self, transport) -> list[str]:
+        return [
+            name
+            for name, payload, _, _ in transport.published
+            if name.startswith("space/fault/f_model_divergence") and payload
+        ]
+
+    def test_the_coefficients_return_to_the_prior(self, config):
+        _, _, estimator = self._diverge(config, extra_samples=1)
+        assert list(estimator.theta) == list(config.estimator.initial_theta)
+
+    def test_a_divergence_is_announced_once_not_every_update(self, config):
+        """Regression: the full window kept diverged true, so the same event
+        was republished as a new fault every 5 s."""
+        _, transport, _ = self._diverge(config, extra_samples=10)
+        assert len(self._divergence_faults(transport)) == 1
+
+    def test_a_second_divergence_needs_a_fresh_window(self, config):
+        window = config.estimator.divergence_window_samples
+        _, transport, _ = self._diverge(config, extra_samples=window + 10)
+        assert len(self._divergence_faults(transport)) == 2
+
+
 class TestPersistence:
     def test_the_estimate_is_written_as_it_runs(self, config):
         service, _, clock, board, _, store = _service(config)

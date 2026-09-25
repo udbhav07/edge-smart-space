@@ -262,6 +262,7 @@ class ThermalEstimatorService:
         self._maybe_persist()
         if result.diverged:
             self._publish_divergence(result)
+            self._restart_from_prior()
 
     def tick(self) -> ThermalEstimate | None:
         """Advance the open-loop prediction one model step (FR-27).
@@ -335,6 +336,18 @@ class ThermalEstimatorService:
             self._estimator.covariance,
             self._estimator.samples_since_reset,
         )
+
+    def _restart_from_prior(self) -> None:
+        """Discard the diverged estimate, as section 7.1 prescribes.
+
+        Without this the rejection window stayed full, so the same divergence
+        was re-announced as a new fault on every update -- one every 5 s --
+        and the estimator kept predicting from the coefficients it had just
+        declared untrustworthy. Resetting clears the window as well, so a
+        second divergence needs a fresh window of evidence.
+        """
+        self._estimator.reset()
+        LOGGER.error("coefficients reset to the configured prior after divergence")
 
     def _publish_divergence(self, result: UpdateResult) -> None:
         """Raise MODEL_DIVERGENCE (FR-06).
