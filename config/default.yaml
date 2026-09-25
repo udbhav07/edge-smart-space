@@ -22,7 +22,15 @@ loop:
 # at a 5 s interval: tracks daily variation without chasing noise.
 estimator:
   forgetting_factor: 0.995
-  initial_covariance: 100.0
+  # P0. The coefficients are around 0.002 to 0.02, so 0.01 is a prior spread
+  # of about 0.1 -- loose against the values, tight against nonsense. At
+  # startup the three regressors are nearly collinear (gap, u and o all near
+  # constant), and at 100.0 the first few samples could throw the estimate
+  # anywhere in the plausibility box: live, a2 = 0.997 and a3 = -1.91 within
+  # 35 s. Over 8 seeds, a 20-minute dropout ridden 10 min after startup
+  # erred by up to 2.65 C at 0.01 against 10.96 C at 100; E1's 24 h errors
+  # are unchanged.
+  initial_covariance: 0.01
   initial_theta: [0.02, -0.05, 0.01]   # [a2, a3, a4]; a1 = 1 - a2 = 0.98
   max_covariance_trace: 1000.0
   min_excitation: 0.001

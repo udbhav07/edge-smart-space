@@ -38,6 +38,17 @@ def _estimator(config, clock) -> ThermalEstimator:
     return ThermalEstimator(config, clock)
 
 
+#: A prior that says almost nothing, for tests of how evidence narrows it.
+VAGUE_PRIOR_COVARIANCE = 100.0
+
+
+def _vague(config: EstimatorConfig, clock: SimClock) -> ThermalEstimator:
+    return ThermalEstimator(
+        config.model_copy(update={"initial_covariance": VAGUE_PRIOR_COVARIANCE}),
+        clock,
+    )
+
+
 def _regressor(step: int, indoor_c: float) -> Regressor:
     """An input that actually excites the model."""
     return Regressor(
@@ -102,12 +113,17 @@ class TestIdentification:
         _identify(estimator)
         assert estimator.snapshot().steady_state_residual < 0.01
 
-    def test_the_covariance_shrinks_as_evidence_accumulates(self, estimator):
+    def test_the_covariance_shrinks_as_evidence_accumulates(self, config, clock):
+        """Against a vague prior, which is what the property is about. The
+        shipped P0 is deliberately tight (see config), and a prior tighter
+        than the forgetting factor's steady state is allowed to widen."""
+        estimator = _vague(config, clock)
         before = estimator.trace
         _identify(estimator, steps=500)
         assert estimator.trace < before
 
-    def test_confidence_rises_as_the_covariance_shrinks(self, estimator):
+    def test_confidence_rises_as_the_covariance_shrinks(self, config, clock):
+        estimator = _vague(config, clock)
         before = estimator.model_confidence
         _identify(estimator, steps=500)
         assert estimator.model_confidence > before
