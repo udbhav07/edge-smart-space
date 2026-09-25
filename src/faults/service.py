@@ -64,6 +64,10 @@ _DIRECT_SENSOR_TESTS = frozenset(
     {DetectorId.D1_DROPOUT, DetectorId.D2_STUCK_AT, DetectorId.D3_OUT_OF_RANGE}
 )
 
+#: Faults raised outside this bank that still decide the mode. The estimator
+#: detects divergence because it owns the evidence (section 5.2.3).
+_EXTERNAL_DETECTORS = frozenset({DetectorId.MODEL_DIVERGENCE})
+
 #: Units for which variance and range tests are meaningful. Everything else
 #: gets dropout detection only.
 _CONTINUOUS_UNITS = frozenset({Unit.CELSIUS, Unit.PERCENT_RH})
@@ -170,6 +174,7 @@ class DetectorBankService:
         self._blackboard.subscribe(
             topics.SYSTEM_RESET, ModeReset, self._on_reset
         )
+        self._blackboard.subscribe(topics.FAULT, FaultEvent, self._on_fault)
 
     @property
     def watched_subjects(self) -> frozenset[str]:
@@ -269,6 +274,38 @@ class DetectorBankService:
             LOGGER.debug("no detector for actuator %s", command.actuator_id)
             return
         self._actuator.observe_command(command.kind)
+
+    def _on_fault(self, _topic: str, event: FaultEvent) -> None:
+        """Reconcile a fault on the blackboard with the set this bank holds.
+
+        Two cases matter, and both were found by running the system:
+
+        * **A fault this bank does not own.** The estimator raises
+          MODEL_DIVERGENCE, and nothing turned it into a mode, so section
+          7.1's SAFE_HOLD never happened. It is adopted, and the mode is
+          published at once rather than on the next tick (FR-26).
+        * **A retained fault of this bank's own that it no longer holds.** A
+          detector process killed mid-fault leaves its fault retained, and
+          its replacement starts with nothing active, so the blackboard said
+          "faulted" beside a mode saying "no active faults". It is withdrawn:
+          if the condition persists, the detector raises it again from live
+          evidence within its own window.
+
+        This bank's own publications echo back here and match the held set,
+        so they are ignored.
+        """
+        held = {active.fault_id for active in self._aggregator.active}
+        if event.fault_id in held:
+            return
+        if event.detector in _EXTERNAL_DETECTORS:
+            if self._aggregator.adopt(event):
+                self._publish_mode(self._aggregator.active)
+            return
+        LOGGER.warning(
+            "withdrawing %s: retained from an earlier run and not held now",
+            event.fault_id,
+        )
+        self._withdraw_fault(event)
 
     def _on_reset(self, _topic: str, reset: ModeReset) -> None:
         """Take an operator's acknowledgement (section 5.6).

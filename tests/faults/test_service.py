@@ -939,3 +939,108 @@ class TestDriftIsNotBlamedForAnActuatorFault:
             service.tick()
             clock.advance(config.loop.sensor_period_s)
         assert service.mode is Mode.DEGRADED_ACTUATOR
+
+
+def _deliver_fault(blackboard, event: FaultEvent) -> None:
+    blackboard.dispatch(
+        f"space/fault/{event.fault_id}", event.model_dump_json().encode()
+    )
+
+
+def _divergence_event(clock) -> FaultEvent:
+    return FaultEvent.model_validate(
+        {
+            "fault_id": "f_model_divergence_1",
+            "detector": DetectorId.MODEL_DIVERGENCE,
+            "subject": INDOOR,
+            "class": "model",
+            "confidence": 1.0,
+            "detected_ts": clock.now(),
+            "evidence": {"consecutive_rejections": 3.0},
+            "mode_impact": Mode.SAFE_HOLD,
+        }
+    )
+
+
+def _stale_stuck_event(clock) -> FaultEvent:
+    return FaultEvent.model_validate(
+        {
+            "fault_id": "f_temp01_stuck_1",
+            "detector": DetectorId.D2_STUCK_AT,
+            "subject": INDOOR,
+            "class": "sensor",
+            "confidence": 1.0,
+            "detected_ts": clock.now(),
+            "evidence": {"variance": 0.0},
+            "mode_impact": Mode.DEGRADED_SENSOR,
+        }
+    )
+
+
+class TestFaultsFromTheBlackboard:
+    """Regression, found by running the system: nothing turned the
+    estimator's MODEL_DIVERGENCE into a mode, and a restarted bank left its
+    predecessor's fault retained beside a mode saying nothing was wrong."""
+
+    def test_the_bank_listens_for_faults(self, wired):
+        _, transport, _ = wired
+        assert ("space/fault/+", 1) in transport.subscribed
+
+    def test_model_divergence_holds_the_system(self, wired, clock):
+        """Section 7.1: RLS divergence means SAFE_HOLD."""
+        service, _, blackboard = wired
+        _report_healthily(service, blackboard, clock, 30.0)
+        _deliver_fault(blackboard, _divergence_event(clock))
+        assert service.mode is Mode.SAFE_HOLD
+
+    def test_the_hold_is_published_without_waiting_for_a_tick(self, wired, clock):
+        """FR-26 gives 2 s; the tick is 5 s."""
+        service, transport, blackboard = wired
+        _report_healthily(service, blackboard, clock, 30.0)
+        _deliver_fault(blackboard, _divergence_event(clock))
+        latest = ModeState.model_validate_json(
+            [p for t, p, _, _ in transport.published if t == "space/system/mode"][-1]
+        )
+        assert latest.mode is Mode.SAFE_HOLD
+
+    def test_divergence_is_held_until_an_operator_resets(self, wired, clock):
+        service, _, blackboard = wired
+        _report_healthily(service, blackboard, clock, 30.0)
+        _deliver_fault(blackboard, _divergence_event(clock))
+        _report_healthily(service, blackboard, clock, 300.0)
+        assert service.mode is Mode.SAFE_HOLD
+
+    def test_a_reset_withdraws_the_adopted_fault(self, wired, clock):
+        service, transport, blackboard = wired
+        _report_healthily(service, blackboard, clock, 30.0)
+        _deliver_fault(blackboard, _divergence_event(clock))
+        _deliver_reset(blackboard, clock)
+        service.tick()
+        assert "space/fault/f_model_divergence_1" in transport.withdrawals()
+        assert service.mode is Mode.NORMAL
+
+    def test_a_stale_fault_of_its_own_is_withdrawn(self, wired, clock):
+        service, transport, blackboard = wired
+        _deliver_fault(blackboard, _stale_stuck_event(clock))
+        assert "space/fault/f_temp01_stuck_1" in transport.withdrawals()
+
+    def test_a_stale_fault_does_not_change_the_mode(self, wired, clock):
+        """It is withdrawn, not adopted: this bank's detectors re-raise it
+        from live evidence if the sensor really is stuck."""
+        service, _, blackboard = wired
+        _report_healthily(service, blackboard, clock, 30.0)
+        _deliver_fault(blackboard, _stale_stuck_event(clock))
+        service.tick()
+        assert service.mode is Mode.NORMAL
+
+    def test_its_own_fault_echoing_back_is_left_alone(self, wired, clock, config):
+        service, transport, blackboard = wired
+        window = config.detectors.stuck_at.window_samples
+        for _ in range(window + config.detectors.stuck_at.consecutive_windows + 2):
+            _deliver(blackboard, _reading(clock, value=STUCK_VALUE))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        raised = transport.faults()[-1]
+        _deliver_fault(blackboard, raised)
+        assert f"space/fault/{raised.fault_id}" not in transport.withdrawals()
+        assert raised.fault_id in {event.fault_id for event in service.active_faults}

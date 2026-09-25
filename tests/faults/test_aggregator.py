@@ -351,3 +351,35 @@ class TestRetracting:
         aggregator.ingest([_finding()])
         aggregator.retract(DetectorId.D2_STUCK_AT, SUBJECT)
         assert len(aggregator.ingest([_finding()]).raised) == 1
+
+
+class TestAdopting:
+    """A fault raised elsewhere that still decides the mode (section 5.6)."""
+
+    def _divergence(self, aggregator):
+        from src.faults.detectors.base import build_fault_event
+
+        return build_fault_event(
+            _finding(detector=DetectorId.MODEL_DIVERGENCE), 1_000.0
+        )
+
+    def test_an_adopted_fault_is_active(self, aggregator):
+        event = self._divergence(aggregator)
+        aggregator.adopt(event)
+        assert aggregator.active == (event,)
+
+    def test_adopting_reports_whether_it_was_new(self, aggregator):
+        event = self._divergence(aggregator)
+        assert aggregator.adopt(event) is True
+        assert aggregator.adopt(event) is False
+
+    def test_an_adopted_fault_is_not_cleared_by_silence(self, aggregator):
+        """No detector here speaks for it, so nothing ingested retires it."""
+        aggregator.adopt(self._divergence(aggregator))
+        aggregator.ingest([_finding(judgment=Judgment.CLEAR)])
+        assert len(aggregator.active) == 1
+
+    def test_a_reset_retires_an_adopted_fault(self, aggregator):
+        aggregator.adopt(self._divergence(aggregator))
+        assert len(aggregator.retire_all()) == 1
+        assert aggregator.active == ()
