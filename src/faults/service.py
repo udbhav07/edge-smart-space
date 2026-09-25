@@ -208,6 +208,13 @@ class DetectorBankService:
         subject.observe(reading)
         self._last_reading_ts[reading.sensor_id] = reading.ts
 
+        if reading.sensor_id == self._config.estimator.outdoor_sensor_id:
+            # D5 needs ambient to know whether the unit may be at capacity.
+            if reading.quality is Quality.OK and self._subject_is_trusted(
+                reading.sensor_id
+            ):
+                self._actuator.observe_ambient(reading.value)
+            return
         if reading.sensor_id != self._config.estimator.indoor_sensor_id:
             return
         # D5 judges the actuator by what the room did, so it needs the room's
@@ -260,6 +267,10 @@ class DetectorBankService:
         """
         indoor = self._config.estimator.indoor_sensor_id
         return not any(event.subject == indoor for event in self._aggregator.active)
+
+    def _subject_is_trusted(self, subject: str) -> bool:
+        """Whether no active fault names this subject."""
+        return not any(event.subject == subject for event in self._aggregator.active)
 
     def _actuator_is_trusted(self) -> bool:
         """Whether the air conditioner has no active fault against it."""

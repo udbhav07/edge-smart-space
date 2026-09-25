@@ -114,6 +114,14 @@ detectors:
   actuator:
     evaluation_window_s: 600.0    # Sustained cooling before the test is applied
     min_cooling_c: 0.3            # Cooling the room must have achieved over that window
+    # A working unit cooling toward its capacity slows asymptotically: with 31 C
+    # outside, the shipped room crept 25.3 -> 25.2 C in ten minutes and every
+    # healthy two-hour run ended in DEGRADED_ACTUATOR. Beyond this gap below
+    # ambient, a dead unit would warm visibly (about 2 C per window at 6 C), so
+    # holding level is evidence the unit works and only warming by
+    # min_cooling_c is a fault. Within it the room must still cool. Derived
+    # from the simulated plant's capacity; R-04 re-derives it on hardware.
+    capacity_gap_c: 4.0
 
 mode:
   degraded_sensor_budget_s: 1800.0   # Section 7.2; E4 tests whether this is right

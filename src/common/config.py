@@ -305,6 +305,11 @@ class ActuatorDetectorConfig(_Section):
     min_cooling_c: float = Field(
         gt=0.0, description="Cooling the room must have achieved over that window"
     )
+    capacity_gap_c: float = Field(
+        gt=0.0,
+        description="Ambient minus room, in C, beyond which a working unit may "
+        "be at capacity and hold the room level; there only warming is a fault",
+    )
 
 
 class DetectorsConfig(_Section):

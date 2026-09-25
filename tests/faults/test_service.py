@@ -675,14 +675,17 @@ class TestSuspectReadingsNeverJudgeTheActuator:
             event.detector for event in transport.faults()
         }
 
-    def test_an_ok_reading_that_warmed_still_raises(self, wired, clock, config):
+    def test_a_room_warming_on_ok_readings_still_raises(self, wired, clock, config):
         """The skip is on the flag, not the value: a room genuinely warming
         under cooling is the actuator fault D5 exists for."""
         service, transport, blackboard = wired
-        warmer = _reading(clock, value=31.0)
-        self._cool_for_a_window(service, blackboard, clock, config, warmer)
-        clock.advance(config.loop.sensor_period_s)
-        service.tick()
+        _deliver(blackboard, _reading(clock, value=29.0))
+        _deliver_command(blackboard, clock, CommandKind.COOL, setpoint_c=24.0)
+        window_s = config.detectors.actuator.evaluation_window_s
+        for index in range(int(window_s / config.loop.sensor_period_s) + 2):
+            _deliver(blackboard, _reading(clock, value=29.0 + index * 0.01))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
         assert DetectorId.D5_ACTUATOR_NO_RESPONSE in {
             event.detector for event in transport.faults()
         }

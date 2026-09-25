@@ -170,6 +170,15 @@ class TestNominalOperation:
         system.run_for(600.0)
         assert system.faults() == []
 
+    def test_a_healthy_room_raises_no_faults_over_two_hours(self, system):
+        """Regression: ten minutes was never long enough to see it. Once the
+        room neared the setpoint the unit was cooling toward its capacity,
+        slowly enough to miss D5's 0.3 C per window, and every healthy run
+        ended in DEGRADED_ACTUATOR within two hours."""
+        system.run_for(2 * 3600.0)
+        assert system.faults() == []
+        assert system.mode() is Mode.NORMAL
+
     def test_the_room_is_driven_towards_the_setpoint(self, system, config):
         """It starts at 29 C and is asked for 24 C."""
         started = system.room_temperature_c()

@@ -29,9 +29,26 @@ room level rather than cool it, and this detector would call that a fault.
 That is the trade R-04 settles with measured data during bring-up, by raising
 the window or lowering the required cooling; it is stated here because it is a
 limit of the method rather than a bug in it.
+
+**It was more than a 45-degree afternoon.** A working unit cooling toward its
+capacity slows asymptotically, and in the shipped simulation every healthy
+run reached that regime near the setpoint and was declared an actuator fault.
+So the ambient gap now decides which question is asked. Well below ambient
+(``capacity_gap_c`` or more), a dead unit would warm visibly, so holding level
+is evidence the unit works and only warming is a fault. Near ambient a working
+unit has headroom to spare, so the room must still cool. With no ambient
+reading the original test applies.
+
+**Cooling is fitted, not differenced.** Two single readings, one at each end
+of the window, carry the sensor's noise twice -- about 0.2 C against a 0.3 C
+threshold -- and a room warming 0.2 C under a rising solar load read as 0.5.
+The change over the window is the slope of a least-squares line through every
+reading in it, which cuts that noise to about 0.05 C and needs no tunable.
 """
 
 from __future__ import annotations
+
+from collections import deque
 
 from src.common.clock import Clock
 from src.common.config import ActuatorDetectorConfig
@@ -41,6 +58,14 @@ from src.faults.detectors.base import Finding, Judgment
 #: Commands that change whether the compressor is running. MAINTAIN and HOLD
 #: assert the status quo and must not restart the evaluation window.
 _STATE_CHANGING = frozenset({CommandKind.COOL, CommandKind.OFF})
+
+#: Upper bound on readings held for one window. A window is emptied every time
+#: it is judged, so this is a guard against a stalled clock, not a limit that
+#: normal operation approaches (about 120 readings per 600 s window at 5 s).
+_MAX_WINDOW_READINGS = 4096
+
+#: Readings needed before a line is fitted rather than the ends differenced.
+_READINGS_FOR_A_FIT = 3
 
 
 class ActuatorResponseDetector:
@@ -66,6 +91,8 @@ class ActuatorResponseDetector:
         self._started_s: float | None = None
         self._start_temperature_c: float | None = None
         self._latest_temperature_c: float | None = None
+        self._ambient_c: float | None = None
+        self._window: deque[tuple[float, float]] = deque(maxlen=_MAX_WINDOW_READINGS)
 
     @property
     def subject(self) -> str:
@@ -98,9 +125,18 @@ class ActuatorResponseDetector:
         window look either instantaneous or fifty years long.
         """
         self._latest_temperature_c = reading.value
-        if self._cooling and self._start_temperature_c is None:
+        if not self._cooling:
+            return
+        if self._start_temperature_c is None:
             self._start_temperature_c = reading.value
             self._started_s = self._clock.monotonic()
+        self._window.append((self._clock.monotonic(), reading.value))
+
+    def observe_ambient(self, ambient_c: float) -> None:
+        """Note the outdoor temperature, which decides whether the unit may be
+        at capacity. Not reset with the window: it is a condition, not
+        evidence gathered during one."""
+        self._ambient_c = ambient_c
 
     def reset(self) -> None:
         """Abandon the current evaluation window.
@@ -111,6 +147,7 @@ class ActuatorResponseDetector:
         """
         self._started_s = None
         self._start_temperature_c = None
+        self._window.clear()
 
     def evaluate(self) -> Finding:
         """Judge the actuator on the current cooling period.
@@ -134,13 +171,29 @@ class ActuatorResponseDetector:
             return self._finding(Judgment.UNKNOWN, cooled_c=0.0, elapsed_s=elapsed_s)
 
         cooled_c = self._cooling_achieved_c()
-        if cooled_c >= self._config.min_cooling_c:
+        if cooled_c >= self._required_cooling_c():
             # It works. Re-anchor, so the next window is a fresh test rather
             # than a verdict that stands on one success forever.
             self._anchor_window()
             return self._finding(Judgment.CLEAR, cooled_c, elapsed_s)
 
         return self._finding(Judgment.FAULTED, cooled_c, elapsed_s)
+
+    def _required_cooling_c(self) -> float:
+        """How much the room must have cooled for the unit to count as working.
+
+        Near ambient, ``min_cooling_c``. Far enough below it that the unit may
+        be at capacity, the room need only not have warmed by that much.
+        """
+        if self._at_possible_capacity():
+            return -self._config.min_cooling_c
+        return self._config.min_cooling_c
+
+    def _at_possible_capacity(self) -> bool:
+        if self._ambient_c is None or self._latest_temperature_c is None:
+            return False
+        gap_c = self._ambient_c - self._latest_temperature_c
+        return gap_c >= self._config.capacity_gap_c
 
     def _cooling_achieved_c(self) -> float:
         """How much the room fell over the window. Negative means it rose.
@@ -153,7 +206,24 @@ class ActuatorResponseDetector:
         """
         if self._start_temperature_c is None or self._latest_temperature_c is None:
             return 0.0
-        return self._start_temperature_c - self._latest_temperature_c
+        if len(self._window) < _READINGS_FOR_A_FIT:
+            return self._start_temperature_c - self._latest_temperature_c
+        return -self._fitted_change_c()
+
+    def _fitted_change_c(self) -> float:
+        """Change across the window along a least-squares line through it."""
+        times = [t for t, _ in self._window]
+        values = [value for _, value in self._window]
+        mean_t = sum(times) / len(times)
+        mean_value = sum(values) / len(values)
+        spread = sum((t - mean_t) ** 2 for t in times)
+        if spread == 0.0:
+            return values[-1] - values[0]
+        slope = (
+            sum((t - mean_t) * (v - mean_value) for t, v in zip(times, values))
+            / spread
+        )
+        return slope * (times[-1] - times[0])
 
     def _begin_cooling(self) -> None:
         if self._cooling:
@@ -165,11 +235,15 @@ class ActuatorResponseDetector:
         self._cooling = False
         self._started_s = None
         self._start_temperature_c = None
+        self._window.clear()
 
     def _anchor_window(self) -> None:
         """Start a fresh evaluation window from the temperature now known."""
         self._started_s = self._clock.monotonic()
         self._start_temperature_c = self._latest_temperature_c
+        self._window.clear()
+        if self._latest_temperature_c is not None:
+            self._window.append((self._started_s, self._latest_temperature_c))
 
     def _finding(
         self, judgment: Judgment, cooled_c: float, elapsed_s: float
@@ -194,5 +268,6 @@ class ActuatorResponseDetector:
                     if self._latest_temperature_c is not None
                     else 0.0
                 ),
+                "required_cooling_c": self._required_cooling_c(),
             },
         )
