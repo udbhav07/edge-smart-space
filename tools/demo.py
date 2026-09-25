@@ -125,6 +125,7 @@ class Demo:
         elapsed = 0.0
         while elapsed < seconds:
             self.simulator.step()
+            self.estimator.tick()
             self.bank.tick()
             self.control.tick()
             self.clock.advance(period_s)

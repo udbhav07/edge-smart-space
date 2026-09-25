@@ -28,7 +28,9 @@ from src.common.schemas import (
     ThermalEstimate,
     Unit,
 )
+from src.estimation.__main__ import run
 from src.estimation.persistence import CoefficientStore
+from src.estimation.rc_model import Regressor
 from src.estimation.rls import ThermalEstimator
 from src.estimation.service import COOLING_OFF, COOLING_ON, ThermalEstimatorService
 
@@ -426,3 +428,212 @@ class TestPersistence:
     def test_starting_from_the_prior_is_a_normal_outcome(self, config):
         service, _, _, _, _, _ = _service(config)
         assert service.restore() is False
+
+
+def _health(board, clock, sensor_id: str, quality: Quality) -> None:
+    health = SensorHealth(
+        ts=clock.now(),
+        sensor_id=sensor_id,
+        quality=quality,
+        active_fault_id="f_x" if quality is Quality.FAULTED else None,
+    )
+    board.dispatch(
+        topics.SENSOR_HEALTH.format(sensor_id=sensor_id),
+        health.model_dump_json().encode(),
+    )
+
+
+def _indoor(board, clock, value: float, quality: Quality = Quality.OK) -> None:
+    reading = SensorReading(
+        ts=clock.now(),
+        sensor_id=INDOOR,
+        value=value,
+        unit=Unit.CELSIUS,
+        quality=quality,
+    )
+    board.dispatch(
+        topics.SENSOR_STATE.format(sensor_id=INDOOR),
+        reading.model_dump_json().encode(),
+    )
+
+
+class TestSuspectReadings:
+    """A reading its own sensor flags is never fitted (FR-29, section 5.1)."""
+
+    def test_a_suspect_reading_produces_no_estimate(self, config):
+        service, transport, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 3, config.loop.sensor_period_s)
+        before = len(transport.on("space/estimate/thermal"))
+        _indoor(board, clock, 999.0, Quality.SUSPECT)
+        assert len(transport.on("space/estimate/thermal")) == before
+
+    def test_a_suspect_reading_is_counted(self, config):
+        service, _, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 3, config.loop.sensor_period_s)
+        _indoor(board, clock, 999.0, Quality.SUSPECT)
+        assert service.suspect_readings == 1
+
+    def test_a_suspect_reading_leaves_the_residual_spread_alone(self, config):
+        """The live run saw sigma reach 480 C after two 999 C samples, which
+        blinded D4 for minutes after the fault had cleared."""
+        service, _, clock, board, estimator, _ = _service(config)
+        _feed(service, board, clock, 10, config.loop.sensor_period_s)
+        sigma = estimator.residual_sigma
+        _indoor(board, clock, 999.0, Quality.SUSPECT)
+        assert estimator.residual_sigma == sigma
+
+    def test_a_suspect_reading_leaves_the_coefficients_alone(self, config):
+        service, _, clock, board, estimator, _ = _service(config)
+        _feed(service, board, clock, 30, config.loop.sensor_period_s)
+        theta = estimator.theta
+        _indoor(board, clock, 999.0, Quality.SUSPECT)
+        assert (estimator.theta == theta).all()
+
+    def test_the_pair_spanning_a_suspect_reading_is_not_fitted(self, config):
+        """The gap it leaves is two periods, which the interval check refuses."""
+        service, _, clock, board, _, _ = _service(config)
+        period_s = config.loop.sensor_period_s
+        _feed(service, board, clock, 3, period_s)
+        skipped = service.skipped_pairs
+        _indoor(board, clock, 999.0, Quality.SUSPECT)
+        clock.advance(period_s)
+        _indoor(board, clock, 29.0)
+        assert service.skipped_pairs == skipped + 1
+
+
+class TestOpenLoopPrediction:
+    """FR-27: while the indoor sensor is faulted, the model runs on itself."""
+
+    def _faulted_after(self, config, samples: int = 10, start_c: float = 29.0):
+        service, transport, clock, board, estimator, _ = _service(config)
+        _feed(service, board, clock, samples, config.loop.sensor_period_s, start_c)
+        _health(board, clock, INDOOR, Quality.FAULTED)
+        return service, transport, clock, board, estimator
+
+    def test_a_trusted_sensor_means_tick_does_nothing(self, config):
+        service, _, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 3, config.loop.sensor_period_s)
+        assert service.tick() is None
+        assert not service.open_loop
+
+    def test_a_faulted_indoor_sensor_starts_open_loop(self, config):
+        service, *_ = self._faulted_after(config)
+        assert service.open_loop
+
+    def test_a_fault_before_any_reading_has_nothing_to_start_from(self, config):
+        service, _, clock, board, _, _ = _service(config)
+        _health(board, clock, INDOOR, Quality.FAULTED)
+        assert not service.open_loop
+        assert service.tick() is None
+
+    def test_another_sensor_faulting_does_not_start_open_loop(self, config):
+        service, _, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 3, config.loop.sensor_period_s)
+        _health(board, clock, OUTDOOR, Quality.FAULTED)
+        assert not service.open_loop
+
+    def test_each_tick_publishes_a_prediction(self, config):
+        service, transport, *_ = self._faulted_after(config)
+        before = len(transport.on("space/estimate/thermal"))
+        service.tick()
+        service.tick()
+        assert len(transport.on("space/estimate/thermal")) == before + 2
+
+    def test_the_first_step_starts_from_the_last_trusted_reading(self, config):
+        service, _, clock, board, estimator = self._faulted_after(config)
+        last_trusted_c = _last_fed_c(10)
+        expected = estimator.predict(
+            Regressor(
+                indoor_c=last_trusted_c,
+                outdoor_c=FED_OUTDOOR_C,
+                command=COOLING_OFF,
+                occupancy=0.0,
+            )
+        )
+        assert service.tick().t_pred == pytest.approx(expected)
+
+    def test_the_prediction_evolves_rather_than_holding(self, config):
+        """A dropout delivers no readings; the prediction must still move."""
+        service, *_ = self._faulted_after(config)
+        first = service.tick().t_pred
+        for _ in range(50):
+            latest = service.tick().t_pred
+        assert latest != first
+
+    def test_a_faulted_reading_does_not_become_the_prediction(self, config):
+        """The defect the live run found: the prediction restated the fault."""
+        service, _, clock, board, _ = self._faulted_after(config)
+        for _ in range(20):
+            clock.advance(config.loop.sensor_period_s)
+            _indoor(board, clock, 999.0)
+            estimate = service.tick()
+        assert abs(estimate.t_pred - _last_fed_c(10)) < 1.0
+
+    def test_the_faulted_reading_is_published_as_heard(self, config):
+        service, _, clock, board, _ = self._faulted_after(config)
+        _indoor(board, clock, 27.0)
+        estimate = service.tick()
+        assert estimate.t_in == 27.0
+        assert estimate.residual == pytest.approx(27.0 - estimate.t_pred)
+
+    def test_open_loop_estimates_are_marked_frozen(self, config):
+        service, *_ = self._faulted_after(config)
+        assert service.tick().adaptation is AdaptationState.FROZEN
+
+    def test_open_loop_leaves_the_residual_spread_alone(self, config):
+        service, _, clock, board, estimator = self._faulted_after(config)
+        sigma = estimator.residual_sigma
+        for _ in range(5):
+            _indoor(board, clock, 999.0)
+            service.tick()
+        assert estimator.residual_sigma == sigma
+
+    def test_the_fault_clearing_returns_to_readings(self, config):
+        service, _, clock, board, _ = self._faulted_after(config)
+        service.tick()
+        _health(board, clock, INDOOR, Quality.OK)
+        assert not service.open_loop
+        assert service.tick() is None
+
+    def test_the_first_reading_after_recovery_is_not_paired_across_the_fault(
+        self, config
+    ):
+        """The last trusted reading predates the fault by an unknown time."""
+        service, transport, clock, board, _ = self._faulted_after(config)
+        _health(board, clock, INDOOR, Quality.OK)
+        before = len(transport.on("space/estimate/thermal"))
+        _indoor(board, clock, 29.0)
+        assert len(transport.on("space/estimate/thermal")) == before
+
+    def test_nothing_is_predicted_before_ambient_is_known(self, config):
+        service, _, clock, board, _, _ = _service(config)
+        _indoor(board, clock, 29.0)
+        _health(board, clock, INDOOR, Quality.FAULTED)
+        assert service.open_loop
+        assert service.tick() is None
+
+
+def _last_fed_c(samples: int, start_c: float = 29.0) -> float:
+    """The last indoor value :func:`_feed` delivers for a run of ``samples``."""
+    temperature = start_c
+    for _ in range(samples - 1):
+        temperature += 0.002 * (FED_OUTDOOR_C - temperature)
+    return temperature
+
+
+class TestRunLoop:
+    def test_the_loop_ticks_once_per_period(self, config):
+        service, transport, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 10, config.loop.sensor_period_s)
+        _health(board, clock, INDOOR, Quality.FAULTED)
+        before = len(transport.on("space/estimate/thermal"))
+        period_s = config.loop.sensor_period_s
+        run(service, clock, period_s, wakes=int(period_s) * 3)
+        assert len(transport.on("space/estimate/thermal")) == before + 3
+
+    def test_a_trusted_sensor_publishes_nothing_from_the_loop(self, config):
+        service, transport, clock, board, _, _ = _service(config)
+        _feed(service, board, clock, 10, config.loop.sensor_period_s)
+        before = len(transport.on("space/estimate/thermal"))
+        run(service, clock, config.loop.sensor_period_s, wakes=20)
+        assert len(transport.on("space/estimate/thermal")) == before
