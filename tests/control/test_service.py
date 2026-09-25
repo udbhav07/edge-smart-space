@@ -20,6 +20,7 @@ from src.common.schemas import (
     GoalSource,
     Mode,
     ModeState,
+    PreferenceHint,
     SensorReading,
     ThermalEstimate,
     Unit,
@@ -341,4 +342,49 @@ class TestRunLoop:
             "space/estimate/thermal",
             "space/system/mode",
             "space/goal/proposed",
+            "space/context/preference",
         }
+
+
+def _send_preference(blackboard, clock, target_c=None, comfort="unchanged", intent="environment"):
+    hint = PreferenceHint(
+        ts=clock.now(),
+        intent=intent,
+        comfort=comfort,
+        subject="temperature" if intent == "environment" else "booking",
+        target_c=target_c,
+        rationale="asked",
+        transcript="spoken words",
+    )
+    blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
+
+
+class TestSpokenPreferences:
+    """FR-53: a preference is proposed through the same gate as anything."""
+
+    def test_a_named_temperature_is_gated_and_adopted(self, wired, clock):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=23.0)
+        assert service.setpoint_c == 23.0
+        assert transport.verdicts()[-1].proposed["source"] == "preference"
+
+    def test_an_unsafe_request_is_clamped_by_the_validator(self, wired, clock):
+        """The Week 6 demonstration: the gate refuses, demonstrably."""
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=5.0)
+        verdict = transport.verdicts()[-1]
+        assert verdict.verdict.value == "CLAMPED"
+        assert verdict.proposed["setpoint_c"] == 5.0
+
+    def test_a_service_request_changes_no_setpoint(self, wired, clock, config):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, intent="service")
+        assert service.setpoint_c == config.controller.default_setpoint_c
+        assert transport.verdicts() == []
+
+    def test_the_supervisor_is_held_back_after_a_preference(self, wired, clock):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=23.0)
+        _send_goal(blackboard, clock, 25.0)
+        assert service.setpoint_c == 23.0
+        assert transport.verdicts()[-1].reason.value == "PREFERENCE_HOLD"

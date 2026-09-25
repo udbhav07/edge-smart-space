@@ -54,6 +54,8 @@ _BOOLEAN_READING_VALUES = (0.0, 1.0)
 
 #: Keys inside a ValidationVerdict's proposed and applied objects.
 SETPOINT_KEY = "setpoint_c"
+#: Who proposed a goal, carried in a goal verdict's ``proposed`` mapping.
+SOURCE_KEY = "source"
 COMMAND_KIND_KEY = "kind"
 
 # --- Enumerations ----------------------------------------------------------
@@ -142,6 +144,10 @@ class ReasonCode(str, Enum):
     CMD_RATE = "CMD_RATE"
     MODE_BLOCK = "MODE_BLOCK"
     STALE_GOAL = "STALE_GOAL"
+    #: A supervisor proposal held back because the occupant asked for
+    #: something else recently. Arbitration, not a safety rule, but published
+    #: on the same topic so the override is visible rather than silent.
+    PREFERENCE_HOLD = "PREFERENCE_HOLD"
 
 
 class CommandKind(str, Enum):
@@ -404,7 +410,11 @@ class ValidationVerdict(TimestampedMessage):
         if self.verdict is Verdict.ACCEPTED:
             if self.reason is not ReasonCode.NONE:
                 raise ValueError("an ACCEPTED verdict must carry reason NONE")
-            if dict(self.applied) != dict(self.proposed):
+            # Compared on what was applied: a proposal may also say who made
+            # it (SOURCE_KEY), which is context rather than a decided value.
+            if any(
+                self.proposed.get(key) != value for key, value in self.applied.items()
+            ):
                 raise ValueError("an ACCEPTED verdict must apply the proposal unchanged")
         elif self.reason is ReasonCode.NONE:
             raise ValueError(f"a {self.verdict.value} verdict must carry a reason code")

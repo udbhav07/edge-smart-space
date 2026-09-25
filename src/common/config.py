@@ -472,6 +472,38 @@ class AssistanceConfig(_Section):
     )
 
 
+class GoalsConfig(_Section):
+    """The goal path: preferences into proposals, and who outranks whom."""
+
+    comfort_step_c: float = Field(
+        gt=0.0, description="How far 'cooler' or 'warmer' moves the setpoint, in C"
+    )
+    preference_ttl_s: float = Field(
+        gt=0.0, description="Seconds a spoken preference stays a valid proposal"
+    )
+    preference_hold_s: float = Field(
+        ge=0.0,
+        description="Seconds an occupant's preference outranks the supervisor",
+    )
+
+
+class SupervisorConfig(_Section):
+    """The Environmental Supervisor (DESIGN.md sections 5.7.1 and 5.7.2)."""
+
+    period_s: float = Field(gt=0.0, description="Seconds between cycles (FR-41)")
+    max_steps: int = Field(
+        gt=0, description="Tool calls one cycle may make before it must stop"
+    )
+    goal_ttl_s: float = Field(
+        gt=0.0, description="Seconds a supervisor proposal stays valid"
+    )
+    event_holdoff_s: float = Field(
+        ge=0.0,
+        description="Minimum seconds between event-triggered cycles, so a "
+        "flapping sensor cannot make the supervisor run every tick",
+    )
+
+
 class SensorNoiseConfig(_Section):
     """Adversarial-by-default sensor imperfection.
 
@@ -564,6 +596,8 @@ class Config(_Section):
     speech: SpeechConfig
     reasoning: ReasoningConfig
     assistance: AssistanceConfig
+    goals: GoalsConfig
+    supervisor: SupervisorConfig
     sim: SimConfig
 
     @model_validator(mode="after")

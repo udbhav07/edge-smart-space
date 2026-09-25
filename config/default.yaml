@@ -210,6 +210,23 @@ assistance:
   calendar_path: state/calendar.json
   calendar_max_events: 500
 
+# The goal path (FR-53). A spoken preference is proposed through the same
+# validator as everything else; these only decide what is proposed and who
+# outranks whom.
+goals:
+  comfort_step_c: 1.0       # "cooler" or "warmer" moves the setpoint this far
+  preference_ttl_s: 600.0   # a spoken preference is a valid proposal this long
+  # Without a hold, the next supervisory cycle would undo what the occupant
+  # just asked for, and the system would appear to ignore them.
+  preference_hold_s: 3600.0
+
+# The Environmental Supervisor (sections 5.7.1, 5.7.2; FR-40, FR-41).
+supervisor:
+  period_s: 300.0           # FR-41's default cadence
+  max_steps: 6              # four reads and a proposal, with one to spare
+  goal_ttl_s: 900.0         # a proposal outlives three cycles, then lapses
+  event_holdoff_s: 60.0     # a flapping sensor cannot trigger every tick
+
 # Adversarial by default. Every value here is switched on, not off: a kind
 # simulator makes simulated success predict nothing about hardware.
 sim:

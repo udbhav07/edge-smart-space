@@ -46,10 +46,13 @@ from src.common.schemas import (
     Goal,
     Mode,
     ModeState,
+    PreferenceHint,
+    ReasonCode,
     SensorReading,
     ThermalEstimate,
     ValidationVerdict,
 )
+from src.control.goal_manager import GoalManager
 from src.control.regulatory import RegulatoryController
 from src.control.validator import CommandValidator, GoalValidator
 
@@ -72,6 +75,7 @@ class ControlService:
         controller: RegulatoryController,
         goal_validator: GoalValidator,
         command_validator: CommandValidator,
+        goal_manager: GoalManager,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -79,6 +83,7 @@ class ControlService:
         self._controller = controller
         self._goal_validator = goal_validator
         self._command_validator = command_validator
+        self._goal_manager = goal_manager
 
         self._measured_c: float | None = None
         self._predicted_c: float | None = None
@@ -97,6 +102,9 @@ class ControlService:
         )
         self._blackboard.subscribe(topics.SYSTEM_MODE, ModeState, self._on_mode)
         self._blackboard.subscribe(topics.GOAL_PROPOSED, Goal, self._on_goal)
+        self._blackboard.subscribe(
+            topics.CONTEXT_PREFERENCE, PreferenceHint, self._on_preference
+        )
 
     @property
     def setpoint_c(self) -> float:
@@ -132,6 +140,24 @@ class ControlService:
         gate working and belongs in the audit trail; hiding it would remove the
         only evidence that the gate runs at all (section 5.4).
         """
+        if not self._goal_manager.admits(goal):
+            verdict = self._goal_validator.refuse(goal, ReasonCode.PREFERENCE_HOLD)
+            self._blackboard.publish(topics.AUDIT_VALIDATION, verdict)
+            return
+        self._adopt(goal)
+
+    def _on_preference(self, _topic: str, hint: PreferenceHint) -> None:
+        """A spoken preference, proposed through the same gate (FR-53).
+
+        Never a command: what reaches the plant is whatever the validator
+        admits of the setpoint derived here, exactly as for any proposer.
+        """
+        goal = self._goal_manager.from_preference(hint, self.setpoint_c, self._mode)
+        if goal is None:
+            return
+        self._adopt(goal)
+
+    def _adopt(self, goal: Goal) -> None:
         verdict = self._goal_validator.validate(goal)
         self._blackboard.publish(topics.AUDIT_VALIDATION, verdict)
         self._publish_active_goal(goal)
@@ -255,4 +281,5 @@ def build_service(
             initial_setpoint_c=config.controller.default_setpoint_c,
         ),
         command_validator=CommandValidator(config=config.validator, clock=clock),
+        goal_manager=GoalManager(config.goals, clock),
     )
