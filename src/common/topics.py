@@ -164,6 +164,10 @@ CONTEXT_PREFERENCE = TopicSpec(
     "space/context/preference", Qos.AT_LEAST_ONCE, retain=False
 )
 
+#: What the system says back once it has acted on an utterance. Not retained:
+#: a reply is an answer to one question, not state.
+CONTEXT_REPLY = TopicSpec("space/context/reply", Qos.AT_LEAST_ONCE, retain=False)
+
 # --- Assistance tools (FR-70 to FR-75) -------------------------------------
 
 #: Every tool call the reasoning layer makes, including the ones it is

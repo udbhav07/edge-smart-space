@@ -500,6 +500,12 @@ class PreferenceHint(TimestampedMessage):
     spoken_reply: str = Field(
         default="", description="Plain-English answer to speak back to the occupant"
     )
+    transcript: str = Field(
+        default="",
+        description="The utterance verbatim, so a consumer acting on it -- a "
+        "calendar entry needs the exact time said -- reads the words rather "
+        "than a model's paraphrase of them",
+    )
 
     @model_validator(mode="after")
     def _nothing_actionable_carries_no_request(self) -> PreferenceHint:
@@ -600,3 +606,61 @@ class InjectionCommand(TimestampedMessage):
                 f"magnitude, got {self.magnitude!r}"
             )
         return self
+
+
+# --- Reasoning layer (FR-46, FR-63) -----------------------------------------
+
+
+class ReasoningCaller(str, Enum):
+    """Which reasoning call site produced a record (section 5.7.1)."""
+
+    SUPERVISOR = "supervisor"
+    ASSISTANT = "assistant"
+
+
+class ReasoningRecord(TimestampedMessage):
+    """One reasoning invocation, for the append-only audit (FR-46, FR-63).
+
+    Published to ``space/audit/reasoning``. It carries what the model was
+    given, what it said verbatim, what was decided about that, and what it
+    cost -- the four things needed to replay an argument about what the model
+    did, and the latency and token figures E7 reports.
+    """
+
+    caller: ReasoningCaller
+    trigger: str = Field(min_length=1, description="What caused the invocation")
+    model: str = Field(min_length=1)
+    inputs: str = Field(description="What the model was asked, as sent")
+    raw_output: str = Field(description="What the model said, verbatim")
+    verdict: str = Field(
+        min_length=1, description="What was decided about the output, one line"
+    )
+    applied: str = Field(default="", description="What changed as a result")
+    tool_calls: tuple[str, ...] = Field(
+        default=(), description="Tools the model asked for, in order"
+    )
+    latency_s: float = Field(ge=0.0, description="Wall time across every round")
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+
+
+class AssistantReply(TimestampedMessage):
+    """What the system says back after acting on an utterance.
+
+    Published to ``space/context/reply``. The preference hint's own
+    ``spoken_reply`` is written before anything has happened and can only say
+    a request was passed on; this is written after the calendar answered or
+    the validator ruled, so it can say what actually happened.
+    """
+
+    transcript: str = Field(description="The utterance being answered")
+    intent: Intent
+    reply: str = Field(min_length=1, description="One or two plain sentences")
+    invocation_ids: tuple[str, ...] = Field(
+        default=(), description="Tool invocations made while answering"
+    )
+    awaiting_confirmation: str = Field(
+        default="",
+        description="Invocation id of a booking put to the occupant, if any "
+        "(FR-54); empty when nothing is waiting",
+    )

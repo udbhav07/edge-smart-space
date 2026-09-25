@@ -159,7 +159,12 @@ class PersonalContext:
             return None
 
         raw = self._complete(transcript)
-        return self._validate(raw)
+        hint = self._validate(raw)
+        if hint is None:
+            return None
+        # The words themselves travel with the hint, so whatever acts on it --
+        # a calendar entry needs the exact time -- need not trust a paraphrase.
+        return hint.model_copy(update={"transcript": transcript.strip()})
 
     def _complete(self, transcript: str) -> str:
         try:

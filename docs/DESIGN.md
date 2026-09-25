@@ -1478,6 +1478,7 @@ startup, which NFR-06 forbids.
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
 
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
+| `space/context/reply` | pub | no | 1 | `AssistantReply` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/result` | pub | no | 1 | `ToolResult` |
@@ -1572,7 +1573,34 @@ startup, which NFR-06 forbids.
   "subject": "temperature",      // what was asked about; "" when nothing was
   "target_c": 24.0,              // null when no temperature was named
   "rationale": "it is too warm in here",
-  "spoken_reply": "I have passed that on."
+  "spoken_reply": "I have passed that on.",
+  "transcript": "it is too warm in here, can you cool it down"
+}
+
+// AssistantReply
+{
+  "ts": 1756032003.2,
+  "transcript": "put the design review in my calendar at three",
+  "intent": "service",
+  "reply": "Added design review at 15:00 on 4 September.",
+  "invocation_ids": ["inv_1756032000_0"],
+  "awaiting_confirmation": ""      // invocation id of a booking put to the occupant
+}
+
+// ReasoningRecord
+{
+  "ts": 1756032003.2,
+  "caller": "assistant",             // supervisor | assistant
+  "trigger": "utterance",
+  "model": "qwen2.5:7b",
+  "inputs": "put the design review in my calendar at three",
+  "raw_output": "schedule_event({\"starts_at\": \"2026-09-04T15:00:00\", ...})",
+  "verdict": "tool results OK",
+  "applied": "schedule_event OK",
+  "tool_calls": ["schedule_event"],
+  "latency_s": 3.4,
+  "prompt_tokens": 812,
+  "completion_tokens": 64
 }
 
 // ToolInvocation

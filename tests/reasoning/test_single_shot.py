@@ -225,3 +225,16 @@ class TestWhatServedModelsActuallySend:
             '"target_c": 5.0, "rationale": "set it to 5", "spoken_reply": "Passed on."}'
         )
         assert _context(config, client).extract(TRANSCRIPT).target_c == 5.0
+
+
+class TestTheTranscriptTravelsWithTheHint:
+    def test_the_hint_carries_the_utterance_verbatim(self, config):
+        client = StubClient(
+            '{"intent": "service", "subject": "calendar", "comfort": "unchanged", '
+            '"target_c": null, "rationale": "a meeting", "spoken_reply": "Passed on."}'
+        )
+        hint = _context(config, client).extract("  meet Ravi on Thursday at 3  ")
+        assert hint.transcript == "meet Ravi on Thursday at 3"
+
+    def test_a_discarded_extraction_still_returns_nothing(self, config):
+        assert _context(config, StubClient("not json")).extract(TRANSCRIPT) is None

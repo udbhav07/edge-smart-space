@@ -21,6 +21,8 @@ import pytest
 from src.common import topics
 from src.common.injection import InjectedFault
 from src.common.schemas import (
+    AssistantReply,
+    ReasoningRecord,
     Coefficients,
     PreferenceHint,
     FaultEvent,
@@ -114,6 +116,31 @@ PREFERENCE_HINT_PAYLOAD = {
     "target_c": 24.0,
     "rationale": "it is too warm in here",
     "spoken_reply": "I have passed that on.",
+    "transcript": "it is too warm in here, can you cool it down",
+}
+
+ASSISTANT_REPLY_PAYLOAD = {
+    "ts": 1756032003.2,
+    "transcript": "put the design review in my calendar at three",
+    "intent": "service",
+    "reply": "Added design review at 15:00 on 4 September.",
+    "invocation_ids": ["inv_1756032000_0"],
+    "awaiting_confirmation": "",
+}
+
+REASONING_RECORD_PAYLOAD = {
+    "ts": 1756032003.2,
+    "caller": "assistant",
+    "trigger": "utterance",
+    "model": "qwen2.5:7b",
+    "inputs": "put the design review in my calendar at three",
+    "raw_output": 'schedule_event({"starts_at": "2026-09-04T15:00:00", ...})',
+    "verdict": "tool results OK",
+    "applied": "schedule_event OK",
+    "tool_calls": ["schedule_event"],
+    "latency_s": 3.4,
+    "prompt_tokens": 812,
+    "completion_tokens": 64,
 }
 
 TOOL_INVOCATION_PAYLOAD = {
@@ -152,6 +179,8 @@ DOCUMENTED_PAYLOADS = [
     (PreferenceHint, PREFERENCE_HINT_PAYLOAD),
     (ToolInvocation, TOOL_INVOCATION_PAYLOAD),
     (ToolResult, TOOL_RESULT_PAYLOAD),
+    (AssistantReply, ASSISTANT_REPLY_PAYLOAD),
+    (ReasoningRecord, REASONING_RECORD_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -171,6 +200,7 @@ DOCUMENTED_TOPICS = frozenset(
         "space/actuator/{actuator_id}/command",
         "space/actuator/{actuator_id}/state",
         "space/context/preference",
+        "space/context/reply",
         "space/assist/proposed",
         "space/assist/confirmed",
         "space/assist/result",
