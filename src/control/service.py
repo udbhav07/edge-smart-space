@@ -39,6 +39,7 @@ from src.common import topics
 from src.common.clock import Clock
 from src.common.config import Config
 from src.common.mqtt_client import Blackboard
+from src.common.tariff import TariffSchedule
 from src.common.schemas import (
     COMMAND_KIND_KEY,
     Command,
@@ -48,6 +49,7 @@ from src.common.schemas import (
     ModeState,
     PreferenceHint,
     ReasonCode,
+    TariffBand,
     SensorReading,
     ThermalEstimate,
     ValidationVerdict,
@@ -76,6 +78,7 @@ class ControlService:
         goal_validator: GoalValidator,
         command_validator: CommandValidator,
         goal_manager: GoalManager,
+        tariff: TariffSchedule,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -84,6 +87,8 @@ class ControlService:
         self._goal_validator = goal_validator
         self._command_validator = command_validator
         self._goal_manager = goal_manager
+        self._tariff = tariff
+        self._published_band: TariffBand | None = None
 
         self._measured_c: float | None = None
         self._predicted_c: float | None = None
@@ -110,6 +115,19 @@ class ControlService:
     def setpoint_c(self) -> float:
         """The setpoint in force. Held by the validator, not by the proposer."""
         return self._goal_validator.applied_setpoint_c
+
+    @property
+    def effective_setpoint_c(self) -> float:
+        """What the loop tracks: the setpoint in force, shifted during peak (FR-16).
+
+        The shift is applied after validation and clamped to V-1's upper
+        bound, so a peak can never carry the room past a limit the validator
+        would have refused.
+        """
+        if self._tariff.band_at(self._clock.now()) is not TariffBand.PEAK:
+            return self.setpoint_c
+        shifted = self.setpoint_c + self._tariff.peak_offset_c
+        return min(shifted, self._config.validator.setpoint_bounds_c.high)
 
     @property
     def mode(self) -> Mode:
@@ -170,6 +188,17 @@ class ControlService:
             self.setpoint_c,
         )
 
+    def _publish_tariff_if_changed(self) -> None:
+        """Retain the band whenever it changes, so it is readable (FR-60, FR-61)."""
+        state = self._tariff.state(self._clock.now())
+        if state.band is self._published_band:
+            return
+        self._published_band = state.band
+        self._blackboard.publish(topics.TARIFF_STATE, state)
+        LOGGER.info(
+            "tariff is %s; tracking %.2f C", state.band.value, self.effective_setpoint_c
+        )
+
     def _publish_active_goal(self, goal: Goal) -> None:
         """Retain what is actually in force, which is not what was proposed."""
         self._blackboard.publish(
@@ -203,10 +232,11 @@ class ControlService:
                 self._warned_about_no_reading = True
             return None
 
+        self._publish_tariff_if_changed()
         proposed = self._controller.tick(
             measured_c=self._measured_c,
             predicted_c=self._effective_prediction_c(),
-            setpoint_c=self.setpoint_c,
+            setpoint_c=self.effective_setpoint_c,
             mode=self._mode,
         )
         verdict = self._command_validator.validate(proposed, self._mode)
@@ -282,4 +312,5 @@ def build_service(
         ),
         command_validator=CommandValidator(config=config.validator, clock=clock),
         goal_manager=GoalManager(config.goals, clock),
+        tariff=TariffSchedule(config.tariff),
     )

@@ -472,6 +472,22 @@ class AssistanceConfig(_Section):
     )
 
 
+class TariffConfig(_Section):
+    """Peak-tariff schedule and the comfort shift it asks for (FR-16)."""
+
+    peak_start_hour: int = Field(ge=0, le=23, description="Local hour peak begins")
+    peak_end_hour: int = Field(ge=1, le=24, description="Local hour peak ends")
+    peak_offset_c: float = Field(
+        ge=0.0, description="How far the setpoint rises during peak, in C"
+    )
+
+    @model_validator(mode="after")
+    def _peak_ends_after_it_starts(self) -> TariffConfig:
+        if self.peak_end_hour <= self.peak_start_hour:
+            raise ValueError("peak_end_hour must be after peak_start_hour")
+        return self
+
+
 class GoalsConfig(_Section):
     """The goal path: preferences into proposals, and who outranks whom."""
 
@@ -597,6 +613,7 @@ class Config(_Section):
     reasoning: ReasoningConfig
     assistance: AssistanceConfig
     goals: GoalsConfig
+    tariff: TariffConfig
     supervisor: SupervisorConfig
     sim: SimConfig
 

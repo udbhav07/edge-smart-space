@@ -158,6 +158,12 @@ ACTUATOR_STATE = TopicSpec(
 #: the same topics under their own id and carry ``simulated: true``.
 AIR_CONDITIONER_ID = "ac"
 
+# --- Tariff (FR-16) ---------------------------------------------------------
+
+#: The pricing band in force. Retained: it is state, and the supervisor reads
+#: it on start as much as on change.
+TARIFF_STATE = TopicSpec("space/tariff/state", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Speech and context (FR-53) --------------------------------------------
 
 CONTEXT_PREFERENCE = TopicSpec(

@@ -1479,6 +1479,7 @@ startup, which NFR-06 forbids.
 
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
 | `space/context/reply` | pub | no | 1 | `AssistantReply` |
+| `space/tariff/state` | pub | yes | 1 | `TariffState` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/result` | pub | no | 1 | `ToolResult` |
@@ -1575,6 +1576,13 @@ startup, which NFR-06 forbids.
   "rationale": "it is too warm in here",
   "spoken_reply": "I have passed that on.",
   "transcript": "it is too warm in here, can you cool it down"
+}
+
+// TariffState
+{
+  "ts": 1756032000.0,
+  "band": "peak",                 // normal | peak
+  "next_transition_ts": 1756044000.0
 }
 
 // AssistantReply

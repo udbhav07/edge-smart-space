@@ -23,6 +23,7 @@ from src.common.injection import InjectedFault
 from src.common.schemas import (
     AssistantReply,
     ReasoningRecord,
+    TariffState,
     Coefficients,
     PreferenceHint,
     FaultEvent,
@@ -119,6 +120,12 @@ PREFERENCE_HINT_PAYLOAD = {
     "transcript": "it is too warm in here, can you cool it down",
 }
 
+TARIFF_STATE_PAYLOAD = {
+    "ts": 1756032000.0,
+    "band": "peak",
+    "next_transition_ts": 1756044000.0,
+}
+
 ASSISTANT_REPLY_PAYLOAD = {
     "ts": 1756032003.2,
     "transcript": "put the design review in my calendar at three",
@@ -181,6 +188,7 @@ DOCUMENTED_PAYLOADS = [
     (ToolResult, TOOL_RESULT_PAYLOAD),
     (AssistantReply, ASSISTANT_REPLY_PAYLOAD),
     (ReasoningRecord, REASONING_RECORD_PAYLOAD),
+    (TariffState, TARIFF_STATE_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -201,6 +209,7 @@ DOCUMENTED_TOPICS = frozenset(
         "space/actuator/{actuator_id}/state",
         "space/context/preference",
         "space/context/reply",
+        "space/tariff/state",
         "space/assist/proposed",
         "space/assist/confirmed",
         "space/assist/result",

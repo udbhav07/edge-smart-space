@@ -674,3 +674,10 @@ class AssistantReply(TimestampedMessage):
         description="Invocation id of a booking put to the occupant, if any "
         "(FR-54); empty when nothing is waiting",
     )
+
+
+class TariffState(TimestampedMessage):
+    """The electricity pricing band in force, retained (FR-16)."""
+
+    band: TariffBand
+    next_transition_ts: float = Field(gt=0.0, description="When the band next changes")

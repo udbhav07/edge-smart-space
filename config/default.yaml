@@ -220,6 +220,13 @@ goals:
   # just asked for, and the system would appear to ignore them.
   preference_hold_s: 3600.0
 
+# FR-16. Peak pricing, as a local-time timetable. During peak the setpoint in
+# force rises by the offset -- never past the validator's upper bound.
+tariff:
+  peak_start_hour: 18
+  peak_end_hour: 22
+  peak_offset_c: 1.0
+
 # The Environmental Supervisor (sections 5.7.1, 5.7.2; FR-40, FR-41).
 supervisor:
   period_s: 300.0           # FR-41's default cadence

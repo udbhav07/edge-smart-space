@@ -388,3 +388,53 @@ class TestSpokenPreferences:
         _send_goal(blackboard, clock, 25.0)
         assert service.setpoint_c == 23.0
         assert transport.verdicts()[-1].reason.value == "PREFERENCE_HOLD"
+
+
+class TestPeakTariff:
+    """FR-16: during peak the loop tracks a shifted setpoint, within bounds."""
+
+    def _at_hour(self, hour: int) -> SimClock:
+        from datetime import datetime
+
+        return SimClock(start_epoch_s=datetime(2026, 10, 1, hour, 0).timestamp())
+
+    def _wired_at(self, config, hour: int):
+        clock = self._at_hour(hour)
+        transport = FakeTransport()
+        blackboard = Blackboard(config.mqtt, transport)
+        service = build_service(config, clock, blackboard)
+        service.subscribe()
+        return service, transport, blackboard, clock
+
+    def test_outside_peak_the_setpoint_is_tracked_as_set(self, config):
+        service, *_ = self._wired_at(config, 12)
+        assert service.effective_setpoint_c == service.setpoint_c
+
+    def test_during_peak_the_setpoint_rises_by_the_offset(self, config):
+        service, *_ = self._wired_at(config, 19)
+        assert service.effective_setpoint_c == service.setpoint_c + config.tariff.peak_offset_c
+
+    def test_the_shift_never_passes_the_upper_bound(self, config):
+        tariff = config.tariff.model_copy(update={"peak_offset_c": 50.0})
+        service, *_ = self._wired_at(config.model_copy(update={"tariff": tariff}), 19)
+        assert service.effective_setpoint_c == config.validator.setpoint_bounds_c.high
+
+    def test_the_band_is_published_retained(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        tariff = [(p, r) for t, p, _, r in transport.published if t == "space/tariff/state"]
+        assert len(tariff) == 1 and tariff[0][1] is True
+        assert b'"peak"' in tariff[0][0]
+
+    def test_an_unchanged_band_is_not_republished(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        service.tick()
+        assert sum(1 for t, *_ in transport.published if t == "space/tariff/state") == 1
+
+    def test_the_validated_setpoint_itself_is_unchanged(self, config):
+        """The shift is on top of what the validator admitted, not a new goal."""
+        service, *_ = self._wired_at(config, 19)
+        assert service.setpoint_c == config.controller.default_setpoint_c
