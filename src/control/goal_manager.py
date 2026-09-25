@@ -28,8 +28,12 @@ running a demonstration and needs the room to do what they said.
 **A stale proposal loses to nothing.** Goals expire (V-6), and an expired one
 is not weakened but withdrawn: leaving a supervisor's hour-old proposal in the
 running would let a reasoning layer that has since crashed keep steering the
-room. With every source silent the configured default stands, which is what
-FR-11 means by holding a valid setpoint when the layers above are gone.
+room: when a more authoritative proposal expires, the next one down takes over
+and is gated. When the *last* live proposal expires there is no new winner to
+gate, and the gate keeps what it last admitted -- FR-11's "holding the last
+valid setpoint", literally. The arbiter reports DEFAULT as the winning source
+then, and the configured default is what it would hand on only if nothing had
+ever been admitted.
 
 **Speech reaches the plant through here.** A ``PreferenceHint`` is what an
 occupant said, turned into structure (FR-53). It is converted into a proposal
