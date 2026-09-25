@@ -70,8 +70,10 @@ absent.
 sudo apt update && sudo apt install -y portaudio19-dev
 ```
 
-Wake-word models download once, at setup rather than at startup, because the
-deployed node has no internet:
+The wake-word models and the Whisper model download once, at setup rather
+than at startup, because the deployed node has no internet. The speech
+service then loads Whisper with network access refused, so skipping this step
+fails with a message naming it rather than reaching for the network:
 
 ```bash
 python setup_models.py
@@ -139,7 +141,7 @@ them all. `python start.py --help` lists what can currently be started.
 python -m sim.run_sim --steps 100     # room plant, sensors, actuator
 python -m src.estimation              # online RC identification
 python -m src.control                 # regulatory loop and safety gate
-python -m src.faults                  # fault detector bank (D1-D3)
+python -m src.faults                  # fault detector bank (D1-D5) and mode
 python -m src.speech                  # wake word, transcription, reasoning
 ```
 
@@ -293,10 +295,19 @@ evaluation degenerates into the model predicting itself.
 
 Honest about the gaps, so nobody hunts for something that isn't there:
 
-- `src/faults/detectors/` — D4 drift and D5 actuator-response are not written
-- `src/faults/mode_manager.py` — degraded modes and control on prediction
+- `src/reasoning/` — the Environmental Supervisor (FR-40, FR-41) and the Fault
+  Diagnosis call (FR-25, FR-43); Personal Context is the only reasoning call
+- a goal manager — spoken preferences reach `space/context/preference` and
+  nothing yet turns them into a proposed setpoint
+- `src/assistance/` — the calendar and mock booking providers behind the tool
+  surface in `src/common/tools.py`, and the local console (FR-54 to FR-58)
+- the tariff offset (FR-16), the reasoning audit log (FR-46), and the
+  recorder and replay (FR-62)
 - `deploy/systemd/` — the unit files that supervise this on the Jetson
-- `eval/` — the baseline thermostat and the experiment harness
+- `eval/` — the baseline thermostat and experiments E2 to E7; only E1 exists
+- scheduled excitation (R-01) — under ordinary closed-loop control the model
+  identifies `a3` poorly for its first hour, which limits how long control on
+  prediction stays accurate
 
 `start.py` only lists services that exist, so its `--help` is the honest
 inventory.

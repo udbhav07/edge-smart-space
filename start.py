@@ -106,7 +106,7 @@ SERVICES = (
     Service(
         name="detectors",
         module="src.faults",
-        description="Fault detector bank: dropout, stuck-at, out-of-range",
+        description="Fault detector bank D1-D5 and the degradation mode",
     ),
     Service(
         name="speech",

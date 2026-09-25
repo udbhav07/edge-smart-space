@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.5 |
+| Version | 1.9 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.9 | Defects found by running the whole system live against a broker and a served model. **FR-27 was not what it claimed:** the prediction substituted in `DEGRADED_SENSOR` was one step ahead of the previous *reading*, so it restated the fault — a stuck value, something derived from 999 °C, or a value frozen through a dropout. The estimator now steps the model forward on its own output from the last trusted reading, once per sensor period (§5.2.3). Readings a sensor flags `suspect` are no longer fitted, and the simulated sensors now flag them as the real adapter does. §5.5 gains three more cases of one broken thing being blamed on another: D5 skips suspect readings, is suspended on every tick rather than on reading arrival, and a D5 fault raised within one window of D1–D3 confirming the indoor sensor is withdrawn; D4 is suspended while the actuator is faulted. §5.6: `DEGRADED_ACTUATOR` is released once no actuator fault holds it. §7.1's divergence response is now implemented — `MODEL_DIVERGENCE` reached nothing that decides the mode, and the coefficients were never reset — and a restarted detector bank withdraws faults retained by its predecessor. §8.4's E1 figures were one seed's; they are restated over nine, and `a3` misses its tolerance. |
 | 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
 | 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
 | 1.6 | Reconciled with the detector bank as built (Week 3). D2's latency target was unreachable by construction and is corrected from 60 s to 310 s, with the reason recorded in §5.5. D2 and D3 no longer apply to the PIR: an unoccupied room reports a constant legitimately, so variance says nothing about a stuck binary sensor, and §7.1's "D1/D2" becomes D1 only. The fault-clear confirmation period is stated as belonging to the aggregator rather than the mode manager, so one number has one owner. Fault injection gains a channel: `space/inject/{subject}` and `InjectionCommand` in §6.1 and §6.2, applied at the Layer 1 adapter so nothing above can tell an injected fault from a suffered one (FR-31). |
@@ -635,8 +636,10 @@ These implement FR-06 and are the difference between "we ran RLS" and "we ran RL
 | Symmetry loss | After each update, symmetrise: `P ← (P + Pᵀ)/2`. |
 | Insufficient excitation | Skip the update when `‖φ[k]‖` variation over the last window falls below a threshold. A constant regressor carries no information and only degrades `P`. |
 | Implausible parameters | Test `θ` against the box in §5.2.1, `a1` included after deriving it. An estimate outside the box is **reverted**, not clamped: a projected vector is a point the data never supported, and adopting it would let one bad update park the estimate on a box edge and stay there. Log the rejection with the coefficient that broke. |
-| Model divergence | A *sustained rate* of meaningful rejections, not a run of them: `MODEL_DIVERGENCE` is raised when at least `divergence_rejection_fraction` of a full `divergence_window_samples` window was rejected. See below. |
-| Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). Never adapt to bad data. |
+| Model divergence | A *sustained rate* of meaningful rejections, not a run of them: `MODEL_DIVERGENCE` is raised when at least `divergence_rejection_fraction` of a full `divergence_window_samples` window was rejected. See below. The coefficients are then reset to `θ₀` (§7.1), which also empties the window, so a divergence is announced once. |
+| Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). A reading its own sensor flags `suspect` is never fitted either. Never adapt to bad data. |
+| Prediction on a faulted sensor | While the indoor sensor is faulted, the one-step prediction would be built from the faulted reading and restate it. The model instead steps forward on its own output from the last trusted reading, once per sensor period and independently of readings, since a dropped sensor delivers none. This is what `DEGRADED_SENSOR` controls on (FR-27). |
+| A stalled estimate | **Open.** Because a rejection reverts `P` as well as `θ`, an estimate that lands where every update breaks a bound cannot move again, and if the bound is `a4`'s it is excluded from divergence and nobody is told. Seen live at startup, where the three regressors are nearly collinear. Healthy runs reach 110 consecutive rejections, so a run-length rule needs a window of about 30 minutes; whether a stalled model should then force `SAFE_HOLD` while the sensor is healthy is undecided. |
 
 ##### Why divergence is a rate and not a run
 
@@ -809,6 +812,27 @@ the air conditioner, so D5 raises an actuator fault that is not there, two
 subjects are faulted at once, the mode escalates to `SAFE_HOLD`, and FR-27's
 control-on-prediction is switched off by the very fault it exists to survive.
 
+**Suspension alone left three gaps, found at v1.9 by running the system.**
+Each turned one broken thing into two:
+
+- *Before confirmation.* D3 debounces over two samples, and one 999 °C sample
+  landing as D5's window closed read as the room warming by 970 °C. D5 now
+  skips any reading its sensor flags `suspect`, without abandoning the window.
+- *Silence.* D5 was suspended when an untrusted reading *arrived*, and a
+  dropped sensor sends none, so D5 judged a window on the last value before
+  the silence. It is now suspended on every tick while the sensor is untrusted.
+- *The race with D2.* A stuck sensor takes D2 about five minutes to confirm,
+  and D5's window can close on the frozen value first. When D1, D2 or D3
+  confirms the indoor sensor, a D5 fault raised within one D5 window of that
+  is withdrawn: it was judged on the broken sensor. D4 cannot withdraw D5,
+  because D4 is itself derived from a model that assumes the air conditioner
+  works.
+
+The converse holds too. With the air conditioner not cooling, the model's
+expectation fails on every sample and D4 raises drift on a healthy sensor. D4
+is suspended while the actuator is faulted, and forgets what it accumulated
+before D5 confirmed.
+
 **On D5's test, corrected at v1.7.** This row read `|ΔT|` below a threshold
 until the detector was built. That catches a room which did not move, but not
 one which got *warmer* while the compressor was supposedly running — the more
@@ -870,6 +894,13 @@ D5 also reads UNKNOWN whenever cooling is not being commanded, and an UNKNOWN
 never retires a fault, so the hold would be permanent. The operator reset on
 `space/system/reset` is therefore the route back from `DEGRADED_ACTUATOR` as
 well as from `SAFE_HOLD`.
+
+One exception, at v1.9: `DEGRADED_ACTUATOR` is released once no actuator fault
+holds it. That happens when a D5 fault is withdrawn as judged on a broken
+sensor (§5.5), and also when D5 genuinely clears — a hold does not switch the
+compressor off, so a working unit still cools the room and D5 can observe it.
+`SAFE_HOLD` is not released this way: it can be entered on a count of subjects
+or an exhausted budget, neither of which is a fault that could go away.
 
 A reset retires the active faults rather than overriding them. The operator is
 not asserting the room is fine; they are asserting they have looked at it and
@@ -1647,12 +1678,23 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 1. All three demonstration scenarios (adaptive tracking, sensor-fault ride-through, actuator-fault safe degradation) execute end-to-end without manual intervention.
 2. RLS coefficients converge to within the stated tolerance of ground truth in simulation (E1) and remain within physical bounds over a 24 h hardware run. The tolerance, set from what E1 measured rather than chosen in advance:
 
-   | Coefficient | Tolerance | Measured (24 h, identifiable plant) |
+   | Coefficient | Tolerance | Measured, 24 h, identifiable plant, nine seeds (median / worst) |
    |---|---|---|
-   | `a1` | 0.01 | 0.0011 |
-   | `a2` | 0.01 | 0.0011 |
-   | `a3` | 0.005 | 0.00013 |
-   | `a4` | 0.05 | 0.0355 |
+   | `a1` | 0.01 | 0.0015 / 0.0021 |
+   | `a2` | 0.01 | 0.0015 / 0.0021 |
+   | `a3` | 0.005 | **0.0094 / 0.0113 — misses** |
+   | `a4` | 0.05 | 0.0092 / 0.0158 |
+
+   Until v1.9 this column held one seed's run, and that seed happened to put
+   `a3` at 0.00013. Over nine it is overestimated by about half, consistently.
+   The cause is errors-in-variables bias that §5.2.1's reformulation reduced
+   but did not remove: `ΔT = T[k+1] − T[k]` and the regressor `T_out − T[k]`
+   share the noise on `T[k]` with opposite signs. Taking the ambient gap from
+   `T[k−1]` instead removes it — `a3`'s median error falls to about 0.002 —
+   but leaves `a2` unbiased at 0.0024 against a bound of zero, and the
+   resulting rejections trip §5.2.3's divergence rule. Fixing it is a choice
+   between the identification form and the divergence rule, and is left open
+   rather than made quietly.
 
    `a4` is loose deliberately and is the weakest of the four. Occupancy gain is around 0.0008 for a single occupant, far below the sensor noise floor, and no formulation identifies it well at that signal level (§5.2.1). It contributes roughly 0.03 °C to a prediction, so the error is affordable; stating a tight tolerance nobody can meet would be worse than stating a loose one honestly.
 3. Every injected fault class is detected in a clear majority of trials, with false-positive rate on fault-free runs below a stated bound (E3).
