@@ -6,14 +6,13 @@ actually break — the state transitions and the timeout arithmetic — are the
 parts that were previously untestable.
 """
 
-import re
 from pathlib import Path
 
 import pytest
 
 from src.common.clock import SimClock
 from src.common.config import SpeechConfig, load_config
-
+from src.common.schemas import Comfort, PreferenceHint
 from src.speech.pipeline import PipelineState, SpeechPipeline
 
 FRAME = object()
@@ -71,12 +70,30 @@ class FakeTranscriber:
         return self.text
 
 
+class FakePersonalContext:
+    def __init__(self, hint: PreferenceHint | None = None, error: Exception | None = None):
+        self.hint = hint
+        self.error = error
+        self.transcripts: list[str] = []
+
+    def extract(self, transcript: str):
+        self.transcripts.append(transcript)
+        if self.error is not None:
+            raise self.error
+        return self.hint
+
+
+def _hint(clock: SimClock) -> PreferenceHint:
+    return PreferenceHint(ts=clock.now(), comfort=Comfort.COOLER, rationale=TRANSCRIPT)
+
+
 def _pipeline(config, clock, **overrides) -> tuple[SpeechPipeline, dict]:
     parts = {
         "capture": FakeCapture(),
         "detector": FakeDetector(),
         "utterance": FakeUtterance(),
         "transcriber": FakeTranscriber(),
+        "personal_context": FakePersonalContext(),
     }
     parts.update(overrides)
     return SpeechPipeline(config, clock, **parts), parts
@@ -148,20 +165,27 @@ class TestListening:
             pipeline.accept(FRAME)
         assert transcriber.calls == [3]
 
-    def test_a_completed_utterance_yields_its_transcript(self, config):
+    def test_a_completed_utterance_yields_the_extracted_hint(self, config):
+        clock = SimClock()
+        expected = _hint(clock)
         pipeline, _ = self._woken(
-            config, SimClock(), utterance=FakeUtterance(ends_after=1)
+            config,
+            clock,
+            utterance=FakeUtterance(ends_after=1),
+            personal_context=FakePersonalContext(hint=expected),
         )
-        assert pipeline.accept(FRAME) == TRANSCRIPT
+        assert pipeline.accept(FRAME) is expected
 
-    def test_the_transcript_is_trimmed(self, config):
+    def test_the_transcript_reaches_extraction_verbatim(self, config):
+        context = FakePersonalContext()
         pipeline, _ = self._woken(
             config,
             SimClock(),
             utterance=FakeUtterance(ends_after=1),
-            transcriber=FakeTranscriber(text=f"  {TRANSCRIPT}  "),
+            personal_context=context,
         )
-        assert pipeline.accept(FRAME) == TRANSCRIPT
+        pipeline.accept(FRAME)
+        assert context.transcripts == [TRANSCRIPT]
 
 
 class TestAudioIsNotRetained:
@@ -228,46 +252,43 @@ class TestSilenceTimeout:
 
 
 class TestDegradation:
+    def test_an_unavailable_reasoning_layer_does_not_propagate(self, config):
+        """Speech is cuttable; it must not take the process with it."""
+        pipeline, _ = _pipeline(
+            config,
+            SimClock(),
+            detector=FakeDetector(hears=True),
+            utterance=FakeUtterance(ends_after=1),
+            personal_context=FakePersonalContext(error=RuntimeError("server down")),
+        )
+        pipeline.accept(FRAME)
+        assert pipeline.accept(FRAME) is None
+
+    def test_the_pipeline_still_returns_to_waiting_after_a_failure(self, config):
+        pipeline, _ = _pipeline(
+            config,
+            SimClock(),
+            detector=FakeDetector(hears=True),
+            utterance=FakeUtterance(ends_after=1),
+            personal_context=FakePersonalContext(error=RuntimeError("server down")),
+        )
+        pipeline.accept(FRAME)
+        pipeline.accept(FRAME)
+        assert pipeline.state is PipelineState.WAITING_FOR_WAKE_WORD
+
     def test_an_empty_transcript_yields_nothing(self, config):
+        context = FakePersonalContext()
         pipeline, _ = _pipeline(
             config,
             SimClock(),
             detector=FakeDetector(hears=True),
             utterance=FakeUtterance(ends_after=1),
             transcriber=FakeTranscriber(text=""),
+            personal_context=context,
         )
         pipeline.accept(FRAME)
         assert pipeline.accept(FRAME) is None
-
-    def test_whitespace_is_not_an_utterance(self, config):
-        pipeline, _ = _pipeline(
-            config,
-            SimClock(),
-            detector=FakeDetector(hears=True),
-            utterance=FakeUtterance(ends_after=1),
-            transcriber=FakeTranscriber(text="   "),
-        )
-        pipeline.accept(FRAME)
-        assert pipeline.accept(FRAME) is None
-
-    def test_the_pipeline_returns_to_waiting_after_an_utterance(self, config):
-        pipeline, _ = _pipeline(
-            config,
-            SimClock(),
-            detector=FakeDetector(hears=True),
-            utterance=FakeUtterance(ends_after=1),
-        )
-        pipeline.accept(FRAME)
-        pipeline.accept(FRAME)
-        assert pipeline.state is PipelineState.WAITING_FOR_WAKE_WORD
-
-
-class TestLayering:
-    def test_speech_does_not_import_the_reasoning_layer(self):
-        """Layer 1 turns sound into text and stops (section 5.7.1)."""
-        for module in ("pipeline", "__main__"):
-            source = Path(f"src/speech/{module}.py").read_text(encoding="utf-8")
-            assert not re.search(r"^\s*(from|import)\s+src\.reasoning", source, re.M)
+        assert context.transcripts == []
 
 
 class TestNoActuation:

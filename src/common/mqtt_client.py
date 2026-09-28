@@ -30,7 +30,7 @@ from pydantic import ValidationError
 
 from src.common.config import MqttConfig
 from src.common.schemas import BlackboardMessage
-from src.common.topics import Qos, TopicSpec
+from src.common.topics import TopicSpec
 
 LOGGER = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class Blackboard:
         self._config = config
         self._transport = transport
         self._handlers: dict[str, tuple[type[BlackboardMessage], Callable]] = {}
-        self._raw_handlers: list[tuple[str, Callable[[str, bytes], None]]] = []
+        self._device_handlers: dict[str, Callable[[str, str], None]] = {}
         self._subscriptions: dict[str, int] = {}
         self._connected = False
 
@@ -122,27 +122,6 @@ class Blackboard:
         )
         return topic
 
-    def publish_recorded(
-        self, topic: str, payload: bytes, spec: TopicSpec
-    ) -> str:
-        """Republish an already-encoded message on a concrete topic (FR-62).
-
-        For the replayer, which holds recorded bytes rather than a model. The
-        payload is published untouched: re-encoding it through a schema would
-        make a replay reflect *this* build's serialisation rather than what
-        actually crossed the wire, and the recording would stop being evidence
-        of the run it came from.
-
-        Delivery still comes from the topic. A recording cannot observe
-        whether a message was retained -- the flag is not carried to ordinary
-        subscribers -- so guessing from the recording would replay a state
-        topic as transient and leave every late subscriber blind.
-
-        :returns: the topic published to.
-        """
-        self._transport.publish(topic, payload, spec.qos.value, spec.retain)
-        return topic
-
     def subscribe(
         self,
         spec: TopicSpec,
@@ -166,29 +145,24 @@ class Blackboard:
             self._transport.subscribe(pattern, spec.qos.value)
         return pattern
 
-    def subscribe_raw(
-        self, pattern: str, handler: Callable[[str, bytes], None]
-    ) -> str:
-        """Receive undecoded payloads for every topic matching a pattern.
+    def subscribe_device(
+        self, topic: str, handler: Callable[[str, str], None], qos: int = 0
+    ) -> None:
+        """Listen to a device's own topic, outside the blackboard's schemas.
 
-        For the recorder and nothing else so far (FR-62). A recording has to
-        hold the bytes that crossed the wire: decoding would bind it to this
-        build's schemas, so a recording could not be read by a later build
-        whose fields had moved -- and a recording is meant to outlive the code
-        that produced it.
-
-        Raw handlers see *everything*, including payloads that fail their
-        schema and the zero-length publishes that withdraw a retained message.
-        Both are real events in a run, and a recording that silently dropped
-        them would replay into a different system state than the one recorded.
-
-        :returns: the subscription pattern, for logging and tests.
+        For Layer 1 only. An ESPHome node publishes ``27.4`` or ``ON``, not a
+        :class:`SensorReading`; the bridge that owns the device turns that
+        into one. The topic comes from configuration, never from code, and is
+        matched exactly -- a device topic is not a blackboard pattern.
         """
-        self._raw_handlers.append((pattern, handler))
-        self._subscriptions.setdefault(pattern, Qos.AT_LEAST_ONCE.value)
+        self._device_handlers[topic] = handler
+        self._subscriptions[topic] = qos
         if self._connected:
-            self._transport.subscribe(pattern, self._subscriptions[pattern])
-        return pattern
+            self._transport.subscribe(topic, qos)
+
+    def publish_device(self, topic: str, text: str, qos: int = 1) -> None:
+        """Send a device its own command, as plain text (Layer 1 only)."""
+        self._transport.publish(topic, text.encode(PAYLOAD_ENCODING), qos, False)
 
     def on_connected(self) -> None:
         """Issue every registered subscription. Called on each connect.
@@ -232,7 +206,13 @@ class Blackboard:
         that fails, so no component above this boundary has to defend itself
         against a malformed publisher.
         """
-        self._dispatch_raw(topic, payload)
+        device_handler = self._device_handlers.get(topic)
+        if device_handler is not None:
+            try:
+                device_handler(topic, payload.decode(PAYLOAD_ENCODING).strip())
+            except Exception:
+                LOGGER.exception("device handler for %s raised", topic)
+            return
 
         registration = self._match(topic)
         if registration is None:
@@ -260,18 +240,6 @@ class Blackboard:
             # A handler's bug must not silence the bus for every other
             # component sharing this client.
             LOGGER.exception("handler for %s raised", topic)
-
-    def _dispatch_raw(self, topic: str, payload: bytes) -> None:
-        """Hand the untouched bytes to every matching raw subscriber."""
-        for pattern, handler in self._raw_handlers:
-            if not topic_matches(pattern, topic):
-                continue
-            try:
-                handler(topic, payload)
-            except Exception:
-                # A recorder's bug must not silence the bus, for the same
-                # reason a component's must not.
-                LOGGER.exception("raw handler for %s raised", topic)
 
     def _match(self, topic: str) -> tuple[type[BlackboardMessage], Callable] | None:
         """Find the handler whose pattern matches, honouring MQTT wildcards."""

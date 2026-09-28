@@ -188,6 +188,40 @@ class FaultAggregator:
             )
         return retired
 
+    def adopt(self, event: FaultEvent) -> bool:
+        """Hold a fault raised by another component (section 5.6).
+
+        MODEL_DIVERGENCE is detected by the estimator, which owns the evidence,
+        but the mode follows from the whole fault set, which lives here. An
+        adopted fault has no detector in this bank to clear it, so it stands
+        until an operator reset retires it -- which is what section 7.1 asks of
+        a diverged model.
+
+        :returns: whether the fault was newly adopted.
+        """
+        key = (event.detector, event.subject)
+        if key in self._active:
+            return False
+        self._active[key] = _ActiveFault(event=event)
+        LOGGER.warning("adopted %s from another component", event.fault_id)
+        return True
+
+    def retract(self, detector: DetectorId, subject: str) -> FaultEvent | None:
+        """Withdraw one fault at once, without the clear confirmation.
+
+        For a finding whose evidence has been discredited rather than
+        contradicted: the input it was judged on turned out to be faulted.
+        Waiting for it to *clear* would wait for evidence the detector can no
+        longer gather, since it is suspended while that input is untrusted.
+
+        :returns: the retracted fault, or None when it was not active.
+        """
+        entry = self._active.pop((detector, subject), None)
+        if entry is None:
+            return None
+        LOGGER.warning("retracted %s", entry.event.fault_id)
+        return entry.event
+
     def _raise(
         self, key: tuple[DetectorId, str], finding: Finding, now: float
     ) -> FaultEvent:

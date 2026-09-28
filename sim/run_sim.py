@@ -24,8 +24,12 @@ from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import Config, Layer1Source, SensorNoiseConfig, load_config
-from src.common.injection import FaultInjection, InjectedFault
+from src.common.config import Bounds, Config, load_config
+from src.common.injection import (
+    ACTUATOR_SUPPORTED_FAULTS,
+    FaultInjection,
+    InjectedFault,
+)
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -51,7 +55,6 @@ INDOOR_TEMPERATURE_ID = "temp_01"
 INDOOR_HUMIDITY_ID = "hum_01"
 OUTDOOR_TEMPERATURE_ID = "outdoor_01"
 OCCUPANCY_ID = "pir_01"
-POWER_ID = "pwr_01"
 
 #: The simulated air conditioner is not a real actuator, but it is the stand
 #: -in for the one that is, so it publishes under the real id and is *not*
@@ -59,6 +62,13 @@ POWER_ID = "pwr_01"
 _SIMULATED_PLANT = True
 
 _FULL_CYCLE_RADIANS = 2.0 * math.pi
+
+#: Commands that change what the unit is doing. The published state reports
+#: the last of these: MAINTAIN and HOLD mean "carry on", and echoing them as
+#: the state left a late subscriber -- a restarted estimator -- unable to
+#: tell that the compressor was running, so it fitted and predicted with
+#: cooling off while the room was being cooled.
+_STATE_CHANGING_COMMANDS = frozenset({CommandKind.COOL, CommandKind.OFF})
 
 #: Chance that a present occupant trips the PIR in one sampling period. A
 #: person at a desk moves enough to be seen every minute or so, which at a 5 s
@@ -88,7 +98,6 @@ class RoomSimulator:
         outdoor: SimulatedSensor,
         occupancy: BinarySensor,
         presence: OccupancyTracker,
-        power: SimulatedSensor | None = None,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -101,9 +110,7 @@ class RoomSimulator:
         self._outdoor = outdoor
         self._occupancy = occupancy
         self._presence = presence
-        self._power = power
-        self._scheduled_occupancy = True
-        self._occupancy_override: bool | None = None
+        self._occupied = True
         self._started_ts = clock.now()
         self._last_outdoor_publish_ts: float | None = None
         self._last_ack = AckStatus.UNKNOWN
@@ -125,37 +132,15 @@ class RoomSimulator:
     def occupied(self) -> bool:
         """Whether someone is really in the room.
 
-        Ground truth. It follows the configured schedule unless a scenario has
-        overridden it, and it is not what gets published: the PIR sees motion,
-        and what reaches the blackboard is occupancy *derived* from that
-        through the vacancy hold-off (FR-02).
+        Ground truth, which the scenario sets. It is not what gets published:
+        the PIR sees motion, and what reaches the blackboard is occupancy
+        *derived* from that through the vacancy hold-off (FR-02).
         """
-        if self._occupancy_override is not None:
-            return self._occupancy_override
-        return self._scheduled_occupancy
+        return self._occupied
 
     @occupied.setter
     def occupied(self, value: bool) -> None:
-        """Pin occupancy, for a scenario that needs to control it.
-
-        Pinning it for a whole run is a thing to do knowingly: occupancy is a
-        model regressor, so a constant one is a free intercept and the
-        identification degrades badly (section 5.2.1).
-        """
-        self._occupancy_override = value
-
-    def release_occupancy(self) -> None:
-        """Hand occupancy back to the schedule."""
-        self._occupancy_override = None
-
-    def _advance_occupancy(self) -> None:
-        """Follow the configured pattern of coming and going."""
-        schedule = self._config.sim.occupancy
-        elapsed = self._clock.now() - self._started_ts
-        phase = elapsed % schedule.period_s
-        self._scheduled_occupancy = phase < (
-            schedule.period_s * schedule.occupied_fraction
-        )
+        self._occupied = value
 
     @property
     def reported_occupied(self) -> bool:
@@ -173,8 +158,28 @@ class RoomSimulator:
 
     def _on_command(self, topic: str, command: Command) -> None:
         LOGGER.debug("command on %s: %s", topic, command.kind.value)
-        self._last_kind = command.kind
+        if command.kind in _STATE_CHANGING_COMMANDS:
+            self._last_kind = command.kind
         self._last_ack = self._actuator.command(command.kind, command.setpoint_c)
+
+    def _inject_actuator(self, command: InjectionCommand) -> None:
+        """Break or repair the unit itself (FR-24, FR-31).
+
+        A dead unit keeps accepting commands -- an IR blaster has no idea the
+        compressor failed -- so D5 has to find it from the room.
+        """
+        if command.kind not in ACTUATOR_SUPPORTED_FAULTS:
+            LOGGER.warning(
+                "injection on %s refused: an actuator cannot be %s",
+                command.subject,
+                command.kind.value,
+            )
+            return
+        failed = command.kind is InjectedFault.NO_RESPONSE
+        self._actuator.inject_failure(failed)
+        LOGGER.info(
+            "%s the unit %s", "failing" if failed else "restoring", command.subject
+        )
 
     def _on_injection(self, _topic: str, command: InjectionCommand) -> None:
         """Obey an injection (FR-31).
@@ -185,18 +190,21 @@ class RoomSimulator:
         logged rather than ignored: an injection that appears to work and does
         nothing turns a detection trial into a phantom missed detection.
         """
-        target = self._injectable_by_id().get(command.subject)
-        if target is None:
+        if command.subject == topics.AIR_CONDITIONER_ID:
+            self._inject_actuator(command)
+            return
+        sensor = self._sensors_by_id().get(command.subject)
+        if sensor is None:
             LOGGER.warning(
                 "injection for unknown subject %s ignored", command.subject
             )
             return
         if command.kind is InjectedFault.NONE:
-            target.clear()
+            sensor.clear()
             LOGGER.info("cleared injection on %s", command.subject)
             return
         try:
-            target.inject(
+            sensor.inject(
                 FaultInjection(kind=command.kind, magnitude=command.magnitude)
             )
         except ValueError as exc:
@@ -208,25 +216,16 @@ class RoomSimulator:
             command.subject,
         )
 
-    def _injectable_by_id(self) -> dict[str, object]:
-        """Everything at Layer 1 that can be told to misbehave (FR-31).
-
-        The actuator is in here alongside the sensors, because FR-24 is a
-        fault class like any other and an examiner has to be able to break the
-        air conditioner the same way they break a sensor.
-        """
-        targets: dict[str, object] = {
+    def _sensors_by_id(self) -> dict[str, SimulatedSensor | BinarySensor]:
+        return {
             sensor.sensor_id: sensor
             for sensor in (
                 self._indoor,
                 self._humidity,
                 self._outdoor,
                 self._occupancy,
-                *((self._power,) if self._power is not None else ()),
             )
         }
-        targets[topics.AIR_CONDITIONER_ID] = self._actuator
-        return targets
 
     def outdoor_temperature_c(self) -> float:
         """Ambient, as a daily cycle around the configured mean."""
@@ -240,13 +239,12 @@ class RoomSimulator:
         """Advance the plant one sensor period and publish what came out."""
         period_s = self._config.loop.sensor_period_s
         self._actuator.apply_due_commands()
-        self._advance_occupancy()
         outdoor_c = self.outdoor_temperature_c()
 
         self._room.step(
             duration_s=period_s,
             cooling_fraction=self._actuator.cooling_fraction,
-            occupied=self.occupied,
+            occupied=self._occupied,
             outdoor_c=outdoor_c,
         )
 
@@ -254,7 +252,6 @@ class RoomSimulator:
         self._publish_humidity()
         self._publish_outdoor(outdoor_c)
         self._publish_occupancy()
-        self._publish_power()
         self._publish_actuator_state()
 
     def _publish_indoor(self) -> None:
@@ -292,38 +289,11 @@ class RoomSimulator:
         the hold-off turns that back into presence. Publishing ground truth
         here would hide the one behaviour this sensor actually has.
         """
-        if self.occupied and self._motion_this_step():
+        if self._occupied and self._motion_this_step():
             self._presence.motion()
         self._publish_reading(
             self._occupancy.sample(self._presence.occupied), OCCUPANCY_ID
         )
-
-    def electrical_power_w(self) -> float:
-        """What the air conditioner is drawing, as a meter on its supply sees it.
-
-        Ground truth for the meter below. It follows the drive the room
-        actually receives, so a unit broken STUCK_OFF draws standby power --
-        which is what makes a power reading evidence about the actuator rather
-        than an echo of the command (R-02).
-        """
-        meter = self._config.sim.power_meter
-        return meter.standby_power_w + self._actuator.cooling_fraction * (
-            meter.rated_power_w - meter.standby_power_w
-        )
-
-    def _publish_power(self) -> None:
-        """Electrical power, from the same kind of meter hardware will carry."""
-        if self._power is None:
-            return
-        reading = self._power.sample(self.electrical_power_w())
-        if reading is not None and self._power.injected_fault is InjectedFault.NONE:
-            # A meter reports the magnitude of active power and never shows a
-            # negative draw. Gaussian noise around a 4 W standby would, and D3
-            # would then call a healthy meter wired backwards -- measured, it
-            # did within a minute. An injected fault is left as injected, so
-            # an examiner can still make the meter report the impossible.
-            reading = reading.model_copy(update={"value": max(0.0, reading.value)})
-        self._publish_reading(reading, POWER_ID)
 
     def _motion_this_step(self) -> bool:
         """Whether an occupant moved enough to trip the PIR this period."""
@@ -363,6 +333,14 @@ class RoomSimulator:
             completed += 1
 
 
+def _limits_for(config: Config, sensor_id: str) -> Bounds | None:
+    """The configured physical limits of one sensor, if it is registered."""
+    for adapter in config.sensors.adapters:
+        if adapter.sensor_id == sensor_id:
+            return adapter.limits
+    return None
+
+
 def build_simulator(
     config: Config, clock: Clock, blackboard: Blackboard
 ) -> RoomSimulator:
@@ -376,13 +354,16 @@ def build_simulator(
         actuator=SimulatedActuator(config.sim.actuator, rng, clock),
         rng=rng,
         indoor=SimulatedSensor(
-            INDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
+            INDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, INDOOR_TEMPERATURE_ID),
         ),
         humidity=SimulatedSensor(
-            INDOOR_HUMIDITY_ID, Unit.PERCENT_RH, config.sim.sensor_noise, rng, clock
+            INDOOR_HUMIDITY_ID, Unit.PERCENT_RH, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, INDOOR_HUMIDITY_ID),
         ),
         outdoor=SimulatedSensor(
-            OUTDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
+            OUTDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, OUTDOOR_TEMPERATURE_ID),
         ),
         occupancy=BinarySensor(
             OCCUPANCY_ID, config.sim.sensor_noise, rng, clock
@@ -390,35 +371,7 @@ def build_simulator(
         presence=OccupancyTracker(
             hold_off_s=config.sensors.vacancy_hold_off_s, clock=clock
         ),
-        power=_power_meter(config, clock),
     )
-
-
-def _power_meter(config: Config, clock: Clock) -> SimulatedSensor | None:
-    """The meter on the air conditioner's supply, if one is configured.
-
-    It draws from its own random stream. Sharing the plant's would shift every
-    other instrument's noise by one draw per step, and every seeded result
-    already measured -- E1's coefficients, D2's latency -- would move for a
-    reason that has nothing to do with what was being measured.
-
-    SimulatedSensor's noise model is unit-agnostic; its fields are named for
-    the temperature sensors it was written for, so the meter's watts are
-    mapped onto them here rather than renamed everywhere.
-    """
-    configured = {sensor.sensor_id for sensor in config.sensors.adapters}
-    if POWER_ID not in configured:
-        return None
-    meter = config.sim.power_meter
-    noise = SensorNoiseConfig(
-        sigma_c=meter.sigma_w,
-        quantisation_c=meter.resolution_w,
-        jitter_s=config.sim.sensor_noise.jitter_s,
-        dropout_probability=meter.dropout_probability,
-        bias_c=0.0,
-    )
-    rng = random.Random(config.sim.random_seed + meter.seed_offset)
-    return SimulatedSensor(POWER_ID, Unit.WATT, noise, rng, clock)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -432,17 +385,6 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     config = load_config(arguments.config)
-    if config.io.source is not Layer1Source.SIMULATED:
-        # The mirror of src.io's own refusal. With real sensors publishing,
-        # a simulator on the same topics is a second room contradicting the
-        # first, and nothing above Layer 1 could tell which one to believe.
-        LOGGER.error(
-            "io.source is %r; this process is the simulator. Set it to %r to "
-            "run without hardware (section 9.1).",
-            config.io.source.value,
-            Layer1Source.SIMULATED.value,
-        )
-        return 2
 
     clock = RealClock()
     holder: list = []

@@ -2,12 +2,14 @@
 
 ``python -m src.assistance``
 
-Binds the providers to the declared tool surface, announces the catalogue, and
-runs whatever the reasoning layer proposes -- subject to FR-74's confirmation
-gate for anything that commits the occupant to an outside party.
+Binds the providers to the declared tools and executes invocations published
+on the blackboard (DESIGN.md section 5.7.6). This is the only process that
+holds a provider, so it is the only place a provider swap happens (FR-72): to
+move the calendar somewhere else, change the binding in :func:`build_registry`
+and nothing else.
 
-It is a separate process for the usual reason: killing it costs assistance and
-nothing else. The regulatory loop does not know it exists.
+Killing it costs the occupant their calendar and bookings until it is back.
+It costs the room nothing: no tool reaches the plant (FR-45).
 """
 
 from __future__ import annotations
@@ -16,61 +18,40 @@ import argparse
 import logging
 from pathlib import Path
 
+from src.assistance.executor import AssistanceExecutor
+from src.assistance.providers.local_calendar import LocalCalendar
+from src.assistance.providers.mock_travel import MockTravel
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
-from src.common.tools import (
-    BOOK_TRAVEL,
-    GET_EVENTS,
-    SCHEDULE_EVENT,
-    ToolRegistry,
-)
-from src.assistance.executor import AssistanceExecutor
-from src.assistance.providers.local_calendar import LocalCalendar
-from src.assistance.providers.mock_travel import MockTravel
+from src.common.tools import BOOK_TRAVEL, GET_EVENTS, SCHEDULE_EVENT, ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 CLIENT_ID = "assistance-executor"
 
-#: The service is callback-driven; the main thread only stays interruptible.
+#: Callback-driven; the main thread only has to stay alive and interruptible.
 _IDLE_INTERVAL_S = 1.0
 
 
 def build_registry(config: Config, clock: Clock) -> ToolRegistry:
-    """Bind an implementation behind each declared tool.
-
-    The surface is declared by the registry itself, with the contract, and
-    this only says which implementation happens to be installed. They answer
-    different questions: the declaration is what the reasoning layer is shown
-    and what the catalogue publishes, the binding is what runs. Moving from
-    this calendar to a hosted one changes the second and leaves the first
-    untouched, which is the whole point of section 5.7.6.
-    """
-    registry = ToolRegistry(clock=clock)
+    """Declare the surface and bind what fulfils it (FR-71, FR-72)."""
+    registry = ToolRegistry(clock)
     calendar = LocalCalendar(
-        path=Path(config.assistance.calendar_path), clock=clock
+        Path(config.assistance.calendar_path), config.assistance.calendar_max_events
     )
     registry.bind(SCHEDULE_EVENT.name, calendar)
     registry.bind(GET_EVENTS.name, calendar)
-    registry.bind(
-        BOOK_TRAVEL.name,
-        MockTravel(clock=clock, utc_offset_h=config.site.utc_offset_h),
-    )
+    registry.bind(BOOK_TRAVEL.name, MockTravel())
     return registry
 
 
 def build_service(
     config: Config, clock: Clock, blackboard: Blackboard
 ) -> AssistanceExecutor:
-    return AssistanceExecutor(
-        config=config,
-        clock=clock,
-        blackboard=blackboard,
-        registry=build_registry(config, clock),
-    )
+    return AssistanceExecutor(clock, blackboard, build_registry(config, clock))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,10 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     arguments = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
-    )
-
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:
         config = load_config(arguments.config)
     except ConfigError as exc:
@@ -99,7 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     blackboard.start()
     service.publish_catalogue()
     LOGGER.info(
-        "assisting; watch outcomes with: mosquitto_sub -t '%s' -v",
+        "executing tool invocations from %s; results on %s",
+        topics.ASSIST_PROPOSED.pattern,
         topics.ASSIST_RESULT.pattern,
     )
     try:

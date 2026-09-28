@@ -2,59 +2,116 @@
 
 ``python -m src.reasoning``
 
-The Environmental Supervisor on its cadence and on events, Personal Context on
-every utterance, Fault Diagnosis on every confirmed fault -- all against the
-one local inference server (section 5.7.5), all recorded on
-``space/audit/reasoning``.
+Two call sites in one process (section 5.7.1): the Environmental Supervisor,
+on its cadence and on events (FR-40, FR-41), and the assistant, which acts on
+what the speech pipeline heard and says what happened (FR-42, FR-53). Each has
+its own blackboard client -- they share nothing but the model server, which a
+single instance serves for every call site (section 5.7.5).
 
-The server not answering is not a reason to exit. Each call records
-UNAVAILABLE and the process keeps listening, so the reasoning layer comes back
-by itself when the server does, and the regulatory loop never noticed it was
-gone (FR-47).
+This is the process the demonstration kills. Nothing here can stop the room
+being controlled: the regulatory loop holds the last validated setpoint and
+keeps its cadence without it (FR-11, FR-47).
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import threading
 from pathlib import Path
 
-from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import ConfigError, load_config
+from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
-from src.reasoning.service import ReasoningService, build_service
+from src.reasoning.assistant import Assistant
+from src.reasoning.chat import ChatClient
+from src.reasoning.diagnosis import FaultDiagnoser
+from src.reasoning.supervisor_agent import SupervisorAgent
+from src.reasoning.supervisor_tools import SupervisorState
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
-CLIENT_ID = "reasoning"
+ASSISTANT_CLIENT_ID = "reasoning-assistant"
+SUPERVISOR_CLIENT_ID = "reasoning-supervisor"
+DIAGNOSIS_CLIENT_ID = "reasoning-diagnosis"
 
-#: How often the loop looks for work. Short against the supervisor's cadence
-#: and long against a callback: an utterance waits at most this long.
-LOOP_PERIOD_S = 0.5
+#: How often the main loop looks for work. Short, so a spoken request is
+#: answered promptly; the supervisor's own cadence is far longer.
+_IDLE_INTERVAL_S = 0.2
 
 
-def run(
-    service: ReasoningService,
-    clock: Clock,
-    period_s: float = LOOP_PERIOD_S,
-    ticks: int | None = None,
-) -> int:
-    """Tick until interrupted, or for a fixed number of iterations."""
+def build_assistant(
+    config: Config, clock: Clock, blackboard: Blackboard, chat: ChatClient
+) -> Assistant:
+    return Assistant(
+        config.assistance,
+        clock,
+        blackboard,
+        chat,
+        safe_range_c=config.validator.setpoint_bounds_c,
+    )
+
+
+def build_supervisor(
+    config: Config, clock: Clock, blackboard: Blackboard, chat: ChatClient
+) -> SupervisorAgent:
+    return SupervisorAgent(
+        config.supervisor, clock, blackboard, chat, SupervisorState(config, clock)
+    )
+
+
+def run(assistant: Assistant, clock: Clock, iterations: int | None = None) -> None:
+    """Answer utterances as they arrive."""
     completed = 0
-    while ticks is None or completed < ticks:
-        service.tick()
-        clock.sleep(period_s)
+    while iterations is None or completed < iterations:
+        assistant.process_pending()
+        clock.sleep(_IDLE_INTERVAL_S)
         completed += 1
-    return completed
+
+
+def supervise(
+    supervisor: SupervisorAgent,
+    clock: Clock,
+    stop: threading.Event,
+    iterations: int | None = None,
+    diagnoser: FaultDiagnoser | None = None,
+) -> None:
+    """Run diagnoses and supervisory cycles, on a thread of their own.
+
+    Separate from the assistant because a cycle is several completions long,
+    and a person asking for something must not wait behind one. Diagnosis
+    runs here too: it explains a fault after the mode has already changed,
+    so it is never on anyone's critical path (FR-26).
+    """
+    completed = 0
+    while not stop.is_set() and (iterations is None or completed < iterations):
+        try:
+            if diagnoser is not None:
+                diagnoser.process_pending()
+            supervisor.maybe_run()
+        except Exception:
+            # A supervisor bug costs supervisory cycles, never the assistant.
+            LOGGER.exception("supervisory cycle failed; previous goal retained")
+        clock.sleep(_IDLE_INTERVAL_S)
+        completed += 1
+
+
+def _board(config: Config, client_id: str) -> Blackboard:
+    holder: list = []
+    transport = build_transport(config.mqtt, client_id, holder)
+    blackboard = Blackboard(config.mqtt, transport)
+    holder.append(blackboard)
+    return blackboard
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the reasoning layer.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument(
-        "--ticks", type=int, default=None, help="Stop after N loops; default forever."
+        "--no-supervisor",
+        action="store_true",
+        help="Answer utterances only; run no supervisory cycles.",
     )
     arguments = parser.parse_args(argv)
 
@@ -66,26 +123,45 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     clock = RealClock()
-    holder: list = []
-    transport = build_transport(config.mqtt, CLIENT_ID, holder)
-    blackboard = Blackboard(config.mqtt, transport)
-    holder.append(blackboard)
-
-    service = build_service(config, clock, blackboard)
-    service.subscribe()
-    blackboard.start()
+    chat = ChatClient(config.reasoning, clock)
+    assistant_board = _board(config, ASSISTANT_CLIENT_ID)
+    supervisor_board = _board(config, SUPERVISOR_CLIENT_ID)
+    diagnosis_board = _board(config, DIAGNOSIS_CLIENT_ID)
+    diagnoser = FaultDiagnoser(clock, diagnosis_board, chat)
+    diagnoser.subscribe()
+    assistant = build_assistant(config, clock, assistant_board, chat)
+    supervisor = build_supervisor(config, clock, supervisor_board, chat)
+    assistant.subscribe()
+    if not arguments.no_supervisor:
+        supervisor.subscribe()
+    assistant_board.start()
+    supervisor_board.start()
+    diagnosis_board.start()
     LOGGER.info(
-        "reasoning against %s (%s); every call is recorded on %s",
+        "reasoning on %s with %s; supervisor every %.0f s%s",
         config.reasoning.base_url,
         config.reasoning.model,
-        topics.AUDIT_REASONING.pattern,
+        config.supervisor.period_s,
+        " (disabled)" if arguments.no_supervisor else "",
     )
+    stop = threading.Event()
+    supervising = threading.Thread(
+        target=supervise,
+        args=(supervisor, clock, stop),
+        kwargs={"diagnoser": diagnoser},
+        name="supervisor",
+        daemon=True,
+    )
+    supervising.start()
     try:
-        run(service, clock, ticks=arguments.ticks)
+        run(assistant, clock)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:
-        blackboard.stop()
+        stop.set()
+        assistant_board.stop()
+        supervisor_board.stop()
+        diagnosis_board.stop()
     return 0
 
 

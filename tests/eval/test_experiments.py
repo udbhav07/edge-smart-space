@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from eval import metrics
-from eval.experiments import e3_detection, e5_baseline
+from eval.experiments import e5_baseline
 from src.common.config import load_config
 from src.common.injection import InjectedFault
 from src.common.schemas import DetectorId
@@ -100,30 +100,6 @@ class TestLatencyMetric:
     def test_more_successes_than_trials_is_refused(self):
         with pytest.raises(ValueError):
             metrics.rate(3, 2)
-
-
-class TestE3Cases:
-    def test_every_detector_has_a_case(self):
-        """A detector with no trial is a detector nobody measured."""
-        covered = {case.detector for case in e3_detection.CASES}
-        expected = set(DetectorId) - {DetectorId.MODEL_DIVERGENCE}
-        assert covered == expected
-
-    def test_the_actuator_case_targets_the_actuator(self):
-        case = [c for c in e3_detection.CASES if c.detector.value.startswith("D5")][0]
-        assert case.subject == "actuator"
-        assert case.fault is InjectedFault.STUCK_OFF
-
-    def test_trials_differ_only_by_seed(self, config):
-        first = e3_detection._seeded(config, 0)
-        second = e3_detection._seeded(config, 1)
-        assert first.sim.random_seed != second.sim.random_seed
-        assert first.sim.room == second.sim.room
-
-    def test_a_detection_rate_counts_only_detections(self):
-        result = e3_detection.CaseResult(case=e3_detection.CASES[0])
-        result.trials, result.detections = 4, 3
-        assert result.detection_rate == 0.75
 
 
 class TestE5Verdict:

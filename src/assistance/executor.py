@@ -1,74 +1,50 @@
-"""Runs tool invocations, and is the only thing that may (FR-71 to FR-75).
+"""The assistance executor: the one process that holds the providers (section 5.7.6).
 
-The reasoning layer proposes; this executes. Between them is a topic, and the
-separation is the point: ``src/reasoning/`` cannot import a provider, so a
-change of calendar is a change of wiring rather than a change to the model's
-surroundings, and FR-74's confirmation gate cannot be skipped by calling past
-it.
+Every tool call crosses the blackboard, including the ones the reasoning layer
+is entitled to make on its own. The executor listens on
+``space/assist/proposed`` and ``space/assist/confirmed``, runs each invocation
+through the :class:`~src.common.tools.ToolRegistry` -- argument check, the
+confirmation gate, expiry, failure containment -- and publishes every outcome
+to ``space/assist/result``, refusals included (FR-73, FR-74, FR-75).
 
-**Confirmation is carried by the topic, never by a field.** An invocation on
-``space/assist/proposed`` is a request; the same invocation republished on
-``space/assist/confirmed`` is one an occupant has agreed to. A flag inside the
-message would be something the publisher could set for itself, and the one
-gate that protects an occupant from a model would be advisory.
+Whether an invocation was confirmed is decided by the topic it arrived on and
+nothing else. A field in the message would be something a publisher could set
+for itself; a topic is something the console chooses to publish on only after
+a person has said yes.
 
-**Every outcome is published, refusals included** (FR-75). A tool that was
-refused, expired, failed, or was never bound produces a result on
-``space/assist/result`` saying so. Silence would leave whoever asked waiting,
-and would leave the audit trail with a hole exactly where a decision was made.
-
-**The catalogue is retained** (FR-70), so an examiner can read what the
-reasoning layer is permitted to ask for without running it.
+A confirmed booking runs at most once. The confirmation topic is not retained,
+but a console that republishes twice -- a double click, a reconnect -- would
+otherwise book twice, and that is precisely the kind of thing a ``commit``
+tool exists to guard against.
 """
 
 from __future__ import annotations
 
 import logging
+from collections import deque
 
 from src.common import topics
 from src.common.clock import Clock
-from src.common.config import Config
 from src.common.mqtt_client import Blackboard
-from src.common.tools import ToolInvocation, ToolRegistry, ToolResult
+from src.common.tools import ToolInvocation, ToolRegistry, ToolResult, ToolStatus
 
 LOGGER = logging.getLogger(__name__)
 
+#: Confirmed invocation ids remembered to refuse a repeat. Bounded; an id
+#: older than this many confirmations is long past its expiry anyway.
+_REMEMBERED_CONFIRMATIONS = 256
+
 
 class AssistanceExecutor:
-    """One executor, holding the registry and the providers bound into it."""
+    """Runs tool invocations published on the blackboard."""
 
-    def __init__(
-        self,
-        config: Config,
-        clock: Clock,
-        blackboard: Blackboard,
-        registry: ToolRegistry,
-    ) -> None:
-        self._config = config
+    def __init__(self, clock: Clock, blackboard: Blackboard, registry: ToolRegistry) -> None:
         self._clock = clock
         self._blackboard = blackboard
         self._registry = registry
-        self._results = 0
-
-    @property
-    def results_published(self) -> int:
-        """How many outcomes have been reported. For tests and the console."""
-        return self._results
-
-    @property
-    def registry(self) -> ToolRegistry:
-        return self._registry
-
-    # --- wiring -------------------------------------------------------
+        self._confirmed: deque[str] = deque(maxlen=_REMEMBERED_CONFIRMATIONS)
 
     def subscribe(self) -> None:
-        """Listen on both invocation topics.
-
-        Two subscriptions rather than one with a flag, because which topic a
-        message arrived on *is* the authorisation. Collapsing them into one
-        handler that read a field would be the same mistake in a different
-        place.
-        """
         self._blackboard.subscribe(
             topics.ASSIST_PROPOSED, ToolInvocation, self._on_proposed
         )
@@ -77,52 +53,32 @@ class AssistanceExecutor:
         )
 
     def publish_catalogue(self) -> None:
-        """Announce the declared surface (FR-70).
-
-        Retained, so a late subscriber -- or an examiner with
-        ``mosquitto_sub`` -- can read what the reasoning layer is allowed to
-        ask for without waiting for it to ask for something.
-        """
-        catalogue = self._registry.catalogue()
-        self._blackboard.publish(topics.ASSIST_CATALOGUE, catalogue)
-        LOGGER.info(
-            "declared %d tool(s): %s",
-            len(catalogue.tools),
-            ", ".join(spec.name for spec in catalogue.tools),
-        )
-
-    # --- invocations --------------------------------------------------
+        """Retain the declared surface, so what may be asked for is readable (FR-60)."""
+        self._blackboard.publish(topics.ASSIST_CATALOGUE, self._registry.catalogue())
 
     def _on_proposed(self, _topic: str, invocation: ToolInvocation) -> None:
-        """An invocation nobody has agreed to yet."""
-        self._execute(invocation, confirmed=False)
+        self._run(invocation, confirmed=False)
 
     def _on_confirmed(self, _topic: str, invocation: ToolInvocation) -> None:
-        """An invocation an occupant has agreed to (FR-74).
+        if invocation.invocation_id in self._confirmed:
+            LOGGER.warning(
+                "ignoring a repeated confirmation of %s", invocation.invocation_id
+            )
+            return
+        self._confirmed.append(invocation.invocation_id)
+        self._run(invocation, confirmed=True)
 
-        The agreement is the topic. Whoever obtained it republished the
-        invocation here, and that act is what this reads -- not a claim inside
-        the message.
-        """
-        LOGGER.info("confirmed invocation %s", invocation.invocation_id)
-        self._execute(invocation, confirmed=True)
-
-    def _execute(self, invocation: ToolInvocation, *, confirmed: bool) -> ToolResult:
-        """Run it and publish whatever happened.
-
-        The registry never raises for a refusal, so there is no failure path
-        here that skips publication. That is deliberate: an exception escaping
-        into this loop would reach nobody, and FR-75 asks for every outcome to
-        reach the blackboard.
-        """
+    def _run(self, invocation: ToolInvocation, *, confirmed: bool) -> ToolResult:
         result = self._registry.invoke(invocation, confirmed=confirmed)
         self._blackboard.publish(topics.ASSIST_RESULT, result)
-        self._results += 1
-        LOGGER.info(
-            "%s -> %s (%s)%s",
+        level = logging.INFO if result.status is ToolStatus.OK else logging.WARNING
+        LOGGER.log(
+            level,
+            "%s %s -> %s%s: %s",
+            invocation.invocation_id,
             invocation.tool,
             result.status.value,
-            result.provider or "no provider",
-            " [simulated]" if result.simulated else "",
+            " (simulated)" if result.simulated else "",
+            result.message,
         )
         return result

@@ -1,212 +1,225 @@
-"""The Environmental Supervisor: the one tool-using agent (FR-40, FR-41).
+"""The Environmental Supervisor (sections 5.7.1 to 5.7.3; FR-40, FR-41).
 
-Of the three call sites in section 5.7.1 this is the only one with an
-open-ended tool loop. It decides for itself how much to read before it
-proposes, using the server's native tool-call template (section 5.7.3), and it
-ends by calling ``propose_setpoint`` -- which proposes, and cannot command.
+The one open-ended tool loop in the system: the model decides how many times
+to look before it proposes, bounded by ``supervisor.max_steps``. It reads the
+room through four tools, proposes one setpoint through a fifth, and is told
+what the safety validator made of it. Its entire influence on the plant is
+that proposal (FR-45).
 
-**What can go wrong, and what happens when it does.** Every exit keeps the
-regulatory loop running on the last validated setpoint (FR-11, FR-47), and
-every exit is recorded (FR-46):
-
-* the server is down or slow: ``UNAVAILABLE``, nothing proposed;
-* the model answers in words without proposing: ``NO_ACTION``;
-* it proposes something the post-decode check rejects: ``DISCARDED`` (FR-44),
-  and the run ends there -- a discarded output is discarded, not negotiated;
-* it runs out of rounds without proposing: ``DISCARDED``;
-* it proposes and the gate answers: ``APPLIED``, with the gate's verdict in
-  the record. "Applied" means the proposal went to the gate, not that the gate
-  accepted it: a clamped proposal is still the supervisor's goal, bounded.
-
-**When it runs** is :class:`SupervisorSchedule`'s business: on a cadence, and
-on the three events FR-41 names, with a minimum spacing so a flapping sensor
-cannot turn into a queue of model calls.
+It runs every ``supervisor.period_s`` and on the events FR-41 names --
+occupancy transition, tariff transition, fault confirmation -- with a
+hold-off so a flapping sensor cannot run it every tick. When it fails in any
+way -- no server, no proposal, a proposal that makes no sense -- nothing is
+published and the previous goal stands (section 5.7.1). Every cycle is
+recorded on ``space/audit/reasoning`` whatever happened (FR-46, FR-63).
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from collections import deque
 
+from src.common import topics
 from src.common.clock import Clock
-from src.common.config import Config
-from src.common.localtime import local_time
+from src.common.config import SupervisorConfig
+from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
-    CallSite,
+    SETPOINT_KEY,
+    SOURCE_KEY,
     Goal,
-    ReasoningOutcome,
+    GoalSource,
+    ReasoningCaller,
     ReasoningRecord,
     ValidationVerdict,
 )
-from src.reasoning.audit import ReasoningAudit, Trace
-from src.reasoning.endpoint import ChatEndpoint, ReasoningUnavailableError
-from src.reasoning.supervisor_tools import PROPOSE_SETPOINT, SupervisorTools
+from src.common.tools import ToolArgumentError
+from src.reasoning.assistant import local_now
+from src.reasoning.chat import ChatClient, ChatTurn, assistant_message, tool_message
+from src.reasoning.single_shot import ReasoningUnavailableError
+from src.reasoning.supervisor_tools import (
+    PROPOSE_SETPOINT,
+    SUPERVISOR_TOOLS,
+    SemanticRejection,
+    SupervisorState,
+)
 
 LOGGER = logging.getLogger(__name__)
 
+#: Seconds to wait for the validator's verdict on a proposal.
+_VERDICT_WAIT_S = 3.0
+_POLL_S = 0.05
+_VERDICTS_KEPT = 32
 
-def supervisor_prompt(config: Config) -> str:
-    """The system prompt, with the policy numbers taken from configuration.
-
-    The policy is the occupant's, not the model's: a comfort target, how far
-    to relax an empty room, how far to shift at peak. The model's job is to
-    read the room and apply that policy in words a person can check.
-    """
-    comfort_c = config.controller.default_setpoint_c
-    relax_c = config.reasoning.vacancy_relax_c
-    return (
-        "You are the supervisor of one room's air conditioning. You never "
-        "control the air conditioner. You read the room with your tools and "
-        "then propose one setpoint goal with propose_setpoint, which a safety "
-        "validator checks and may clamp or refuse.\n"
-        "Policy:\n"
-        f"- While the room is occupied, aim for {comfort_c:.1f} C.\n"
-        f"- While it is empty, you may relax it by up to {relax_c:.1f} C "
-        "warmer to save energy.\n"
-        "- While the tariff is peak, shift the goal up by the offset "
-        "get_tariff_state reports.\n"
-        "- While any fault is active, hold the setpoint already in force "
-        "rather than move it.\n"
-        "Read what you need first. Then call propose_setpoint exactly once, "
-        "passing the mode get_active_faults reports, and a rationale of one "
-        "plain sentence citing what you read."
-    )
+SUPERVISOR_PROMPT = (
+    "You supervise the temperature of one room. It is now {now}. Each cycle: "
+    "call get_thermal_state, get_occupancy, get_tariff_state and "
+    "get_active_faults, then call propose_setpoint exactly once and stop. "
+    "Policy, applied in this order: (1) if get_active_faults lists any fault, "
+    "propose t_setpoint_c unchanged; (2) otherwise, if get_occupancy says "
+    "setback_applies is true, propose {vacant:g}; (3) otherwise propose "
+    "{occupied:g}. Do not adjust for peak tariff -- the system does that "
+    "itself. Pass the mode exactly as get_active_faults reports it. The "
+    "rationale is one sentence naming the rule you applied."
+)
 
 
-@dataclass(frozen=True)
-class SupervisorRun:
-    """What one run produced, for the service and for tests."""
-
-    record: ReasoningRecord
-    goal: Goal | None = None
-    verdict: ValidationVerdict | None = None
-
-
-class EnvironmentalSupervisor:
-    """Reads the room through its tools and proposes a goal."""
+class SupervisorAgent:
+    """Runs supervisory cycles on a cadence and on events."""
 
     def __init__(
         self,
-        config: Config,
+        config: SupervisorConfig,
         clock: Clock,
-        endpoint: ChatEndpoint,
-        tools: SupervisorTools,
-        audit: ReasoningAudit,
+        blackboard: Blackboard,
+        chat: ChatClient,
+        state: SupervisorState,
     ) -> None:
         self._config = config
         self._clock = clock
-        self._endpoint = endpoint
-        self._tools = tools
-        self._audit = audit
-
-    def run(self, trigger: str) -> SupervisorRun:
-        """One supervisory cycle. Never raises for a model or server failure."""
-        now = local_time(self._clock.now(), self._config.site.utc_offset_h)
-        request = (
-            f"Trigger: {trigger}. Local time is "
-            f"{now.isoformat(timespec='minutes')}. Decide the setpoint goal."
-        )
-        messages: list[dict[str, object]] = [
-            {"role": "system", "content": supervisor_prompt(self._config)},
-            {"role": "user", "content": request},
-        ]
-        trace = Trace(CallSite.SUPERVISOR, trigger, request)
-        schemas = self._tools.schemas()
-
-        for _ in range(self._config.reasoning.supervisor_max_rounds):
-            try:
-                completion = self._endpoint.complete(messages, tools=schemas)
-            except ReasoningUnavailableError as exc:
-                trace.add_failure(exc.latency_s)
-                return self._finish(trace, ReasoningOutcome.UNAVAILABLE, str(exc))
-            trace.add(completion)
-            messages.append(completion.as_message())
-
-            if not completion.tool_calls:
-                return self._finish(
-                    trace,
-                    ReasoningOutcome.NO_ACTION,
-                    "answered without proposing; the previous goal stands",
-                )
-
-            for call in completion.tool_calls:
-                answer = self._tools.execute(call.name, call.arguments)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.call_id,
-                        "content": answer.as_text(),
-                    }
-                )
-                if answer.discarded:
-                    return self._finish(
-                        trace, ReasoningOutcome.DISCARDED, answer.discarded
-                    )
-                if call.name == PROPOSE_SETPOINT.name and answer.proposed is not None:
-                    return self._finish_proposed(trace, answer.proposed, answer.verdict)
-
-        return self._finish(
-            trace,
-            ReasoningOutcome.DISCARDED,
-            f"no proposal within {self._config.reasoning.supervisor_max_rounds} "
-            f"rounds; the previous goal stands",
-        )
-
-    def _finish(
-        self, trace: Trace, outcome: ReasoningOutcome, reason: str
-    ) -> SupervisorRun:
-        return SupervisorRun(record=self._audit.publish(trace, outcome, reason=reason))
-
-    def _finish_proposed(
-        self, trace: Trace, goal: Goal, verdict: ValidationVerdict | None
-    ) -> SupervisorRun:
-        applied = f"proposed {goal.setpoint_c:.1f} C in {goal.mode.value}"
-        if verdict is not None:
-            applied += (
-                f"; gate {verdict.verdict.value} ({verdict.reason.value}), "
-                f"applied {verdict.applied.get('setpoint_c')}"
-            )
-        record = self._audit.publish(
-            trace, ReasoningOutcome.APPLIED, reason=goal.rationale, applied=applied
-        )
-        return SupervisorRun(record=record, goal=goal, verdict=verdict)
-
-
-class SupervisorSchedule:
-    """When the supervisor runs (FR-41).
-
-    On its cadence, and on the events it is handed -- an occupancy
-    transition, a tariff transition, a newly confirmed fault -- but never two
-    runs closer than the configured minimum. An event that arrives inside the
-    spacing is not lost: it waits for the next opportunity and names itself
-    as the trigger then.
-    """
-
-    def __init__(self, config: Config, clock: Clock) -> None:
-        self._period_s = config.reasoning.supervisor_period_s
-        self._min_interval_s = config.reasoning.supervisor_min_interval_s
-        self._clock = clock
+        self._blackboard = blackboard
+        self._chat = chat
+        self._state = state
+        self._tools = tuple(spec.as_schema() for spec in SUPERVISOR_TOOLS)
         self._last_run_s: float | None = None
-        self._pending: list[str] = []
+        self._verdicts: deque[ValidationVerdict] = deque(maxlen=_VERDICTS_KEPT)
 
-    def notice(self, events: list[str]) -> None:
-        self._pending.extend(events)
-        # Bounded: only the most recent few are worth naming as a trigger.
-        del self._pending[:-8]
+    def subscribe(self) -> None:
+        self._state.subscribe(self._blackboard)
+        self._blackboard.subscribe(
+            topics.AUDIT_VALIDATION, ValidationVerdict, self._on_verdict
+        )
+
+    def _on_verdict(self, _topic: str, verdict: ValidationVerdict) -> None:
+        self._verdicts.append(verdict)
+
+    # --- scheduling ---------------------------------------------------
 
     def due(self) -> str | None:
-        """The trigger to run for now, or None if it is not time."""
-        now = self._clock.monotonic()
+        """The reason to run a cycle now, or None (FR-41)."""
+        if not self._state.thermal_known:
+            return None
+        now_s = self._clock.monotonic()
         if self._last_run_s is None:
-            return self._start("startup", now)
-        since = now - self._last_run_s
-        if self._pending and since >= self._min_interval_s:
-            return self._start("; ".join(self._pending), now)
-        if since >= self._period_s:
-            return self._start("cadence", now)
+            return "startup"
+        since = now_s - self._last_run_s
+        changes = self._state.take_changes()
+        if changes and since >= self._config.event_holdoff_s:
+            return changes[0]
+        if since >= self._config.period_s:
+            return "periodic"
         return None
 
-    def _start(self, trigger: str, now: float) -> str:
-        self._last_run_s = now
-        self._pending = []
-        return trigger
+    def maybe_run(self) -> ReasoningRecord | None:
+        trigger = self.due()
+        if trigger is None:
+            return None
+        return self.run_cycle(trigger)
+
+    # --- one cycle ----------------------------------------------------
+
+    def run_cycle(self, trigger: str) -> ReasoningRecord:
+        """Read, propose once, and record what happened."""
+        self._last_run_s = self._clock.monotonic()
+        instruction = f"Cycle trigger: {trigger}. Read the room, then propose."
+        messages: list[dict[str, object]] = [
+            {
+                "role": "system",
+                "content": SUPERVISOR_PROMPT.format(
+                    now=local_now(self._clock),
+                    vacant=self._config.vacant_setpoint_c,
+                    occupied=self._config.occupied_setpoint_c,
+                ),
+            },
+            {"role": "user", "content": instruction},
+        ]
+        turns: list[ChatTurn] = []
+        verdict_text = "no proposal; previous goal retained"
+        applied = ""
+        try:
+            for _ in range(self._config.max_steps):
+                turn = self._chat.complete(messages, self._tools)
+                turns.append(turn)
+                if not turn.tool_calls:
+                    break
+                messages.append(assistant_message(turn))
+                proposed = False
+                for call in turn.tool_calls:
+                    if call.name == PROPOSE_SETPOINT.name:
+                        answer, verdict_text, applied = self._propose(call.arguments, trigger)
+                        proposed = True
+                    else:
+                        answer = self._read(call.name)
+                    messages.append(tool_message(call, answer))
+                if proposed:
+                    break
+        except ReasoningUnavailableError as exc:
+            LOGGER.warning("supervisor unavailable, previous goal retained: %s", exc)
+            verdict_text = "reasoning unavailable; previous goal retained"
+
+        record = ReasoningRecord(
+            ts=self._clock.now(),
+            caller=ReasoningCaller.SUPERVISOR,
+            trigger=trigger,
+            model=self._chat.model,
+            inputs=instruction,
+            raw_output="\n---\n".join(turn.raw for turn in turns),
+            verdict=verdict_text,
+            applied=applied,
+            tool_calls=tuple(call.name for turn in turns for call in turn.tool_calls),
+            latency_s=sum(turn.latency_s for turn in turns),
+            prompt_tokens=sum(turn.prompt_tokens for turn in turns),
+            completion_tokens=sum(turn.completion_tokens for turn in turns),
+        )
+        self._blackboard.publish(topics.AUDIT_REASONING, record)
+        LOGGER.info("supervisor cycle (%s): %s", trigger, verdict_text)
+        return record
+
+    def _read(self, name: str) -> str:
+        try:
+            return self._state.read(name)
+        except ToolArgumentError as exc:
+            return f"error: {exc}"
+
+    def _propose(self, arguments, trigger: str) -> tuple[str, str, str]:
+        """Check, publish, and report the validator's verdict.
+
+        :returns: what the model is told, the audit verdict, and what applied.
+        """
+        try:
+            setpoint_c, mode, rationale = self._state.check_proposal(arguments)
+        except (ToolArgumentError, SemanticRejection, ValueError) as exc:
+            LOGGER.warning("supervisor proposal discarded: %s", exc)
+            return f"discarded: {exc}", f"discarded ({exc}); previous goal retained", ""
+        now = self._clock.now()
+        goal = Goal(
+            ts=now,
+            source=GoalSource.SUPERVISOR,
+            setpoint_c=setpoint_c,
+            mode=mode,
+            rationale=f"{trigger}: {rationale}",
+            expires_ts=now + self._config.goal_ttl_s,
+        )
+        self._blackboard.publish(topics.GOAL_PROPOSED, goal)
+        verdict = self._await_verdict(since_ts=now)
+        if verdict is None:
+            return (
+                "proposal sent; no verdict heard",
+                f"proposed {setpoint_c:g} C; no verdict heard",
+                "",
+            )
+        applied = verdict.applied.get(SETPOINT_KEY)
+        summary = f"{verdict.verdict.value} ({verdict.reason.value}); in force {applied}"
+        return summary, f"proposed {setpoint_c:g} C: {summary}", f"setpoint {applied}"
+
+    def _await_verdict(self, since_ts: float) -> ValidationVerdict | None:
+        deadline = self._clock.monotonic() + _VERDICT_WAIT_S
+        while True:
+            for verdict in reversed(self._verdicts):
+                if (
+                    verdict.ts >= since_ts
+                    and verdict.proposed.get(SOURCE_KEY) == GoalSource.SUPERVISOR.value
+                ):
+                    return verdict
+            if self._clock.monotonic() >= deadline:
+                return None
+            self._clock.sleep(_POLL_S)

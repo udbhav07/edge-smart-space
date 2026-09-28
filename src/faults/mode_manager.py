@@ -33,7 +33,10 @@ On an open-loop IR path there is no ack to restore (R-02), and the mode blocks
 actuation, so no cooling can be commanded and no response can be observed. The
 transition as written is unreachable on our hardware. The operator reset is
 therefore the route back from DEGRADED_ACTUATOR too, which is honest about
-what the system can actually determine by itself.
+what the system can actually determine by itself. The one exception is a mode
+left with nothing holding it: an actuator fault *withdrawn* because it was
+judged on a sensor since found broken was never evidence of anything, so the
+mode it caused is not kept once no actuator fault remains active.
 """
 
 from __future__ import annotations
@@ -139,7 +142,7 @@ class ModeManager:
                 "reset refused: %d fault(s) still active", len(active_faults)
             )
 
-        if self._mode in _OPERATOR_ONLY_EXITS:
+        if self._mode in _OPERATOR_ONLY_EXITS and self._still_held(active_faults):
             return self._mode, self._reason
 
         if self._mode is Mode.INIT and not sensors_reporting:
@@ -165,6 +168,20 @@ class ModeManager:
             )
 
         return dominant.mode_impact, dominant_cause
+
+    def _still_held(self, active_faults: Sequence[FaultEvent]) -> bool:
+        """Whether an operator-only mode still has something holding it.
+
+        SAFE_HOLD always does: it can be entered on a count of subjects or an
+        exhausted budget, neither of which is a fault that could go away.
+        DEGRADED_ACTUATOR is held by an actuator fault, and only a withdrawn
+        one -- judged on a sensor since found broken -- leaves it without.
+        """
+        if self._mode is not Mode.DEGRADED_ACTUATOR:
+            return True
+        return any(
+            event.mode_impact is Mode.DEGRADED_ACTUATOR for event in active_faults
+        )
 
     def _substitution_budget_spent(self) -> bool:
         """FR-27 is time-boxed: a prediction is not a measurement forever.

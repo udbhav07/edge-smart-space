@@ -318,3 +318,47 @@ class TestTopicMatching:
     )
     def test_non_matching_topics(self, pattern, topic):
         assert topic_matches(pattern, topic) is False
+
+
+
+class TestDeviceChannel:
+    """Layer 1 hears its devices' own plain-text topics, outside the schemas."""
+
+    def _board(self):
+        from pathlib import Path
+
+        from src.common.config import load_config
+        from src.common.mqtt_client import Blackboard
+
+        class Transport:
+            def __init__(self):
+                self.published, self.subscribed = [], []
+            def connect(self, *a): ...
+            def loop_start(self): ...
+            def loop_stop(self): ...
+            def disconnect(self): ...
+            def publish(self, topic, payload, qos, retain):
+                self.published.append((topic, payload, qos, retain))
+            def subscribe(self, topic, qos):
+                self.subscribed.append((topic, qos))
+
+        transport = Transport()
+        return Blackboard(load_config(Path("config/default.yaml")).mqtt, transport), transport
+
+    def test_a_device_payload_arrives_as_text(self):
+        board, _ = self._board()
+        heard = []
+        board.subscribe_device("node/sensor/t/state", lambda topic, text: heard.append(text))
+        board.dispatch("node/sensor/t/state", b" 27.4\n")
+        assert heard == ["27.4"]
+
+    def test_a_device_topic_is_subscribed_on_connect(self):
+        board, transport = self._board()
+        board.subscribe_device("node/sensor/t/state", lambda *_: None)
+        board.on_connected()
+        assert ("node/sensor/t/state", 0) in transport.subscribed
+
+    def test_a_device_command_is_sent_as_plain_text_unretained(self):
+        board, transport = self._board()
+        board.publish_device("node/climate/ac/mode/command", "cool")
+        assert transport.published[-1] == ("node/climate/ac/mode/command", b"cool", 1, False)

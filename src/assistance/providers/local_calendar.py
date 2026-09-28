@@ -1,23 +1,16 @@
-"""The calendar that ships with the system (FR-58).
+"""The occupant's calendar, kept on this node (FR-58).
 
-First-party on purpose. A hosted calendar would put an OAuth credential on a
-device sitting in a room, and NFR-06 keeps the node self-contained: nothing
-here reaches the network, so there is nothing to leak and nothing to expire at
-the worst moment. Section 5.7.6 makes moving to a hosted calendar later a
-matter of writing another provider, because the reasoning layer never learns
-which one is bound.
+A :class:`~src.common.tools.ToolProvider` for ``schedule_event`` and
+``get_events``. It is the provider that ships because a hosted calendar needs
+the outbound connection NFR-06 forbids (DESIGN.md section 2.2); the tool
+surface admits one, and nothing above this module would change if one were
+bound instead (FR-71, FR-72).
 
-**It is a real calendar, not a mock.** Entries persist, they are read back,
-and ``simulated`` is False -- which matters because FR-55 requires a mock to
-say so, and a provider that lied either way would make that flag worthless.
-The travel provider is the mock, and it says so.
-
-**Storage is one JSON file, written whole.** A calendar for one room holds
-tens of entries, so an index would be complexity nobody pays for, and writing
-the file whole means a crash leaves either the old file or the new one rather
-than half of each. The file is read on every call rather than cached, because
-another process -- the console, an examiner with an editor -- may have changed
-it, and a cache would quietly serve an entry somebody had deleted.
+The calendar is a JSON file, written atomically the way the estimator's
+coefficients are: a crash mid-write must leave the previous calendar, not
+half of a new one. It holds no clock. The provider contract gives it none,
+and it needs none -- every time it handles was written by the model as an
+ISO-8601 local date and time, and is stored and compared as one.
 """
 
 from __future__ import annotations
@@ -25,222 +18,215 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from src.common.clock import Clock
 from src.common.tools import (
     DEFAULT_EVENT_DURATION_MIN,
+    GET_EVENTS,
+    SCHEDULE_EVENT,
     ArgumentValue,
     ProviderOutcome,
 )
 
 LOGGER = logging.getLogger(__name__)
 
-#: Fields of a stored entry.
-_ID = "event_id"
-_STARTS_AT = "starts_at"
-_ENDS_AT = "ends_at"
-_SUBJECT = "subject"
+PROVIDER_NAME = "local_calendar"
 
-#: How an entry is described back to an occupant. Day and time without the
-#: year: somebody asking about Thursday is not helped by "2026".
-_SPOKEN_FORMAT = "%H:%M on %-d %B"
-_SPOKEN_FORMAT_WINDOWS = "%H:%M on %#d %B"
+SCHEMA_VERSION = 1
+_ENCODING = "utf-8"
+_TEMPORARY_SUFFIX = ".tmp"
 
-#: Most entries anyone will ask to see at once. A read that returned four
-#: hundred events would be answered by a model that then said "several".
-MAX_EVENTS_RETURNED = 50
+#: How many entries a reply lists by name before summarising the rest. A
+#: spoken answer that reads out twenty meetings is not an answer.
+_ENTRIES_NAMED_IN_A_REPLY = 5
 
 
-class CalendarError(RuntimeError):
-    """The calendar could not be read or written."""
+class CalendarFullError(RuntimeError):
+    """The configured bound on entries has been reached."""
 
 
-def _spoken(moment: datetime) -> str:
-    """Format a time the way it would be said aloud."""
-    try:
-        return moment.strftime(_SPOKEN_FORMAT)
-    except ValueError:
-        # Windows rejects the dash modifier rather than ignoring it.
-        return moment.strftime(_SPOKEN_FORMAT_WINDOWS)
+def describe_time(moment: datetime) -> str:
+    """A time the way a person says it: ``15:00 on Thursday 1 October``.
+
+    Built by hand rather than with ``%-d``, which Windows' strftime rejects.
+    """
+    return f"{moment:%H:%M} on {moment:%A} {moment.day} {moment:%B}"
+
+
+def describe_day(moment: datetime) -> str:
+    """A date the way a person says it: ``Thursday 1 October``, and the time
+    too only if one was given -- a flight on a day is not a flight at midnight."""
+    day = f"{moment:%A} {moment.day} {moment:%B}"
+    if moment.hour or moment.minute:
+        return f"{day} at {moment:%H:%M}"
+    return day
 
 
 class LocalCalendar:
-    """A calendar kept in a file on this machine."""
+    """Calendar entries in a local file."""
 
-    def __init__(self, path: Path, clock: Clock) -> None:
+    def __init__(self, path: Path, max_events: int) -> None:
+        if max_events <= 0:
+            raise ValueError(f"max_events must be positive, got {max_events!r}")
         self._path = path
-        self._clock = clock
+        self._max_events = max_events
+        self._events, self._next_id = self._load()
+
+    # --- ToolProvider -------------------------------------------------
 
     @property
     def name(self) -> str:
-        return "local_calendar"
+        return PROVIDER_NAME
 
     @property
     def simulated(self) -> bool:
-        """False. The entries are real and they are still there tomorrow."""
+        """A real calendar: the entry exists afterwards (FR-55 is for mocks)."""
         return False
-
-    @property
-    def path(self) -> Path:
-        return self._path
-
-    # --- storage ------------------------------------------------------
-
-    def _load(self) -> list[dict[str, object]]:
-        """Read the file, treating absence as an empty calendar.
-
-        A missing file is the ordinary state before the first entry, not an
-        error. A *corrupt* file is an error and is raised: silently starting
-        again from empty would discard somebody's appointments and report
-        success.
-        """
-        if not self._path.is_file():
-            return []
-        try:
-            parsed = json.loads(self._path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise CalendarError(f"{self._path} is not readable: {exc}") from exc
-        if not isinstance(parsed, list):
-            raise CalendarError(f"{self._path} does not hold a list of entries")
-        return parsed
-
-    def _save(self, entries: list[dict[str, object]]) -> None:
-        """Write the file whole, atomically.
-
-        Through a temporary file and a rename: a crash mid-write then leaves
-        the old calendar rather than half of a new one, and a half-written
-        JSON file is a calendar nobody can read again.
-        """
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        handle, temporary = tempfile.mkstemp(
-            dir=str(self._path.parent), suffix=".tmp"
-        )
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                json.dump(entries, stream, indent=2, sort_keys=True)
-            os.replace(temporary, self._path)
-        except OSError as exc:
-            Path(temporary).unlink(missing_ok=True)
-            raise CalendarError(f"could not write {self._path}: {exc}") from exc
-
-    # --- the tools ----------------------------------------------------
 
     def invoke(
         self, tool: str, arguments: Mapping[str, ArgumentValue]
     ) -> ProviderOutcome:
-        """Perform one of the calendar's tools.
+        """Perform one calendar tool.
 
-        The registry has already validated the arguments against the declared
-        specification, so what arrives here is the right shape; what it cannot
-        check is whether the calendar can be written, which is why this may
-        still fail.
+        :raises ValueError: for a tool this provider does not serve, or a
+            window that ends before it starts.
+        :raises CalendarFullError: when the entry bound is reached.
+        :raises OSError: when the calendar could not be written.
         """
-        if tool == "schedule_event":
+        if tool == SCHEDULE_EVENT.name:
             return self._schedule(arguments)
-        if tool == "get_events":
-            return self._read(arguments)
-        raise CalendarError(f"{self.name} does not serve {tool!r}")
+        if tool == GET_EVENTS.name:
+            return self._list(arguments)
+        raise ValueError(f"{PROVIDER_NAME} does not serve {tool!r}")
+
+    # --- entries ------------------------------------------------------
+
+    @property
+    def events(self) -> tuple[dict[str, str | int], ...]:
+        """Every entry, earliest first. A copy; the file is the record."""
+        return tuple(dict(event) for event in self._sorted())
+
+    def remove(self, event_id: str) -> bool:
+        """Delete one entry (FR-58: an unwanted entry is deleted, not undone).
+
+        :returns: whether anything was removed.
+        """
+        kept = [event for event in self._events if event["event_id"] != event_id]
+        if len(kept) == len(self._events):
+            return False
+        self._events = kept
+        self._save()
+        return True
 
     def _schedule(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
-        starts_at = self._as_datetime(arguments["starts_at"])
-        # Not ``or DEFAULT``: that reads a zero-minute entry as an absent
-        # one, so an explicit request for a marker with no duration would
-        # silently become an hour.
-        supplied = arguments.get("duration_min")
-        duration = (
-            DEFAULT_EVENT_DURATION_MIN if supplied is None else int(supplied)
-        )
-        subject = str(arguments["subject"])
-        ends_at = starts_at + timedelta(minutes=duration)
-
-        entries = self._load()
-        event_id = f"ev_{len(entries) + 1:04d}"
-        entries.append(
-            {
-                _ID: event_id,
-                _STARTS_AT: starts_at.isoformat(),
-                _ENDS_AT: ends_at.isoformat(),
-                _SUBJECT: subject,
-            }
-        )
-        self._save(entries)
-
-        clash = self._overlapping(entries, starts_at, ends_at, event_id)
-        message = f"Added {subject} at {_spoken(starts_at)}."
-        if clash:
-            # Reported rather than refused. It is the occupant's calendar and
-            # double-booking it is their business; saying nothing would be the
-            # system quietly deciding it knew better.
-            message += f" It overlaps {clash}."
+        if len(self._events) >= self._max_events:
+            raise CalendarFullError(
+                f"the calendar already holds {self._max_events} entries"
+            )
+        starts = _parse(arguments["starts_at"])
+        duration_min = int(arguments.get("duration_min") or DEFAULT_EVENT_DURATION_MIN)
+        subject = str(arguments["subject"]).strip()
+        event = {
+            "event_id": f"ev_{self._next_id:04d}",
+            "subject": subject,
+            "starts_at": starts.isoformat(timespec="minutes"),
+            "ends_at": (starts + timedelta(minutes=duration_min)).isoformat(
+                timespec="minutes"
+            ),
+            "duration_min": duration_min,
+        }
+        self._events.append(event)
+        self._next_id += 1
+        self._save()
+        LOGGER.info("added %s: %s at %s", event["event_id"], subject, event["starts_at"])
         return ProviderOutcome(
-            message=message,
-            detail={_ID: event_id, _STARTS_AT: starts_at.isoformat()},
+            message=f"Added {subject} at {describe_time(starts)}.",
+            detail={
+                "event_id": event["event_id"],
+                "starts_at": event["starts_at"],
+                "duration_min": duration_min,
+            },
         )
 
-    def _read(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
-        from_time = self._as_datetime(arguments["from_time"])
-        to_time = self._as_datetime(arguments["to_time"])
-        if to_time < from_time:
-            raise CalendarError("the window ends before it starts")
-
+    def _list(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
+        window_start = _parse(arguments["from_time"])
+        window_end = _parse(arguments["to_time"])
+        if window_end < window_start:
+            raise ValueError("the window ends before it starts")
         found = [
-            entry
-            for entry in self._load()
-            if from_time <= self._as_datetime(entry[_STARTS_AT]) <= to_time
+            event
+            for event in self._sorted()
+            if _parse(event["starts_at"]) < window_end
+            and _parse(event["ends_at"]) > window_start
         ]
-        found.sort(key=lambda entry: entry[_STARTS_AT])
-        shown = found[:MAX_EVENTS_RETURNED]
-
-        if not shown:
-            return ProviderOutcome(
-                message="Nothing in the calendar for that.", detail={"count": 0}
-            )
-
-        described = "; ".join(
-            f"{entry[_SUBJECT]} at {_spoken(self._as_datetime(entry[_STARTS_AT]))}"
-            for entry in shown
-        )
-        message = f"{len(found)} in that window: {described}."
-        if len(found) > len(shown):
-            message = (
-                f"{len(found)} in that window, the first {len(shown)}: "
-                f"{described}."
-            )
         return ProviderOutcome(
-            message=message,
-            detail={"count": len(found), "returned": len(shown)},
+            message=_summarise(found),
+            detail={"count": len(found), "entries": _listing(found)},
         )
 
-    def _overlapping(
-        self,
-        entries: list[dict[str, object]],
-        starts_at: datetime,
-        ends_at: datetime,
-        ignore_id: str,
-    ) -> str | None:
-        """The first existing entry this one runs into, if any."""
-        for entry in entries:
-            if entry[_ID] == ignore_id:
-                continue
-            existing_start = self._as_datetime(entry[_STARTS_AT])
-            existing_end = self._as_datetime(entry[_ENDS_AT])
-            if starts_at < existing_end and existing_start < ends_at:
-                return str(entry[_SUBJECT])
-        return None
+    def _sorted(self) -> list[dict[str, str | int]]:
+        return sorted(self._events, key=lambda event: str(event["starts_at"]))
 
-    @staticmethod
-    def _as_datetime(value: object) -> datetime:
-        """Parse a stored or supplied timestamp.
+    # --- storage ------------------------------------------------------
 
-        :raises CalendarError: if it is not one. A stored entry that cannot be
-            parsed is corruption, and a supplied one that cannot be parsed
-            would otherwise be written and become corruption.
+    def _load(self) -> tuple[list[dict[str, str | int]], int]:
+        """Read the calendar back. Missing is empty; unreadable is refused.
+
+        An unreadable calendar is not silently replaced with an empty one:
+        the next write would destroy every entry the occupant had.
         """
         try:
-            return datetime.fromisoformat(str(value))
-        except (TypeError, ValueError) as exc:
-            raise CalendarError(f"{value!r} is not a date and time") from exc
+            raw = json.loads(self._path.read_text(encoding=_ENCODING))
+        except FileNotFoundError:
+            LOGGER.info("no calendar at %s yet; starting empty", self._path)
+            return [], 1
+        if not isinstance(raw, dict) or raw.get("version") != SCHEMA_VERSION:
+            raise ValueError(f"calendar at {self._path} is not version {SCHEMA_VERSION}")
+        events = [dict(event) for event in raw.get("events", [])]
+        return events, int(raw.get("next_id", len(events) + 1))
+
+    def _save(self) -> None:
+        payload = {
+            "version": SCHEMA_VERSION,
+            "next_id": self._next_id,
+            "events": self._events,
+        }
+        temporary = self._path.with_suffix(self._path.suffix + _TEMPORARY_SUFFIX)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, indent=2), encoding=_ENCODING)
+        os.replace(temporary, self._path)
+
+
+def _parse(value: ArgumentValue | str | int) -> datetime:
+    """An ISO-8601 local date and time, as the tool declaration asks for.
+
+    A trailing zone is dropped rather than converted: every time here is the
+    occupant's local wall-clock time, and mixing aware and naive values would
+    make comparisons raise.
+    """
+    moment = datetime.fromisoformat(str(value))
+    return moment.replace(tzinfo=None)
+
+
+def _summarise(found: list[dict[str, str | int]]) -> str:
+    if not found:
+        return "Nothing is in the calendar then."
+    named = [
+        f"{event['subject']} at {describe_time(_parse(event['starts_at']))}"
+        for event in found[:_ENTRIES_NAMED_IN_A_REPLY]
+    ]
+    remainder = len(found) - len(named)
+    listing = "; ".join(named)
+    if remainder:
+        listing += f"; and {remainder} more"
+    count = "1 entry" if len(found) == 1 else f"{len(found)} entries"
+    return f"{count}: {listing}."
+
+
+def _listing(found: list[dict[str, str | int]]) -> str:
+    """Flat text for the result detail, which carries no nested values."""
+    return "; ".join(
+        f"{event['event_id']} {event['starts_at']} {event['subject']}" for event in found
+    )

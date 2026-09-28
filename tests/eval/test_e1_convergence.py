@@ -158,18 +158,14 @@ class TestStructuralConsistency:
 
 
 class TestRemainingWeakness:
-    """a4 is the cost of the change, and it is recorded rather than hidden.
+    """a4, occupancy gain, is the coefficient least worth trusting.
 
-    Occupancy gain is about 0.0008 for one person, far below the noise
-    floor. The old form happened to estimate it adequately; this one does
-    not, and it is now the worst of the four. It contributes roughly 0.03 C
-    to a prediction, so the error costs less than a1's did.
+    About 0.0008 for one person, far below the noise floor; it contributes
+    roughly 0.03 C to a prediction. Since v1.9 removed the errors-in-variables
+    bias it is no longer necessarily the worst of the four at every seed, so
+    what is asserted is that it stays bounded and plausible. Section 8.4's
+    tolerances are for the full 24 h run, which this short fixture is not.
     """
-
-    def test_occupancy_gain_is_the_worst_identified_coefficient(self, result):
-        """True from about an hour in, and increasingly so: a4's error grows
-        with run length while every other coefficient's shrinks."""
-        assert np.argmax(result.errors) == 3
 
     def test_it_is_nonetheless_bounded(self, result):
         """Section 8.4 sets a4's tolerance at 0.05 over a 24 h run, which the

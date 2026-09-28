@@ -16,7 +16,7 @@ from __future__ import annotations
 import random
 
 from src.common.clock import Clock
-from src.common.config import SensorNoiseConfig
+from src.common.config import Bounds, SensorNoiseConfig
 from src.common.injection import (
     BINARY_SUPPORTED_FAULTS,
     NO_FAULT,
@@ -45,6 +45,7 @@ class SimulatedSensor:
         config: SensorNoiseConfig,
         rng: random.Random,
         clock: Clock,
+        limits: Bounds | None = None,
     ) -> None:
         if unit is Unit.BOOLEAN:
             raise ValueError(
@@ -56,6 +57,7 @@ class SimulatedSensor:
         self._config = config
         self._rng = rng
         self._clock = clock
+        self._limits = limits
         self._injection = NO_FAULT
         self._injected_at_ts = clock.now()
 
@@ -69,7 +71,13 @@ class SimulatedSensor:
         return self._injection.kind
 
     def inject(self, injection: FaultInjection) -> None:
-        """Begin injecting a fault. Replaces any fault already active."""
+        """Begin injecting a fault. Replaces any fault already active.
+
+        :raises ValueError: for a fault a sensor cannot have. Accepting it
+            and doing nothing would look like a fault the detectors missed.
+        """
+        if injection.kind is InjectedFault.NO_RESPONSE:
+            raise ValueError(f"{self._sensor_id} is a sensor; only an actuator can be unresponsive")
         self._injection = injection
         self._injected_at_ts = self._clock.now()
 
@@ -130,8 +138,21 @@ class SimulatedSensor:
             sensor_id=self._sensor_id,
             value=observed,
             unit=self._unit,
-            quality=Quality.OK,
+            quality=self._quality(observed),
         )
+
+    def _quality(self, value: float) -> Quality:
+        """The instantaneous flag the real adapter raises (section 5.1).
+
+        A reading outside what the instrument can physically report is still
+        published -- D3 decides, with debounce and evidence, whether it is a
+        fault -- but it is marked suspect so no consumer mistakes it for a
+        measurement in the meantime. The live run that found this had the
+        estimator fit two 999 C samples, marked ok, before D3 confirmed.
+        """
+        if self._limits is not None and not self._limits.contains(value):
+            return Quality.SUSPECT
+        return Quality.OK
 
 
 class BinarySensor:

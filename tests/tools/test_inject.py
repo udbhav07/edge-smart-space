@@ -103,3 +103,21 @@ class TestListing:
         """A number with no unit is how the wrong one gets typed."""
         main(["--list"])
         assert "units per second" in capsys.readouterr().out
+
+
+
+def test_the_air_conditioner_can_be_killed_by_name():
+    """FR-31: every fault class in FR-20 to FR-24 is triggerable from here."""
+    from src.common.injection import InjectedFault
+    from tools.inject import FAULT_NAMES
+
+    assert FAULT_NAMES["dead"] is InjectedFault.NO_RESPONSE
+
+
+def test_the_listing_names_the_actuator():
+    from pathlib import Path
+
+    from src.common.config import load_config
+    from tools.inject import _list_targets
+
+    assert "Air conditioner" in _list_targets(load_config(Path("config/default.yaml")))

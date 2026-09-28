@@ -39,20 +39,21 @@ from src.common import topics
 from src.common.clock import Clock
 from src.common.config import Config
 from src.common.mqtt_client import Blackboard
+from src.common.tariff import TariffSchedule
 from src.common.schemas import (
     COMMAND_KIND_KEY,
-    SETPOINT_KEY,
     Command,
     CommandKind,
     Goal,
+    GoalSource,
     Mode,
     ModeState,
     PreferenceHint,
     ReasonCode,
+    TariffBand,
     SensorReading,
     ThermalEstimate,
     ValidationVerdict,
-    Verdict,
 )
 from src.control.goal_manager import GoalManager
 from src.control.regulatory import RegulatoryController
@@ -77,7 +78,8 @@ class ControlService:
         controller: RegulatoryController,
         goal_validator: GoalValidator,
         command_validator: CommandValidator,
-        goals: GoalManager,
+        goal_manager: GoalManager,
+        tariff: TariffSchedule,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -85,7 +87,9 @@ class ControlService:
         self._controller = controller
         self._goal_validator = goal_validator
         self._command_validator = command_validator
-        self._goals = goals
+        self._goal_manager = goal_manager
+        self._tariff = tariff
+        self._published_band: TariffBand | None = None
 
         self._measured_c: float | None = None
         self._predicted_c: float | None = None
@@ -114,6 +118,19 @@ class ControlService:
         return self._goal_validator.applied_setpoint_c
 
     @property
+    def effective_setpoint_c(self) -> float:
+        """What the loop tracks: the setpoint in force, shifted during peak (FR-16).
+
+        The shift is applied after validation and clamped to V-1's upper
+        bound, so a peak can never carry the room past a limit the validator
+        would have refused.
+        """
+        if self._tariff.band_at(self._clock.now()) is not TariffBand.PEAK:
+            return self.setpoint_c
+        shifted = self.setpoint_c + self._tariff.peak_offset_c
+        return min(shifted, self._config.validator.setpoint_bounds_c.high)
+
+    @property
     def mode(self) -> Mode:
         """The mode last heard. INIT until the detector bank says otherwise."""
         return self._mode
@@ -134,57 +151,35 @@ class ControlService:
         if state.mode is not self._mode:
             LOGGER.info("control mode is now %s", state.mode.value)
         self._mode = state.mode
-        self._goals.observe_mode(state.mode)
 
     def _on_goal(self, _topic: str, goal: Goal) -> None:
-        """A proposal from outside: the supervisor, an operator (FR-40).
-
-        Arbitrated first, then gated. A stale one goes straight to the gate,
-        which refuses it with the reason that is actually true (V-6). One that
-        loses arbitration is published as a verdict too: a supervisor goal
-        that changed nothing because an occupant had spoken is a decision, and
-        a decision nobody can see did not happen.
-        """
-        if self._goal_validator.is_stale(goal):
-            self._gate(goal)
-            return
-        winner = self._goals.propose(goal)
-        if winner is not None:
-            self._gate(winner)
-        elif goal.source is not self._goals.winning_source:
-            self._publish_outranked(goal)
-
-    def _on_preference(self, _topic: str, hint: PreferenceHint) -> None:
-        """What an occupant said, as a proposal (FR-53), then gated (FR-45)."""
-        winner = self._goals.consider(hint)
-        if winner is not None:
-            self._gate(winner)
-
-    def _publish_outranked(self, goal: Goal) -> None:
-        verdict = ValidationVerdict(
-            ts=self._clock.now(),
-            proposed={SETPOINT_KEY: goal.setpoint_c},
-            verdict=Verdict.BLOCKED,
-            reason=ReasonCode.OUTRANKED,
-            applied={SETPOINT_KEY: self.setpoint_c},
-        )
-        self._blackboard.publish(topics.AUDIT_VALIDATION, verdict)
-        LOGGER.info(
-            "goal %.2f from %s outranked by %s; setpoint stays %.2f",
-            goal.setpoint_c,
-            goal.source.value,
-            self._goals.winning_source.value,
-            self.setpoint_c,
-        )
-
-    def _gate(self, goal: Goal) -> None:
-        """Gate a winning setpoint and adopt what survives (FR-13, FR-14).
+        """Gate a proposed setpoint and adopt what survives (FR-13, FR-14).
 
         The verdict is published whatever it says. A clamped proposal is the
         gate working and belongs in the audit trail; hiding it would remove the
         only evidence that the gate runs at all (section 5.4).
         """
+        if not self._goal_manager.admits(goal):
+            verdict = self._goal_validator.refuse(goal, ReasonCode.PREFERENCE_HOLD)
+            self._blackboard.publish(topics.AUDIT_VALIDATION, verdict)
+            return
+        self._adopt(goal)
+
+    def _on_preference(self, _topic: str, hint: PreferenceHint) -> None:
+        """A spoken preference, proposed through the same gate (FR-53).
+
+        Never a command: what reaches the plant is whatever the validator
+        admits of the setpoint derived here, exactly as for any proposer.
+        """
+        goal = self._goal_manager.from_preference(hint, self.setpoint_c, self._mode)
+        if goal is None:
+            return
+        self._adopt(goal)
+
+    def _adopt(self, goal: Goal) -> None:
         verdict = self._goal_validator.validate(goal)
+        if goal.source is GoalSource.PREFERENCE:
+            self._goal_manager.settle(verdict)
         self._blackboard.publish(topics.AUDIT_VALIDATION, verdict)
         self._publish_active_goal(goal)
         LOGGER.info(
@@ -194,6 +189,17 @@ class ControlService:
             verdict.verdict.value,
             verdict.reason.value,
             self.setpoint_c,
+        )
+
+    def _publish_tariff_if_changed(self) -> None:
+        """Retain the band whenever it changes, so it is readable (FR-60, FR-61)."""
+        state = self._tariff.state(self._clock.now())
+        if state.band is self._published_band:
+            return
+        self._published_band = state.band
+        self._blackboard.publish(topics.TARIFF_STATE, state)
+        LOGGER.info(
+            "tariff is %s; tracking %.2f C", state.band.value, self.effective_setpoint_c
         )
 
     def _publish_active_goal(self, goal: Goal) -> None:
@@ -220,13 +226,6 @@ class ControlService:
             is no measurement, and a loop that commanded from a default would
             drive a room it has never observed.
         """
-        # Proposals age out on the clock, not on a message: a source going
-        # silent is exactly the case where nothing arrives, and a supervisor
-        # that crashed mid-proposal must not keep steering the room.
-        successor = self._goals.expire()
-        if successor is not None:
-            self._gate(successor)
-
         if self._measured_c is None:
             if not self._warned_about_no_reading:
                 LOGGER.warning(
@@ -236,10 +235,14 @@ class ControlService:
                 self._warned_about_no_reading = True
             return None
 
+        self._publish_tariff_if_changed()
+        pursuit = self._goal_manager.next_pursuit(self._mode)
+        if pursuit is not None:
+            self._adopt(pursuit)
         proposed = self._controller.tick(
             measured_c=self._measured_c,
             predicted_c=self._effective_prediction_c(),
-            setpoint_c=self.setpoint_c,
+            setpoint_c=self.effective_setpoint_c,
             mode=self._mode,
         )
         verdict = self._command_validator.validate(proposed, self._mode)
@@ -314,5 +317,6 @@ def build_service(
             initial_setpoint_c=config.controller.default_setpoint_c,
         ),
         command_validator=CommandValidator(config=config.validator, clock=clock),
-        goals=GoalManager(config, clock),
+        goal_manager=GoalManager(config.goals, clock),
+        tariff=TariffSchedule(config.tariff),
     )

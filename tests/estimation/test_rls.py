@@ -38,6 +38,17 @@ def _estimator(config, clock) -> ThermalEstimator:
     return ThermalEstimator(config, clock)
 
 
+#: A prior that says almost nothing, for tests of how evidence narrows it.
+VAGUE_PRIOR_COVARIANCE = 100.0
+
+
+def _vague(config: EstimatorConfig, clock: SimClock) -> ThermalEstimator:
+    return ThermalEstimator(
+        config.model_copy(update={"initial_covariance": VAGUE_PRIOR_COVARIANCE}),
+        clock,
+    )
+
+
 def _regressor(step: int, indoor_c: float) -> Regressor:
     """An input that actually excites the model."""
     return Regressor(
@@ -102,12 +113,17 @@ class TestIdentification:
         _identify(estimator)
         assert estimator.snapshot().steady_state_residual < 0.01
 
-    def test_the_covariance_shrinks_as_evidence_accumulates(self, estimator):
+    def test_the_covariance_shrinks_as_evidence_accumulates(self, config, clock):
+        """Against a vague prior, which is what the property is about. The
+        shipped P0 is deliberately tight (see config), and a prior tighter
+        than the forgetting factor's steady state is allowed to widen."""
+        estimator = _vague(config, clock)
         before = estimator.trace
         _identify(estimator, steps=500)
         assert estimator.trace < before
 
-    def test_confidence_rises_as_the_covariance_shrinks(self, estimator):
+    def test_confidence_rises_as_the_covariance_shrinks(self, config, clock):
+        estimator = _vague(config, clock)
         before = estimator.model_confidence
         _identify(estimator, steps=500)
         assert estimator.model_confidence > before
@@ -399,3 +415,50 @@ class TestResetAndRestore:
             np.eye(3) * config.max_covariance_trace,
         )
         assert estimator.trace <= config.max_covariance_trace * 1.0001
+
+
+
+class TestEdgeNoiseIsNotDivergence:
+    """a2 sits on its bound; crossing it slightly is refused, not counted."""
+
+    def test_a_small_implied_flow_is_not_diagnostic(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        estimator._last_gap_c = 1.0
+        candidate = np.array([-0.01, -0.02, 0.001])
+        estimator._reject(candidate, estimator.theta, estimator.covariance, 27.0, 0.0)
+        assert estimator._recent_rejections[-1] is False
+
+    def test_a_large_implied_flow_is_diagnostic(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        estimator._last_gap_c = 10.0
+        candidate = np.array([-0.05, -0.02, 0.001])
+        estimator._reject(candidate, estimator.theta, estimator.covariance, 27.0, 0.0)
+        assert estimator._recent_rejections[-1] is True
+
+    def test_an_a3_rejection_is_never_edge_noise(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        estimator._last_gap_c = 0.1
+        candidate = np.array([0.002, 0.5, 0.001])
+        estimator._reject(candidate, estimator.theta, estimator.covariance, 27.0, 0.0)
+        assert estimator._recent_rejections[-1] is True
+
+
+
+class TestAStallIsDivergence:
+    """A full window with nothing adopted is a model that cannot move."""
+
+    def test_a_full_window_of_a4_only_rejections_diverges(self, config, clock, monkeypatch):
+        estimator = ThermalEstimator(config, clock)
+        diverged = False
+        for _ in range(config.divergence_window_samples):
+            estimator._consecutive_rejections += 1
+            estimator._record_outcome(UpdateStatus.REJECTED, ("a4",))
+            diverged = estimator.diverged
+        assert diverged is True
+
+    def test_a_short_run_of_a4_rejections_does_not(self, config, clock):
+        estimator = ThermalEstimator(config, clock)
+        for _ in range(20):
+            estimator._consecutive_rejections += 1
+            estimator._record_outcome(UpdateStatus.REJECTED, ("a4",))
+        assert estimator.diverged is False

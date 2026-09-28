@@ -19,6 +19,7 @@ from src.common.schemas import (
     Command,
     CommandKind,
     InjectionCommand,
+    Quality,
     SensorReading,
     Unit,
 )
@@ -26,7 +27,6 @@ from sim.run_sim import (
     INDOOR_TEMPERATURE_ID,
     OCCUPANCY_ID,
     OUTDOOR_TEMPERATURE_ID,
-    POWER_ID,
     build_simulator,
 )
 
@@ -231,6 +231,42 @@ class TestClosedLoop:
         payload = transport.payloads_on("space/actuator/ac/state")[-1]
         assert ActuatorState.model_validate_json(payload).kind is CommandKind.COOL
 
+    def _command(self, blackboard, clock, kind):
+        command = Command(
+            ts=clock.now(),
+            actuator_id=topics.AIR_CONDITIONER_ID,
+            kind=kind,
+            setpoint_c=22.0 if kind is CommandKind.COOL else None,
+        )
+        blackboard.dispatch(
+            "space/actuator/ac/command", command.model_dump_json().encode()
+        )
+
+    def _published_kind(self, transport):
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        return ActuatorState.model_validate_json(payload).kind
+
+    @pytest.mark.parametrize("carry_on", [CommandKind.MAINTAIN, CommandKind.HOLD])
+    def test_carrying_on_leaves_the_published_state_as_it_was(
+        self, quiet_config, carry_on
+    ):
+        """Regression: the state echoed MAINTAIN, so a subscriber that missed
+        the one COOL -- a restarted estimator -- believed cooling was off."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._command(blackboard, clock, CommandKind.COOL)
+        simulator.step()
+        self._command(blackboard, clock, carry_on)
+        simulator.step()
+        assert self._published_kind(transport) is CommandKind.COOL
+
+    def test_switching_off_is_published_as_off(self, quiet_config):
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._command(blackboard, clock, CommandKind.COOL)
+        simulator.step()
+        self._command(blackboard, clock, CommandKind.OFF)
+        simulator.step()
+        assert self._published_kind(transport) is CommandKind.OFF
+
 
 class TestRunLoop:
     def test_run_executes_the_requested_number_of_steps(self, quiet_config):
@@ -273,6 +309,37 @@ class TestInjectionAtLayerOne:
         blackboard.dispatch(
             f"space/inject/{subject}", command.model_dump_json().encode()
         )
+
+    def test_a_dead_unit_cools_nothing(self, quiet_config):
+        """FR-24, FR-31: the actuator fault is injectable like any other."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.NO_RESPONSE)
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=22.0
+        )
+        blackboard.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        start = simulator.room_temperature_c
+        for _ in range(120):
+            simulator.step()
+            clock.advance(quiet_config.loop.sensor_period_s)
+        assert simulator.room_temperature_c >= start
+
+    def test_a_dead_unit_still_reports_what_it_was_told(self, quiet_config):
+        """No acknowledgement betrays it (R-02): D5 must find it from the room."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.NO_RESPONSE)
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=22.0
+        )
+        blackboard.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        simulator.step()
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        assert ActuatorState.model_validate_json(payload).kind is CommandKind.COOL
+
+    def test_a_sensor_fault_on_the_unit_is_refused(self, quiet_config):
+        simulator, _, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.STUCK_AT, 27.0)
+        assert simulator._actuator.is_failed is False
 
     def test_the_simulator_listens_for_injections(self, config):
         simulator, transport, _, blackboard = _running(config)
@@ -318,6 +385,20 @@ class TestInjectionAtLayerOne:
             transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")[0]
         )
         assert reading.value == 999.0
+
+    def test_an_out_of_range_reading_is_flagged_by_the_configured_limits(
+        self, quiet_config
+    ):
+        """The limits come from config.sensors, the same ones D3 uses."""
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(
+            blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.OUT_OF_RANGE, 999.0
+        )
+        simulator.step()
+        reading = SensorReading.model_validate_json(
+            transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")[0]
+        )
+        assert reading.quality is Quality.SUSPECT
 
     def test_clearing_returns_the_sensor_to_the_plant(self, quiet_config):
         simulator, transport, _, blackboard = _running(quiet_config)
@@ -367,158 +448,3 @@ class TestInjectionAtLayerOne:
         self._inject(blackboard, OCCUPANCY_ID, InjectedFault.DROPOUT)
         simulator.step()
         assert transport.payloads_on(f"space/sensor/{OCCUPANCY_ID}/state") == []
-
-
-def _quiet_meter(config):
-    meter = config.sim.power_meter.model_copy(
-        update={"dropout_probability": 0.0, "sigma_w": 0.0, "resolution_w": 0.0}
-    )
-    return config.model_copy(
-        update={"sim": config.sim.model_copy(update={"power_meter": meter})}
-    )
-
-
-def _power_readings(transport) -> list[float]:
-    return [
-        SensorReading.model_validate_json(payload).value
-        for payload in transport.payloads_on(f"space/sensor/{POWER_ID}/state")
-    ]
-
-
-def _cool(blackboard, clock) -> None:
-    command = Command(
-        ts=clock.now(),
-        actuator_id=topics.AIR_CONDITIONER_ID,
-        kind=CommandKind.COOL,
-        setpoint_c=22.0,
-    )
-    blackboard.dispatch(
-        "space/actuator/ac/command", command.model_dump_json().encode()
-    )
-
-
-class TestPowerMeter:
-    """Week 5: the air conditioner's draw, on the topic hardware will use."""
-
-    def test_power_is_published_in_watts(self, quiet_config):
-        simulator, transport, _, _ = _running(_quiet_meter(quiet_config))
-        simulator.step()
-        payload = transport.payloads_on(f"space/sensor/{POWER_ID}/state")[-1]
-        assert SensorReading.model_validate_json(payload).unit is Unit.WATT
-
-    def test_an_idle_unit_draws_standby(self, quiet_config):
-        config = _quiet_meter(quiet_config)
-        simulator, transport, _, _ = _running(config)
-        simulator.step()
-        assert _power_readings(transport)[-1] == pytest.approx(
-            config.sim.power_meter.standby_power_w
-        )
-
-    def test_a_running_unit_draws_its_rated_power(self, quiet_config):
-        config = _quiet_meter(quiet_config)
-        simulator, transport, clock, blackboard = _running(config)
-        _cool(blackboard, clock)
-        for _ in range(20):  # past the dead time
-            simulator.step()
-            clock.advance(config.loop.sensor_period_s)
-        assert _power_readings(transport)[-1] == pytest.approx(
-            config.sim.power_meter.rated_power_w
-        )
-
-    def test_a_dead_unit_draws_standby_while_commanded_to_cool(self, quiet_config):
-        """What makes the meter evidence about the actuator rather than an echo
-        of the command (R-02)."""
-        config = _quiet_meter(quiet_config)
-        simulator, transport, clock, blackboard = _running(config)
-        TestInjectionAtLayerOne()._inject(
-            blackboard, topics.AIR_CONDITIONER_ID, InjectedFault.STUCK_OFF
-        )
-        _cool(blackboard, clock)
-        for _ in range(20):
-            simulator.step()
-            clock.advance(config.loop.sensor_period_s)
-        assert _power_readings(transport)[-1] == pytest.approx(
-            config.sim.power_meter.standby_power_w
-        )
-
-    def test_a_noisy_meter_never_reports_a_negative_draw(self, config):
-        """Noise around standby must not read as a meter wired backwards."""
-        simulator, transport, clock, _ = _running(config)
-        for _ in range(200):
-            simulator.step()
-            clock.advance(config.loop.sensor_period_s)
-        assert min(_power_readings(transport)) >= 0.0
-
-    def test_an_injected_negative_reading_is_left_negative(self, quiet_config):
-        """The floor is the meter's physics, not a filter on injected faults."""
-        simulator, transport, _, blackboard = _running(_quiet_meter(quiet_config))
-        TestInjectionAtLayerOne()._inject(
-            blackboard, POWER_ID, InjectedFault.OUT_OF_RANGE, -50.0
-        )
-        simulator.step()
-        assert _power_readings(transport)[-1] == -50.0
-
-    def test_the_meter_can_be_broken_like_any_sensor(self, quiet_config):
-        """FR-31 covers every instrument, not only the ones that feed the model."""
-        simulator, transport, _, blackboard = _running(_quiet_meter(quiet_config))
-        TestInjectionAtLayerOne()._inject(blackboard, POWER_ID, InjectedFault.DROPOUT)
-        simulator.step()
-        assert _power_readings(transport) == []
-
-    def test_metering_leaves_every_other_noise_sequence_alone(self, config):
-        """Seeded results already measured must not move because a meter was
-        added: the meter draws from its own random stream."""
-        without = config.model_copy(
-            update={
-                "sensors": config.sensors.model_copy(
-                    update={
-                        "adapters": tuple(
-                            a for a in config.sensors.adapters
-                            if a.sensor_id != POWER_ID
-                        )
-                    }
-                )
-            }
-        )
-        runs = []
-        for variant in (config, without):
-            simulator, transport, clock, _ = _running(variant)
-            for _ in range(30):
-                simulator.step()
-                clock.advance(variant.loop.sensor_period_s)
-            runs.append(
-                transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")
-            )
-        assert runs[0] == runs[1]
-
-    def test_no_meter_is_simulated_when_none_is_configured(self, config):
-        without = config.model_copy(
-            update={
-                "sensors": config.sensors.model_copy(
-                    update={
-                        "adapters": tuple(
-                            a for a in config.sensors.adapters
-                            if a.sensor_id != POWER_ID
-                        )
-                    }
-                )
-            }
-        )
-        simulator, transport, _, _ = _running(without)
-        simulator.step()
-        assert _power_readings(transport) == []
-
-
-class TestLayerOneIsExclusive:
-    def test_the_simulator_refuses_to_run_beside_real_hardware(self, tmp_path):
-        """With io.source esphome, real sensors own the topics (section 9.1);
-        a simulator beside them would be a second room contradicting the
-        first."""
-        from sim.run_sim import main
-
-        text = Path("config/default.yaml").read_text(encoding="utf-8")
-        hardware = tmp_path / "hardware.yaml"
-        hardware.write_text(
-            text.replace("  source: simulated", "  source: esphome", 1), encoding="utf-8"
-        )
-        assert main(["--config", str(hardware)]) == 2

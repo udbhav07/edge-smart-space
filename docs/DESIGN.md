@@ -5,19 +5,19 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 2.0 |
+| Version | 1.10 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
-| Phase at time of writing | Simulation; Orin provisioning written, sensors not yet wired |
+| Phase at time of writing | Simulation (pre-hardware) |
 | Related documents | Formal Problem Statement v5, Professor Briefing, Review Deck (17 slides), 12-Week Work Plan |
 
 ### Revision history
 
 | Version | Change |
 |---|---|
-| 2.0 | Weeks 5 and 6. **The reasoning layer exists** (§5.7): the Environmental Supervisor reads the room through §5.7.2's four tools and proposes through the fifth, which now returns the gate's actual verdict; Personal Context runs assistance tools within one round through the executor's topics; Fault Diagnosis is single-shot and falls back to a generic, marked notification. All three run in `src.reasoning`, recorded on `space/audit/reasoning` as `ReasoningRecord` with latency and tokens (FR-46, FR-63). **Arbitration is corrected** (§5.4): it published its winner back onto `space/goal/proposed`, so a supervisor goal would have bypassed it and overridden an occupant; arbitration now sits inside the gate's component, as §4.4 always drew it, and a losing proposal is published `OUTRANKED`. **Speech stops at text**: transcripts go to `space/context/utterance` and Personal Context answers them in the reasoning process, removing a Layer 1 import of the reasoning layer and making every request typeable. New contracts in §6.1–6.2: `Utterance`, `TariffState` (FR-16, published by control), `FaultDiagnosis` on `space/diagnosis`. One local time for the room (`site.utc_offset_h`). A power meter (`pwr_01`, D1 and D3, never D2). `deploy/provision.sh` and `llama-server.service` bring the Orin up on boot; `space.target` no longer names a Layer 1, so exactly one is enabled. E6 is written (§8.3). |
-| 1.9 | Layer 1 becomes a configuration choice (§9.1): `io.source` selects the simulator or the ESPHome bridge, both publishing the same topics, so the phase transition is an edit and the whole test suite applies to either. `deploy/` exists — broker, systemd units and an ESPHome node definition marked UNVERIFIED, with a test asserting the device topics the configuration expects are ones the node publishes. `src/assistance/` exists: the calendar is first-party and real, travel is a mock that says so in every result, and the confirmation gate is carried by the topic rather than by a field. |
+| 1.10 | Weeks 5 and 6, and the gaps of Weeks 1–6 closed. **Week 6:** the Environmental Supervisor (§5.7.2; FR-40, FR-41), the assistant that acts on what the speech pipeline heard (FR-42), the goal path from a spoken preference to a gated setpoint — pursued step by step when V-2 only part-grants it, and outranking the supervisor for `goals.preference_hold_s` with a new `PREFERENCE_HOLD` verdict (§5.4) — the assistance executor with a local calendar and a mock travel desk (§5.7.6; FR-54, FR-55, FR-58, FR-70 to FR-75), and Fault Diagnosis (§6.3; FR-25, FR-43). Every reasoning call is audited (FR-46, FR-63) on `space/audit/reasoning`, and replies go to a new `space/context/reply`. The day an occupant names is resolved from their words, not by the model, and a tool call on the wrong day is corrected (FR-44). **FR-16:** a peak-tariff schedule and a new `space/tariff/state`. **FR-23:** D4 now runs on a horizon residual accumulated once per non-overlapping horizon (§5.5), which exposed and forced a fix of the errors-in-variables bias in §5.2.1 — the ambient gap is measured from `T[k−1]` — with a2's edge crossings weighed by the heat flow they imply before they count toward divergence (§5.2.3); D5 no longer blames the unit for a reading that rose faster than a dead unit allows. A stalled estimate now counts as divergence. **Week 5 software:** `devices.source` selects the simulator or an ESPHome bridge (`python -m src.io`), `deploy/systemd` holds one unit per service, and `start.py` restarts a service that exits (NFR-08). The actuator fault is injectable (`tools.inject ac dead`; FR-31). **FR-62:** `tools.record` and `sim/replay.py`. **E3** and **E6** exist and pass (§8.3). |
+| 1.9 | Defects found by running the whole system live against a broker and a served model. **FR-27 was not what it claimed:** the prediction substituted in `DEGRADED_SENSOR` was one step ahead of the previous *reading*, so it restated the fault — a stuck value, something derived from 999 °C, or a value frozen through a dropout. The estimator now steps the model forward on its own output from the last trusted reading, once per sensor period (§5.2.3). Readings a sensor flags `suspect` are no longer fitted, and the simulated sensors now flag them as the real adapter does. §5.5 gains three more cases of one broken thing being blamed on another: D5 skips suspect readings, is suspended on every tick rather than on reading arrival, and a D5 fault raised within one window of D1–D3 confirming the indoor sensor is withdrawn; D4 is suspended while the actuator is faulted. §5.6: `DEGRADED_ACTUATOR` is released once no actuator fault holds it. §7.1's divergence response is now implemented — `MODEL_DIVERGENCE` reached nothing that decides the mode, and the coefficients were never reset — and a restarted detector bank withdraws faults retained by its predecessor. §8.4's E1 figures were one seed's; they are restated over nine, and `a3` misses its tolerance. Two more found in the final live run: `P0` falls from 100 to 0.01, because near-collinear regressors at startup let the first samples throw the estimate anywhere in the box (live, `a2` = 0.997 within 35 s); and D5 no longer faults a working unit at capacity, which every healthy two-hour run had done. The simulator's actuator state now reports the last state-changing command rather than echoing `MAINTAIN`. |
 | 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
 | 1.7 | Reconciled with the fault-tolerance layer as built (Week 4). D5's test becomes signed cooling achieved rather than `|ΔT|`, which missed a room getting warmer under sustained cooling. §5.6 gains what "multiple faults" counts (distinct subjects, not findings) and records that leaving `DEGRADED_ACTUATOR` as specified is unreachable on an open-loop IR path, with the operator reset as the route back; `space/system/reset` and `ModeReset` are added to §6.1 and §6.2. §5.10 gains `src/control/service.py`: the regulatory loop existed as a class and was never run as a process. |
 | 1.6 | Reconciled with the detector bank as built (Week 3). D2's latency target was unreachable by construction and is corrected from 60 s to 310 s, with the reason recorded in §5.5. D2 and D3 no longer apply to the PIR: an unoccupied room reports a constant legitimately, so variance says nothing about a stuck binary sensor, and §7.1's "D1/D2" becomes D1 only. The fault-clear confirmation period is stated as belonging to the aggregator rather than the mode manager, so one number has one owner. Fault injection gains a channel: `space/inject/{subject}` and `InjectionCommand` in §6.1 and §6.2, applied at the Layer 1 adapter so nothing above can tell an injected fault from a suffered one (FR-31). |
@@ -427,7 +427,7 @@ flowchart TB
         JET --- Q3["Control + fault processes"]
         JET --- Q4["llama.cpp server, CUDA build"]
         JET --- Q5["Whisper + wake word"]
-        ESP["ESP32 nodes<br/>PIR, reed, temp/humidity, AC power"] -->|WiFi MQTT| Q1
+        ESP["ESP32 nodes<br/>PIR, reed, temp/humidity"] -->|WiFi MQTT| Q1
         IR["IR blaster / ESPHome<br/>AC control"] --- Q1
     end
 
@@ -576,6 +576,8 @@ Substituting the steady-state identity `a2 = 1 − a1` into the model and rearra
 T[k+1] − T[k] = a2·(T_out[k] − T[k]) + a3·u[k] + a4·o[k]        a1 := 1 − a2
 ```
 
+**The gap is measured from `T[k−1]` (v1.10).** Differencing removed the attenuation of `a1` but not all of the errors-in-variables bias: `ΔT = T[k+1] − T[k]` and the regressor `T_out − T[k]` still share the noise on `T[k]` with opposite signs. Over nine seeds that left `a2` about 60% high and `a3` about 50% high — invisible in a one-step fit, but enough to bias every multi-step prediction and so to blind D4 (§5.5). The regressor's gap is therefore taken from the reading one step earlier, whose noise is independent; it differs from `T[k]` by one step's movement, about 0.02 °C against a gap of several degrees. Prediction still uses `T[k]`.
+
 Identical physics, the same four coefficients, still linear in the parameters, still ordinary recursive least squares. What changes is that the fit is asked for a small number (`a2` ≈ 0.002) instead of a number near 1, and small coefficients are what survive a noisy regressor. `a1` is then recovered rather than fitted, which makes steady-state consistency **structural**: `a1 + a2 = 1` holds exactly, by construction, instead of being a soft constraint that has to be checked afterwards.
 
 Measured over a 24 h simulated run against a plant with known R and C (E1, §8.3):
@@ -637,8 +639,11 @@ These implement FR-06 and are the difference between "we ran RLS" and "we ran RL
 | Symmetry loss | After each update, symmetrise: `P ← (P + Pᵀ)/2`. |
 | Insufficient excitation | Skip the update when `‖φ[k]‖` variation over the last window falls below a threshold. A constant regressor carries no information and only degrades `P`. |
 | Implausible parameters | Test `θ` against the box in §5.2.1, `a1` included after deriving it. An estimate outside the box is **reverted**, not clamped: a projected vector is a point the data never supported, and adopting it would let one bad update park the estimate on a box edge and stay there. Log the rejection with the coefficient that broke. |
-| Model divergence | A *sustained rate* of meaningful rejections, not a run of them: `MODEL_DIVERGENCE` is raised when at least `divergence_rejection_fraction` of a full `divergence_window_samples` window was rejected. See below. |
-| Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). Never adapt to bad data. |
+| Model divergence | A *sustained rate* of meaningful rejections, not a run of them: `MODEL_DIVERGENCE` is raised when at least `divergence_rejection_fraction` of a full `divergence_window_samples` window was rejected. See below. The coefficients are then reset to `θ₀` (§7.1), which also empties the window, so a divergence is announced once. |
+| Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). A reading its own sensor flags `suspect` is never fitted either. Never adapt to bad data. |
+| Prediction on a faulted sensor | While the indoor sensor is faulted, the one-step prediction would be built from the faulted reading and restate it. The model instead steps forward on its own output from the last trusted reading, once per sensor period and independently of readings, since a dropped sensor delivers none. This is what `DEGRADED_SENSOR` controls on (FR-27). |
+| A stalled estimate | Because a rejection reverts `P` as well as `θ`, an estimate that lands where every update breaks a bound cannot move again. A full `divergence_window_samples` of *consecutive* rejections, on any coefficient, is therefore divergence (v1.10). Healthy runs reach at most 11 in a row. |
+| Edge noise on `a2` | `a2` sits unbiased on its lower bound once §5.2.1's gap is taken from `T[k−1]`, and noise crosses it. An `a1`/`a2` rejection counts toward divergence only when the heat flow against the gradient it implies — the excursion times the gap — exceeds `edge_noise_c_per_step`: healthy runs never claim more than 0.083 °C per step, a room warming while cooled claims a median 0.13. `a3` rejections always count. |
 
 ##### Why divergence is a rate and not a run
 
@@ -720,7 +725,9 @@ The validator is the only component permitted to be paranoid. It has no knowledg
 
 Every verdict is published to `space/audit/validation` with the proposal, the verdict, the reason code, and the applied value. A clamped supervisor proposal is a finding, not a failure — it is evidence the gate works, and the review deck should present it that way.
 
-**Arbitration sits in front of the gate, in the same component** (§4.4's "Goal Manager + Validator"). Every proposal arriving on `space/goal/proposed`, and every spoken preference on `space/context/preference`, is arbitrated first — operator over occupant over supervisor over default — and only the winner is validated. A proposal that loses is published as `BLOCKED` with reason `OUTRANKED`, which is not a V-rule but is a decision, and a supervisor goal that changed nothing because an occupant had spoken must be visible as exactly that. Corrected in v2.0: arbitration previously published its winner back onto `space/goal/proposed`, where the gate could not tell an arbitrated goal from a raw one, so a supervisor's goal would have overridden an occupant simply by arriving.
+**Ahead of the rules: the goal path (v1.10).** Proposals reach the validator through `src/control/goal_manager.py`, which does two things and neither is a safety rule. It turns a spoken preference into a proposal (FR-53) — a named temperature as named, "cooler" or "warmer" as one `goals.comfort_step_c` — and, because V-2 grants at most one step per invocation, it *pursues* a part-granted preference by proposing it again every `goals.pursue_interval_s` until a verdict other than `RATE_LIMIT` settles it. Each pursuit is a fresh invocation the rules judge, so V-2 still paces it. And it arbitrates: for `goals.preference_hold_s` after an occupant asked for something, a supervisor proposal is refused with verdict `BLOCKED`, reason `PREFERENCE_HOLD`, published like any other verdict so the override is visible. A goal verdict's `proposed` also carries its `source`, so a reply to an occupant can say what became of their own request.
+
+During peak tariff (FR-16) the loop tracks the setpoint in force plus `tariff.peak_offset_c`, clamped to V-1's upper bound; the validated setpoint itself is unchanged.
 
 ### 5.5 Fault Detection
 
@@ -813,6 +820,27 @@ the air conditioner, so D5 raises an actuator fault that is not there, two
 subjects are faulted at once, the mode escalates to `SAFE_HOLD`, and FR-27's
 control-on-prediction is switched off by the very fault it exists to survive.
 
+**Suspension alone left three gaps, found at v1.9 by running the system.**
+Each turned one broken thing into two:
+
+- *Before confirmation.* D3 debounces over two samples, and one 999 °C sample
+  landing as D5's window closed read as the room warming by 970 °C. D5 now
+  skips any reading its sensor flags `suspect`, without abandoning the window.
+- *Silence.* D5 was suspended when an untrusted reading *arrived*, and a
+  dropped sensor sends none, so D5 judged a window on the last value before
+  the silence. It is now suspended on every tick while the sensor is untrusted.
+- *The race with D2.* A stuck sensor takes D2 about five minutes to confirm,
+  and D5's window can close on the frozen value first. When D1, D2 or D3
+  confirms the indoor sensor, a D5 fault raised within one D5 window of that
+  is withdrawn: it was judged on the broken sensor. D4 cannot withdraw D5,
+  because D4 is itself derived from a model that assumes the air conditioner
+  works.
+
+The converse holds too. With the air conditioner not cooling, the model's
+expectation fails on every sample and D4 raises drift on a healthy sensor. D4
+is suspended while the actuator is faulted, and forgets what it accumulated
+before D5 confirmed.
+
 **On D5's test, corrected at v1.7.** This row read `|ΔT|` below a threshold
 until the detector was built. That catches a room which did not move, but not
 one which got *warmer* while the compressor was supposedly running — the more
@@ -825,6 +853,20 @@ are not the air conditioner's fault — a door left open, an unmodelled heat
 load, or an ambient high enough that a working unit is at capacity and holds
 the room level rather than cooling it. R-04 settles the window and the
 threshold against measured data during bring-up.
+
+**D4 on a horizon residual (v1.10).** D4 once ran on the *one-step* residual, and a one-step prediction is built from the previous reading, so a drifting sensor contributed only its per-step increment — 0.05 °C at 0.01 °C/s, a quarter of the noise, inside the slack — and nothing accumulated: only drift of 3 °C/min or faster was found. The estimator now also predicts each reading from the one `drift_horizon_samples` earlier, through the inputs actually applied, and publishes that *horizon residual* on `ThermalEstimate`. D4 accumulates it once per non-overlapping horizon: consecutive horizon residuals share all but one step and are one piece of evidence, and a CUSUM counting them twelve times alarmed on every healthy run. The thresholds are measured — six healthy four-hour runs peak at 2.0 to 6.3 against 8 — and so is the reach: drift is found in about 2.5 min at 3 °C/min and 8 to 15 min at 0.6 °C/min. Below about 0.3 °C/min it is not separable, with one indoor sensor, from a weak unit, and D5 may name the unit first; that is the limit, stated.
+
+**D5 and a drifting sensor (v1.10).** A dead unit lets the room warm passively toward ambient, at a rate set by its time constant; a drifting sensor rises at any rate. D5 takes the identified `a2`, bounds how far a room with a dead unit could have warmed over the window, and abstains when the reading rose faster than `passive_warming_factor` times that plus `passive_warming_slack_c`: the unit cannot explain the reading, so the reading is D4's to judge.
+
+**A working unit at capacity, found at v1.9.** Near the setpoint a working
+unit cools toward its capacity asymptotically, and every healthy two-hour run
+in the shipped simulation failed the fixed 0.3 °C per window and ended in
+`DEGRADED_ACTUATOR`. D5 now reads the outdoor temperature: more than
+`capacity_gap_c` below ambient a dead unit would warm visibly, so holding
+level is evidence the unit works and only warming is a fault, while nearer
+ambient the room must still cool. The change over a window is also now the
+slope of a least-squares line through every reading in it rather than the
+difference of the two ends, which carried the sensor noise twice.
 
 **On D5's parameters:** the 600 s window is long because a room's thermal time constant is long. This is an honest limit — actuator faults are detected on the order of ten minutes, not seconds, and NFR-02 deliberately does not promise otherwise.
 
@@ -875,6 +917,13 @@ never retires a fault, so the hold would be permanent. The operator reset on
 `space/system/reset` is therefore the route back from `DEGRADED_ACTUATOR` as
 well as from `SAFE_HOLD`.
 
+One exception, at v1.9: `DEGRADED_ACTUATOR` is released once no actuator fault
+holds it. That happens when a D5 fault is withdrawn as judged on a broken
+sensor (§5.5), and also when D5 genuinely clears — a hold does not switch the
+compressor off, so a working unit still cools the room and D5 can observe it.
+`SAFE_HOLD` is not released this way: it can be entered on a count of subjects
+or an exhausted budget, neither of which is a fault that could go away.
+
 A reset retires the active faults rather than overriding them. The operator is
 not asserting the room is fine; they are asserting they have looked at it and
 dealt with it, so the accumulated evidence is stale and the question is asked
@@ -905,7 +954,7 @@ Mode transition is driven by the detector bank and completes within 2 s (FR-26).
 | Component | Type | Tools | Cadence | Failure behaviour |
 |---|---|---|---|---|
 | Environmental Supervisor | Tool-using agent | 4 read tools, 1 emit tool | 300 s + events | Retain previous goal |
-| Personal Context | Schema-constrained, bounded rounds | Assistance surface (§5.7.6); runs everything but `commit` | On utterance (`space/context/utterance`) | Discard, no preference hint; if a tool already ran, the result's own words are spoken |
+| Personal Context | Schema-constrained, bounded rounds | Assistance surface (§5.7.6); runs everything but `commit` | On transcript | Discard, no preference hint |
 | Fault Diagnosis | Single-shot, schema-constrained | none | On fault confirm | Generic notification text |
 
 Only the Environmental Supervisor needs an *open-ended* tool loop, deciding for itself how many times to look before it proposes. Personal Context runs tools too, but within a bounded number of rounds — default one (`assistance.max_tool_rounds`) — after which it must answer. That is the difference that matters for latency and for what can go wrong, and it is why calling all three "agents" would be a naming convention rather than an architecture. Fault Diagnosis has no tools at all.
@@ -920,11 +969,7 @@ Only the Environmental Supervisor needs an *open-ended* tool loop, deciding for 
 | `get_active_faults` | `()` | list of `{fault_id, class, sensor, since_ts, mode_impact}` |
 | `propose_setpoint` | `(setpoint_c: float, mode: str, rationale: str)` | validator verdict |
 
-`propose_setpoint` is the terminal tool. It writes to `space/goal/proposed` (§6.1), never to an actuator topic (FR-45), and returns the gate's verdict as published on `space/audit/validation`, waiting up to `reasoning.verdict_timeout_s` for it.
-
-Before publishing, it applies a deliberately narrow post-decode check (FR-44): the setpoint must be a room temperature at all (`reasoning.plausible_setpoint_c`, wider than the validator's bounds), the mode must be the mode the system is in, and there must be a rationale. A request for 5 °C passes and is refused by the validator where everyone can see; 500 °C is discarded before the gate. A discarded proposal ends the run — discarded, not negotiated.
-
-The read tools answer from a snapshot of the blackboard's retained state and sensor stream, so the model sees exactly what an examiner with `mosquitto_sub` sees. Times are given as local clock times. Implemented in `src/reasoning/supervisor_tools.py` and `supervisor_agent.py`; the policy the model is told (comfort target, how far to relax an empty room, the peak shift) is configuration, not prompt prose.
+`propose_setpoint` is the terminal tool. It writes to `space/goal/proposed` (§6.1), never to an actuator topic (FR-45).
 
 #### 5.7.3 Decoding Strategy
 
@@ -1182,8 +1227,6 @@ sequenceDiagram
 
 Audio never persists beyond transcription and never leaves the node (FR-51). The capture window opens only after wake-word detection (FR-50).
 
-**Since v2.0 the speech process stops at text.** The arrow from Speaker Verification to Personal Context crosses the blackboard: the transcript is published as an `Utterance` on `space/context/utterance`, and Personal Context answers it in the reasoning process. Layer 1 turns sound into text and does not import the reasoning layer, and a typed request (`tools/say.py`, later the console) is indistinguishable from a spoken one.
-
 #### 5.8.1 Wake-word threshold, and what it costs
 
 v1.0 claimed the system "is not always-listening in the sense that matters".
@@ -1323,7 +1366,6 @@ edge-smart-space/
 │   │   ├── device.py              # CUDA-first device selection
 │   │   ├── schemas.py             # pydantic message schemas
 │   │   ├── tools.py               # tool-calling contract and registry (§5.7.6)
-│   │   ├── localtime.py           # the room's one local time (site.utc_offset_h)
 │   │   ├── topics.py              # canonical topic constants
 │   │   └── mqtt_client.py
 │   ├── io/
@@ -1337,8 +1379,7 @@ edge-smart-space/
 │   ├── control/
 │   │   ├── regulatory.py
 │   │   ├── service.py              # the loop as a process (`python -m src.control`)
-│   │   ├── tariff.py               # schedule and retained topic (FR-16)
-│   │   ├── goal_manager.py         # arbitration, inside the gate's component
+│   │   ├── goal_manager.py
 │   │   └── validator.py
 │   ├── faults/
 │   │   ├── detectors/              # D1 to D5
@@ -1352,14 +1393,11 @@ edge-smart-space/
 │   │       ├── local_calendar.py  # what ships (FR-58)
 │   │       └── mock_travel.py     # flights and hotels (FR-55)
 │   ├── reasoning/
-│   │   ├── supervisor_agent.py    # the one tool-using agent, and its schedule
-│   │   ├── supervisor_tools.py    # the four read tools of §5.7.2, and propose
-│   │   ├── single_shot.py         # Personal Context, bounded tool rounds
-│   │   ├── diagnosis.py           # Fault Diagnosis, single-shot (§6.3)
-│   │   ├── tool_client.py         # assistance tools, over the blackboard only
-│   │   ├── endpoint.py            # the one server; latency and tokens (FR-63)
-│   │   ├── audit.py               # ReasoningRecord per invocation (FR-46)
-│   │   └── service.py             # the process (`python -m src.reasoning`)
+│   │   ├── supervisor_agent.py
+│   │   ├── supervisor_tools.py    # the four read tools of §5.7.2
+│   │   ├── single_shot.py
+│   │   ├── grammars/*.gbnf
+│   │   └── prompts/
 │   └── speech/
 │       ├── __main__.py            # `python -m src.speech` runs the pipeline
 │       ├── wakeword.py
@@ -1375,38 +1413,22 @@ edge-smart-space/
 │   └── run_sim.py
 ├── tools/
 │   ├── blackboard_view.py         # live terminal view of every topic (FR-60)
-│   ├── inject.py                  # triggers any sensor fault (FR-31)
-│   ├── say.py                     # an utterance from a keyboard
-│   ├── confirm.py                 # the occupant's yes or no to a booking (FR-54)
-│   └── bringup.py                 # is the hardware really there? sigma for R-04
+│   └── inject.py                  # triggers any sensor fault (FR-31)
 ├── eval/
 │   ├── baseline_thermostat.py
 │   ├── metrics.py
 │   └── experiments/
 ├── deploy/
-│   ├── provision.sh               # the Orin, up on boot (§9.2, §9.3)
 │   ├── docker-compose.yml
-│   ├── systemd/                   # one unit per process, plus llama-server
+│   ├── systemd/
 │   └── esphome/
 ├── .github/workflows/ci.yml
 └── tests/
 ```
 
-Revised at v2.0. Specified above but **not yet implemented**:
-`speaker_profile.py` (FR-52), `simulated_actuators.py`, and `docs/adr/`. They
-are listed because they are the design, and named here so the gap between the
-document and the tree is explicit rather than discovered.
+As of v1.10 the following are specified above but **not yet implemented**: `speaker_profile.py` (FR-52) — the speech pipeline is left untouched until it is re-verified on the microphone — `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, and `deploy/esphome/` (node firmware is written at bring-up). They are named so the gap is explicit.
 
-The v1.0 layout named `grammars/*.gbnf` and `prompts/`. Neither exists, by
-decision: the constrained decode is requested through the OpenAI-compatible
-JSON response format (§5.7.3), which both servers honour and which constrains
-exactly as a grammar would, and each prompt lives beside the one call site that
-uses it, built from configuration where it states policy.
-
-`src/common/tools.py` exists as of v1.5; the providers it declares a Protocol
-for do not. That is the intended order — the contract is what the reasoning
-layer and the executor are both written against, so it is settled first and
-the calendar can then be written without renegotiating anything.
+Added beyond the v1.1 layout, as of v1.10: `src/reasoning/` holds `supervisor_agent.py`, `supervisor_tools.py`, `assistant.py` (acting on what the speech pipeline heard), `diagnosis.py` (§6.3), `chat.py` (one timed, counted completion) and `dates.py` (the day an occupant named); `src/control/goal_manager.py`; `src/assistance/` with `executor.py`, `providers/local_calendar.py` and `providers/mock_travel.py`; `src/io/devices.py` with `python -m src.io` (Week 5); `src/common/tariff.py`; `deploy/systemd/`; `sim/replay.py`; `tools/say.py` (a typed stand-in for a voice, publishing exactly what the speech pipeline does) and `tools/record.py`; and `eval/system.py` with E3 and E6.
 
 **`src/reasoning/` must not import `src/assistance/`.** It is the same rule
 that keeps Layer 2 out of `src/io/`, for the same reason: the moment the
@@ -1435,6 +1457,7 @@ startup, which NFR-06 forbids.
 | `space/estimate/thermal` | pub | yes | 0 | `ThermalEstimate` |
 | `space/estimate/coefficients` | pub | yes | 1 | `Coefficients` |
 | `space/fault/{fault_id}` | pub | yes | 1 | `FaultEvent` |
+| `space/diagnosis/{fault_id}` | pub | no | 1 | `FaultDiagnosis` |
 | `space/system/mode` | pub | yes | 1 | `ModeState` |
 | `space/goal/proposed` | pub | no | 1 | `Goal` |
 | `space/goal/active` | pub | yes | 1 | `Goal` |
@@ -1446,9 +1469,8 @@ startup, which NFR-06 forbids.
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
 
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
-| `space/context/utterance` | pub | no | 1 | `Utterance` |
-| `space/context/tariff` | pub | yes | 1 | `TariffState` |
-| `space/diagnosis` | pub | no | 1 | `FaultDiagnosis` |
+| `space/context/reply` | pub | no | 1 | `AssistantReply` |
+| `space/tariff/state` | pub | yes | 1 | `TariffState` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/result` | pub | no | 1 | `ToolResult` |
@@ -1543,7 +1565,41 @@ startup, which NFR-06 forbids.
   "subject": "temperature",      // what was asked about; "" when nothing was
   "target_c": 24.0,              // null when no temperature was named
   "rationale": "it is too warm in here",
-  "spoken_reply": "I have passed that on."
+  "spoken_reply": "I have passed that on.",
+  "transcript": "it is too warm in here, can you cool it down"
+}
+
+// TariffState
+{
+  "ts": 1756032000.0,
+  "band": "peak",                 // normal | peak
+  "next_transition_ts": 1756044000.0
+}
+
+// AssistantReply
+{
+  "ts": 1756032003.2,
+  "transcript": "put the design review in my calendar at three",
+  "intent": "service",
+  "reply": "Added design review at 15:00 on 4 September.",
+  "invocation_ids": ["inv_1756032000_0"],
+  "awaiting_confirmation": ""      // invocation id of a booking put to the occupant
+}
+
+// ReasoningRecord
+{
+  "ts": 1756032003.2,
+  "caller": "assistant",             // supervisor | assistant | diagnosis
+  "trigger": "utterance",
+  "model": "qwen2.5:7b",
+  "inputs": "put the design review in my calendar at three",
+  "raw_output": "schedule_event({\"starts_at\": \"2026-09-04T15:00:00\", ...})",
+  "verdict": "tool results OK",
+  "applied": "schedule_event OK",
+  "tool_calls": ["schedule_event"],
+  "latency_s": 3.4,
+  "prompt_tokens": 812,
+  "completion_tokens": 64
 }
 
 // ToolInvocation
@@ -1571,53 +1627,6 @@ startup, which NFR-06 forbids.
   "provider": "local_calendar",      // "" when nothing ran
   "simulated": false                 // true for the mock endpoint (FR-55)
 }
-
-// Utterance -- text addressed to the room, spoken or typed (§5.7.1)
-{
-  "ts": 1756032000.0,
-  "text": "put the design review in my calendar at three on Thursday",
-  "source": "speech"                 // speech | console | operator
-}
-
-// TariffState -- retained (FR-16)
-{
-  "ts": 1756032000.0,
-  "band": "peak",                    // normal | peak
-  "since_ts": 1756029600.0,
-  "next_transition_ts": 1756044000.0,
-  "offset_c": 1.0                    // comfort-band shift while peak
-}
-
-// ReasoningRecord -- one per reasoning invocation (FR-46, FR-63)
-{
-  "ts": 1756032003.2,
-  "invocation_id": "rsn_1756032000_supervisor_4",
-  "call_site": "supervisor",         // supervisor | personal_context | fault_diagnosis
-  "trigger": "cadence",
-  "inputs": "Decide the setpoint goal for the room now.",
-  "raw_output": "Occupied, peak tariff: 25.5 C.",
-  "tool_calls": ["get_thermal_state", "get_occupancy", "get_tariff_state",
-                 "get_active_faults", "propose_setpoint"],
-  "rounds": 3,
-  "outcome": "APPLIED",              // APPLIED | NO_ACTION | DISCARDED | UNAVAILABLE
-  "reason": "",
-  "applied": "proposed 25.5 C in NORMAL",
-  "latency_s": 3.2,
-  "prompt_tokens": 1840,
-  "completion_tokens": 96
-}
-
-// FaultDiagnosis -- §6.3's output, as published on space/diagnosis
-{
-  "ts": 1756032301.5,
-  "fault_id": "f_temp01_stuck_1756032",
-  "primary_hypothesis": "sensor_stuck",
-  "confidence": "high",
-  "supporting_evidence": ["variance_collapse", "residual_step"],
-  "recommended_mode": "DEGRADED_SENSOR",
-  "user_message": "Temperature sensor appears stuck. Running on the room model.",
-  "generated": true                  // false: the generic text, model absent or discarded
-}
 ```
 
 ### 6.3 Fault Diagnosis Output Schema (GBNF-constrained)
@@ -1633,6 +1642,23 @@ startup, which NFR-06 forbids.
 ```
 
 `recommended_mode` is checked against the state machine's legal transitions before use. An illegal recommendation is discarded and the detector-derived mode stands.
+
+As published to `space/diagnosis/{fault_id}` (v1.9), the message also carries its timestamp, the fault it explains, whether the recommendation was legal, and whether the text is the generic per-detector notification used when the model gives nothing usable (§5.7.1):
+
+```jsonc
+// FaultDiagnosis
+{
+  "ts": 1756032301.8,
+  "fault_id": "f_temp01_stuck_1756032",
+  "primary_hypothesis": "sensor_stuck",
+  "confidence": "high",
+  "supporting_evidence": ["variance_collapse", "residual_step"],
+  "recommended_mode": "DEGRADED_SENSOR",
+  "user_message": "Temperature sensor appears stuck. Running on the room model.",
+  "recommendation_legal": true,
+  "generic": false
+}
+```
 
 ### 6.4 On `PreferenceHint`
 
@@ -1665,7 +1691,6 @@ prompt that generates it forbids claiming anything was changed (FR-45).
 | Temperature sensor out of range | D3 | `DEGRADED_SENSOR` | FR-22 |
 | Temperature sensor drift | D4 | `DEGRADED_SENSOR`, flag for recalibration | FR-23 |
 | PIR failure | D1 only | Occupancy assumed `true` (conservative for comfort) | FR-02 |
-| Power meter failure | D1, D3 (never D2: an idle compressor's standby draw is constant by design) | `DEGRADED_SENSOR` like any sensor fault; the meter is not a control input, it is the only acknowledgement an IR path has (R-02) | FR-20, FR-22 |
 | Air conditioner no response | D5 | `DEGRADED_ACTUATOR`, hold, alert | FR-24, FR-28 |
 | MQTT broker down | Client disconnect callback | Each process holds last state; controller holds last setpoint | FR-11 |
 | LLM server down or slow | Invocation timeout (30 s) | Retain previous goal; regulatory loop unaffected | FR-47 |
@@ -1720,12 +1745,14 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 1. All three demonstration scenarios (adaptive tracking, sensor-fault ride-through, actuator-fault safe degradation) execute end-to-end without manual intervention.
 2. RLS coefficients converge to within the stated tolerance of ground truth in simulation (E1) and remain within physical bounds over a 24 h hardware run. The tolerance, set from what E1 measured rather than chosen in advance:
 
-   | Coefficient | Tolerance | Measured (24 h, identifiable plant) |
+   | Coefficient | Tolerance | Measured, 24 h, identifiable plant, nine seeds (median / worst) |
    |---|---|---|
-   | `a1` | 0.01 | 0.0011 |
-   | `a2` | 0.01 | 0.0011 |
-   | `a3` | 0.005 | 0.00013 |
-   | `a4` | 0.05 | 0.0355 |
+   | `a1` | 0.01 | 0.0005 / 0.0006 |
+   | `a2` | 0.01 | 0.0005 / 0.0006 |
+   | `a3` | 0.005 | 0.0023 / 0.0053 |
+   | `a4` | 0.05 | 0.0021 / 0.0055 |
+
+   Until v1.9 this column held one seed's run, which happened to put `a3` at 0.00013; over nine seeds `a3` was overestimated by about half. v1.10 removed the errors-in-variables bias behind it (§5.2.1). The median now meets every tolerance; `a3`'s worst case, 0.0053 on two seeds of nine, is just outside 0.005 and is reported rather than rounded away. No run diverged.
 
    `a4` is loose deliberately and is the weakest of the four. Occupancy gain is around 0.0008 for a single occupant, far below the sensor noise floor, and no formulation identifies it well at that signal level (§5.2.1). It contributes roughly 0.03 °C to a prediction, so the error is affordable; stating a tight tolerance nobody can meet would be worse than stating a loose one honestly.
 3. Every injected fault class is detected in a clear majority of trials, with false-positive rate on fault-free runs below a stated bound (E3).

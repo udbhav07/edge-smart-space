@@ -1,0 +1,11 @@
+[Unit]
+Description=Edge smart space: every service
+Wants=smart-space-estimator.service smart-space-control.service smart-space-detectors.service smart-space-assistance.service smart-space-reasoning.service smart-space-speech.service
+# Layer 1 is deliberately not named here. Exactly one of
+# smart-space-simulator and smart-space-devices is enabled into this target
+# (both install WantedBy it), matching devices.source. A static Wants= would
+# start the simulator on every boot whatever was enabled, beside the real
+# sensors, on the same topics.
+
+[Install]
+WantedBy=multi-user.target

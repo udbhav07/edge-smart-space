@@ -13,13 +13,16 @@
 #   1. checks this is a Jetson and says so if it is not
 #   2. MAXN power mode and jetson_clocks on every boot (section 9.2: E7's
 #      numbers are not reproducible otherwise)
-#   3. the room's time zone, so the machine's clock agrees with site.utc_offset_h
-#   4. a 'space' service user, in the audio and dialout groups
+#   3. the room's time zone: the tariff reads peak hours off the machine's
+#      local clock, so a node left on UTC would price the wrong hours
+#   4. a 'smartspace' service user, in the audio and dialout groups
 #   5. Python 3.11+ and a virtualenv at /opt/edge-smart-space/.venv
-#   6. the broker, as the container deploy/docker-compose.yml describes
+#   6. the broker: the system mosquitto the units start after, with
+#      deploy/mosquitto.conf's persistence so retained state survives it
 #   7. llama.cpp built with CUDA, and the model it serves
-#   8. every systemd unit, with space.target and llama-server enabled at boot
-#   9. Layer 1 selected in the deployed config: simulated or esphome
+#   8. every systemd unit, with smart-space.target and llama-server enabled
+#   9. Layer 1 selected in the deployed config: devices.source simulated or
+#      esphome, and exactly one of the two Layer 1 units enabled
 #  10. the preflight: python start.py --check
 #
 # What it cannot do, and says so at the end: flash an ESP32, wire a sensor, or
@@ -37,8 +40,8 @@ INSTALL_DIR="/opt/edge-smart-space"
 LLAMA_DIR="/opt/llama.cpp"
 MODEL_DIR="/opt/models"
 ENV_DIR="/etc/edge-smart-space"
-SERVICE_USER="space"
-TIMEZONE="Asia/Kolkata"          # site.utc_offset_h: 5.5 in config/default.yaml
+SERVICE_USER="smartspace"        # the User= every smart-space-* unit runs as
+TIMEZONE="Asia/Kolkata"          # the tariff's peak hours are the room's hours
 LLM_PORT="11434"                 # reasoning.base_url in config/default.yaml
 LLAMA_CPP_REF="b4600"            # pinned: a build is only reproducible from a tag
 MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf"
@@ -121,7 +124,7 @@ UNIT
 fi
 
 # --- 3. time zone ------------------------------------------------------------
-step "Time zone $TIMEZONE, to agree with site.utc_offset_h"
+step "Time zone $TIMEZONE, so the tariff's peak hours are the room's"
 run timedatectl set-timezone "$TIMEZONE"
 
 # --- 4. service user ---------------------------------------------------------
@@ -148,7 +151,7 @@ if [[ -z "$PYTHON" ]]; then
     run apt-get install -y python3.11 python3.11-venv python3.11-dev
     PYTHON="python3.11"
 fi
-run apt-get install -y git cmake build-essential mosquitto-clients portaudio19-dev
+run apt-get install -y git cmake build-essential mosquitto mosquitto-clients portaudio19-dev
 run mkdir -p "$INSTALL_DIR"
 run rsync -a --delete --exclude .git --exclude .venv --exclude state \
     --exclude __pycache__ "$REPO_DIR/" "$INSTALL_DIR/"
@@ -169,8 +172,10 @@ fi
 run chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # --- 6. the broker -----------------------------------------------------------
-step "The broker (deploy/docker-compose.yml)"
-run docker compose -f "$INSTALL_DIR/deploy/docker-compose.yml" up -d
+step "The broker (system mosquitto, persistence on)"
+run cp "$INSTALL_DIR/deploy/mosquitto.conf" /etc/mosquitto/conf.d/edge-smart-space.conf
+run systemctl enable mosquitto.service
+run systemctl restart mosquitto.service
 
 # --- 7. the model server -----------------------------------------------------
 step "llama.cpp with CUDA, and the model"
@@ -201,29 +206,30 @@ fi
 # --- 8. systemd --------------------------------------------------------------
 step "systemd units, enabled at boot"
 run cp "$INSTALL_DIR"/deploy/systemd/*.service "$INSTALL_DIR"/deploy/systemd/*.target \
-    /etc/systemd/system/
+    "$INSTALL_DIR"/deploy/llama-server.service /etc/systemd/system/
 run systemctl daemon-reload
 run systemctl enable llama-server.service
-run systemctl enable space.target
+run systemctl enable smart-space.target
 
 # --- 9. Layer 1 --------------------------------------------------------------
 step "Layer 1: $SOURCE"
 CONFIG="$INSTALL_DIR/config/default.yaml"
 run sed -i "s/^  source: \(simulated\|esphome\)/  source: $SOURCE/" "$CONFIG"
 if [[ "$SOURCE" == "simulated" ]]; then
-    # space.target wants the hardware bridge; on a board with no sensors yet,
-    # the simulator stands in for it on the same topics (section 9.1).
-    run systemctl disable space-layer1@space.service || true
-    run systemctl enable space-simulator@space.service
+    # smart-space.target names no Layer 1; exactly one is enabled into it.
+    # On a board with no sensors yet the simulator stands in on the same
+    # topics (section 9.1).
+    run systemctl disable smart-space-devices.service || true
+    run systemctl enable smart-space-simulator.service
 else
-    run systemctl disable space-simulator@space.service || true
-    run systemctl enable space-layer1@space.service
+    run systemctl disable smart-space-simulator.service || true
+    run systemctl enable smart-space-devices.service
 fi
 
 # --- 10. start and check -----------------------------------------------------
 step "Starting, then the preflight"
 run systemctl restart llama-server.service
-run systemctl restart space.target
+run systemctl restart smart-space.target
 run sudo -u "$SERVICE_USER" "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/start.py" \
     --check --config "$CONFIG"
 
@@ -238,5 +244,5 @@ Provisioned. Everything above comes back by itself after a reboot.
 
 Not done here, because it needs a person holding the board:
   flash deploy/esphome/room-node.yaml to the ESP32, settle its PLACEHOLDER pins,
-  one-wire address, meter address and IR protocol, then run tools.bringup.
+  one-wire address and IR protocol, then run tools.bringup.
 DONE

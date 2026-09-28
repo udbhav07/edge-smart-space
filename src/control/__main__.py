@@ -24,7 +24,6 @@ from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.control.service import ControlService, build_service
-from src.control.tariff import TariffPublisher, TariffSchedule
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,21 +36,14 @@ def run(
     clock: Clock,
     period_s: float,
     ticks: int | None = None,
-    tariff: TariffPublisher | None = None,
 ) -> None:
     """Tick the loop until interrupted, or for a fixed number of cycles.
 
     ``ticks`` exists so a test drives the real loop rather than a double of it,
     and so an accelerated experiment run can bound itself.
-
-    The tariff is published from the same tick: a band changing is an event
-    nothing else will announce (FR-16). Goal expiry happens inside the
-    service's own tick, for the same reason.
     """
     completed = 0
     while ticks is None or completed < ticks:
-        if tariff is not None:
-            tariff.tick()
         service.tick()
         clock.sleep(period_s)
         completed += 1
@@ -86,12 +78,6 @@ def main(argv: list[str] | None = None) -> int:
 
     service = build_service(config, clock, blackboard)
     service.subscribe()
-    # Arbitration lives inside the service, ahead of the gate: every proposal
-    # -- supervisor, operator, spoken -- is arbitrated and then validated in
-    # one component, so none can reach the gate unarbitrated (FR-45).
-    tariff = TariffPublisher(
-        TariffSchedule(config.tariff, config.site.utc_offset_h), clock, blackboard
-    )
     blackboard.start()
     LOGGER.info(
         "controlling to %.1f C every %.0f s; commands appear on %s",
@@ -100,13 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         topics.ACTUATOR_COMMAND.wildcard(),
     )
     try:
-        run(
-            service,
-            clock,
-            config.loop.regulatory_period_s,
-            arguments.ticks,
-            tariff=tariff,
-        )
+        run(service, clock, config.loop.regulatory_period_s, arguments.ticks)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:

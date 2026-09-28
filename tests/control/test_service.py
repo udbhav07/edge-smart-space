@@ -14,16 +14,13 @@ from src.common.config import load_config
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     AdaptationState,
-    Comfort,
     Command,
     CommandKind,
     Goal,
     GoalSource,
-    Intent,
     Mode,
     ModeState,
     PreferenceHint,
-    ReasonCode,
     SensorReading,
     ThermalEstimate,
     Unit,
@@ -135,16 +132,10 @@ def _send_mode(blackboard, clock, mode: Mode):
     blackboard.dispatch("space/system/mode", state.model_dump_json().encode())
 
 
-def _send_goal(
-    blackboard,
-    clock,
-    setpoint_c: float,
-    expires_in_s: float = 600.0,
-    source: GoalSource = GoalSource.SUPERVISOR,
-):
+def _send_goal(blackboard, clock, setpoint_c: float, expires_in_s: float = 600.0):
     goal = Goal(
         ts=clock.now(),
-        source=source,
+        source=GoalSource.SUPERVISOR,
         setpoint_c=setpoint_c,
         mode=Mode.NORMAL,
         rationale="test",
@@ -289,80 +280,6 @@ class TestGoals:
         assert service.setpoint_c == config.controller.default_setpoint_c
 
 
-def _send_hint(blackboard, clock, target_c: float):
-    hint = PreferenceHint(
-        ts=clock.now(),
-        intent=Intent.ENVIRONMENT,
-        comfort=Comfort.COOLER,
-        subject="temperature",
-        target_c=target_c,
-        rationale="it is too warm in here",
-    )
-    blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
-
-
-class TestArbitrationAtTheGate:
-    """Section 4.4's one box: every proposal is arbitrated, then gated.
-
-    Before Week 6 arbitration published its winner onto the same topic the
-    gate read, so a supervisor goal would have overridden an occupant simply
-    by arriving. These pin the fix.
-    """
-
-    def test_a_supervisor_cannot_override_an_occupant(self, wired, clock):
-        service, _, blackboard = wired
-        _send_hint(blackboard, clock, 23.0)
-        _send_goal(blackboard, clock, 25.0)
-        assert service.setpoint_c == 23.0
-
-    def test_an_outranked_proposal_is_published_not_dropped(self, wired, clock):
-        """A decision nobody can see did not happen."""
-        _, transport, blackboard = wired
-        _send_hint(blackboard, clock, 23.0)
-        _send_goal(blackboard, clock, 25.0)
-        verdict = transport.verdicts()[-1]
-        assert verdict.verdict is Verdict.BLOCKED
-        assert verdict.reason is ReasonCode.OUTRANKED
-        assert verdict.proposed["setpoint_c"] == 25.0
-        assert verdict.applied["setpoint_c"] == 23.0
-
-    def test_a_spoken_request_is_gated_like_any_other(self, wired, clock):
-        """FR-45 holds of speech: asking for 5 C does not get 5 C."""
-        service, transport, blackboard = wired
-        _send_hint(blackboard, clock, 5.0)
-        assert service.setpoint_c > 5.0
-        assert transport.verdicts()[-1].verdict is Verdict.CLAMPED
-
-    def test_the_supervisor_takes_over_when_the_occupant_request_expires(
-        self, wired, clock, config
-    ):
-        """The supervisor's proposal must itself still be fresh: V-6 measures
-        age from when it was proposed, which is why the supervisor re-proposes
-        on its cadence rather than once."""
-        service, _, blackboard = wired
-        _send_hint(blackboard, clock, 23.0)
-        clock.advance(config.validator.goal_max_age_s - 10.0)
-        _send_goal(blackboard, clock, 25.0, expires_in_s=3600.0)
-        clock.advance(20.0)
-        _send_reading(blackboard, clock, WARM_C)
-        service.tick()
-        assert service.setpoint_c == 25.0
-
-    def test_a_stale_proposal_is_refused_as_stale_not_as_outranked(
-        self, wired, clock
-    ):
-        """The audit trail has to give the reason that is actually true."""
-        _, transport, blackboard = wired
-        _send_goal(blackboard, clock, 26.0, expires_in_s=-1.0)
-        assert transport.verdicts()[-1].reason is ReasonCode.STALE_GOAL
-
-    def test_an_operator_outranks_the_occupant(self, wired, clock):
-        service, _, blackboard = wired
-        _send_hint(blackboard, clock, 23.0)
-        _send_goal(blackboard, clock, 25.0, source=GoalSource.OPERATOR)
-        assert service.setpoint_c == 25.0
-
-
 class TestControlOnPrediction:
     """FR-27, and the reason the model is worth identifying."""
 
@@ -427,3 +344,110 @@ class TestRunLoop:
             "space/goal/proposed",
             "space/context/preference",
         }
+
+
+def _send_preference(blackboard, clock, target_c=None, comfort="unchanged", intent="environment"):
+    hint = PreferenceHint(
+        ts=clock.now(),
+        intent=intent,
+        comfort=comfort,
+        subject="temperature" if intent == "environment" else "booking",
+        target_c=target_c,
+        rationale="asked",
+        transcript="spoken words",
+    )
+    blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
+
+
+class TestSpokenPreferences:
+    """FR-53: a preference is proposed through the same gate as anything."""
+
+    def test_a_named_temperature_is_gated_and_adopted(self, wired, clock):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=23.0)
+        assert service.setpoint_c == 23.0
+        assert transport.verdicts()[-1].proposed["source"] == "preference"
+
+    def test_an_unsafe_request_is_clamped_by_the_validator(self, wired, clock):
+        """The Week 6 demonstration: the gate refuses, demonstrably."""
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=5.0)
+        verdict = transport.verdicts()[-1]
+        assert verdict.verdict.value == "CLAMPED"
+        assert verdict.proposed["setpoint_c"] == 5.0
+
+    def test_a_service_request_changes_no_setpoint(self, wired, clock, config):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, intent="service")
+        assert service.setpoint_c == config.controller.default_setpoint_c
+        assert transport.verdicts() == []
+
+    def test_the_supervisor_is_held_back_after_a_preference(self, wired, clock):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=23.0)
+        _send_goal(blackboard, clock, 25.0)
+        assert service.setpoint_c == 23.0
+        assert transport.verdicts()[-1].reason.value == "PREFERENCE_HOLD"
+
+
+class TestPeakTariff:
+    """FR-16: during peak the loop tracks a shifted setpoint, within bounds."""
+
+    def _at_hour(self, hour: int) -> SimClock:
+        from datetime import datetime
+
+        return SimClock(start_epoch_s=datetime(2026, 10, 1, hour, 0).timestamp())
+
+    def _wired_at(self, config, hour: int):
+        clock = self._at_hour(hour)
+        transport = FakeTransport()
+        blackboard = Blackboard(config.mqtt, transport)
+        service = build_service(config, clock, blackboard)
+        service.subscribe()
+        return service, transport, blackboard, clock
+
+    def test_outside_peak_the_setpoint_is_tracked_as_set(self, config):
+        service, *_ = self._wired_at(config, 12)
+        assert service.effective_setpoint_c == service.setpoint_c
+
+    def test_during_peak_the_setpoint_rises_by_the_offset(self, config):
+        service, *_ = self._wired_at(config, 19)
+        assert service.effective_setpoint_c == service.setpoint_c + config.tariff.peak_offset_c
+
+    def test_the_shift_never_passes_the_upper_bound(self, config):
+        tariff = config.tariff.model_copy(update={"peak_offset_c": 50.0})
+        service, *_ = self._wired_at(config.model_copy(update={"tariff": tariff}), 19)
+        assert service.effective_setpoint_c == config.validator.setpoint_bounds_c.high
+
+    def test_the_band_is_published_retained(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        tariff = [(p, r) for t, p, _, r in transport.published if t == "space/tariff/state"]
+        assert len(tariff) == 1 and tariff[0][1] is True
+        assert b'"peak"' in tariff[0][0]
+
+    def test_an_unchanged_band_is_not_republished(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        service.tick()
+        assert sum(1 for t, *_ in transport.published if t == "space/tariff/state") == 1
+
+    def test_the_validated_setpoint_itself_is_unchanged(self, config):
+        """The shift is on top of what the validator admitted, not a new goal."""
+        service, *_ = self._wired_at(config, 19)
+        assert service.setpoint_c == config.controller.default_setpoint_c
+
+
+class TestPursuingAPreference:
+    def test_a_distant_request_is_reached_step_by_step(self, wired, clock, config):
+        """ "Make it 20" from 24: V-2 grants 22, and the goal path goes on to 20."""
+        service, transport, blackboard = wired
+        _send_reading(blackboard, clock, 27.0)
+        _send_preference(blackboard, clock, target_c=20.0)
+        assert service.setpoint_c == 22.0
+        for _ in range(int(config.goals.pursue_interval_s / 5.0) + 1):
+            clock.advance(5.0)
+            service.tick()
+        assert service.setpoint_c == 20.0

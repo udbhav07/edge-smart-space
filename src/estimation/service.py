@@ -14,16 +14,24 @@ Fitting them would quietly rewrite what the coefficients mean, and nothing
 downstream would be able to tell.
 
 Freezing follows the same principle one level up: while a sensor feeding the
-regressor is faulted, adaptation stops entirely (FR-29). Prediction
-continues, which is what leaves DEGRADED_SENSOR control something to run on
-(FR-27). Never adapt to bad data.
+regressor is faulted, adaptation stops entirely (FR-29). A reading its own
+sensor flags as suspect is never fitted either. Never adapt to bad data.
+
+**While the indoor sensor is faulted, the model runs on itself (FR-27).** The
+one-step prediction is built from the previous *reading*, so once that reading
+is the fault, a one-step prediction is only the fault restated: a stuck sensor
+yields the stuck value, an out-of-range one yields something derived from 999
+C, and a silent one yields nothing new at all. None of that is a model standing
+in for a sensor. So from the last trusted reading the service steps the model
+forward on its own output, once per :meth:`tick`, and publishes that. Ticks
+rather than readings drive it because a dropped sensor delivers no readings.
 """
 
 from __future__ import annotations
 
 import logging
+import statistics
 from collections import deque
-from dataclasses import dataclass
 
 from src.common import topics
 from src.common.clock import Clock
@@ -48,22 +56,6 @@ from src.estimation.rc_model import Regressor
 from src.estimation.rls import ThermalEstimator, UpdateResult
 
 LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class _Observed:
-    """One step's worth of what the room was doing, while it could be trusted.
-
-    Kept so that a fault found late can be rolled forward from a state that
-    predates it. A stuck sensor is not detected until its variance has
-    collapsed for a whole window, so by the time anyone knows, the newest
-    readings *are* the fault.
-    """
-
-    indoor_c: float
-    outdoor_c: float
-    command: float
-    occupancy: float
 
 #: Normalised drive the model sees. Section 5.3's law is bang-bang, so u[k]
 #: is binary; a3 is therefore identified against a two-valued input, which
@@ -102,6 +94,9 @@ class ThermalEstimatorService:
         self._store = store
 
         self._indoor_c: float | None = None
+        #: The reading before ``_indoor_c``, when the two were one step apart:
+        #: the instrument the ambient gap is measured from.
+        self._earlier_c: float | None = None
         self._indoor_ts: float | None = None
         self._outdoor_c: float | None = None
         self._command = COOLING_OFF
@@ -109,11 +104,23 @@ class ThermalEstimatorService:
         self._faulted_sensors: set[str] = set()
         self._mode = Mode.INIT
         self._skipped_pairs = 0
-        self._free_running_c: float | None = None
-        self._last_prediction_c: float | None = None
-        self._history: deque[_Observed] = deque(
-            maxlen=config.estimator.fault_history_samples
+        self._suspect_readings = 0
+        #: The model's own state while the indoor sensor is faulted; None
+        #: while the sensor is trusted.
+        self._open_loop_c: float | None = None
+        #: The latest indoor value heard, trusted or not. Only published as
+        #: t_in while running open loop, never fitted.
+        self._last_heard_c: float | None = None
+        #: Inputs of the last contiguous trusted steps, for the horizon
+        #: residual D4 uses (FR-23). Emptied at any gap: a horizon spanning
+        #: one would predict across an interval the model never saw.
+        self._horizon: deque[Regressor] = deque(
+            maxlen=config.estimator.drift_horizon_samples
         )
+        self._horizon_residuals: deque[float] = deque(
+            maxlen=config.estimator.horizon_sigma_window_samples
+        )
+        self._horizon_residual = 0.0
 
     # --- wiring -------------------------------------------------------
 
@@ -156,22 +163,18 @@ class ThermalEstimatorService:
         return self._skipped_pairs
 
     @property
+    def suspect_readings(self) -> int:
+        """Indoor readings refused because their sensor flagged them."""
+        return self._suspect_readings
+
+    @property
+    def open_loop(self) -> bool:
+        """Whether the prediction is running on the model alone (FR-27)."""
+        return self._open_loop_c is not None
+
+    @property
     def adaptation_frozen(self) -> bool:
         return bool(self._faulted_sensors) or self._mode in _FREEZING_MODES
-
-    @property
-    def indoor_trusted(self) -> bool:
-        """Whether the indoor reading still means anything."""
-        return self._config.estimator.indoor_sensor_id not in self._faulted_sensors
-
-    @property
-    def free_running_c(self) -> float | None:
-        """The model's own temperature while the sensor is not trusted.
-
-        None whenever the sensor is trusted, because then the room is being
-        measured and there is nothing to dead-reckon.
-        """
-        return self._free_running_c
 
     def _on_health(self, _topic: str, health: SensorHealth) -> None:
         """Track which regressor inputs are untrustworthy (FR-29)."""
@@ -182,6 +185,26 @@ class ThermalEstimatorService:
         else:
             self._faulted_sensors.discard(health.sensor_id)
         self._apply_freeze()
+        if health.sensor_id == self._config.estimator.indoor_sensor_id:
+            self._track_indoor_trust(health.quality is Quality.FAULTED)
+
+    def _track_indoor_trust(self, faulted: bool) -> None:
+        """Enter or leave open-loop prediction as the indoor sensor's trust changes."""
+        if faulted and self._open_loop_c is None and self._indoor_c is not None:
+            self._open_loop_c = self._indoor_c
+            LOGGER.warning(
+                "indoor sensor faulted; predicting on the model alone from the "
+                "last trusted reading, %.2f C", self._indoor_c
+            )
+        elif not faulted and self._open_loop_c is not None:
+            self._open_loop_c = None
+            # The last trusted reading predates the fault. Pairing it with the
+            # first reading after would fit an interval the model never saw.
+            self._horizon.clear()
+            self._earlier_c = None
+            self._indoor_c = None
+            self._indoor_ts = None
+            LOGGER.info("indoor sensor trusted again; predicting from readings")
 
     def _on_mode(self, _topic: str, state: ModeState) -> None:
         self._mode = state.mode
@@ -223,43 +246,110 @@ class ThermalEstimatorService:
 
     def _on_indoor(self, reading: SensorReading) -> None:
         """Form (phi[k], T[k+1]) from the previous reading and this one."""
+        self._last_heard_c = reading.value
+        if self._open_loop_c is not None:
+            # The sensor is faulted; tick() is predicting without it.
+            return
+        if reading.quality is not Quality.OK:
+            self._horizon.clear()
+            # Flagged by its own sensor. Kept out of the fit, the residual
+            # window and the anchor alike; the interval check then refuses
+            # the next pair, since it spans the gap this leaves.
+            self._suspect_readings += 1
+            LOGGER.debug("refusing a %s indoor reading", reading.quality.value)
+            return
+
+        earlier_c = self._earlier_c
         previous_c, previous_ts = self._indoor_c, self._indoor_ts
         self._indoor_c, self._indoor_ts = reading.value, reading.ts
-
-        if not self.indoor_trusted:
-            # The reading is known to be wrong, so it is kept for reporting
-            # and used for nothing else. Predicting one step ahead *from* it
-            # would produce a prediction that simply follows the fault, which
-            # is the opposite of what FR-27 asks for: tick() dead-reckons
-            # instead.
-            return
+        self._earlier_c = None
 
         if previous_c is None or previous_ts is None or self._outdoor_c is None:
             return
 
         if not self._interval_is_usable(previous_ts, reading.ts):
             self._skipped_pairs += 1
+            self._horizon.clear()
             return
+        # A usable pair makes the previous reading a usable instrument for
+        # the next one: one step earlier, on a uniform step.
+        self._earlier_c = previous_c
 
         regressor = Regressor(
             indoor_c=previous_c,
             outdoor_c=self._outdoor_c,
             command=self._command,
             occupancy=self._occupancy,
-        )
-        self._history.append(
-            _Observed(
-                indoor_c=previous_c,
-                outdoor_c=self._outdoor_c,
-                command=self._command,
-                occupancy=self._occupancy,
-            )
+            gap_indoor_c=earlier_c,
         )
         result = self._estimator.update(regressor, reading.value)
+        self._horizon.append(regressor)
+        self._measure_horizon(reading.value)
         self._publish(result, reading.value)
         self._maybe_persist()
         if result.diverged:
             self._publish_divergence(result)
+            self._restart_from_prior()
+
+    def _measure_horizon(self, measured_c: float) -> None:
+        """Predict this reading from the one a horizon ago, through the
+        inputs actually applied since, and keep the error (FR-23).
+
+        Once the horizon is full; until then the last value stands and D4 is
+        still in its warm-up, which is far longer than any horizon.
+        """
+        if len(self._horizon) < self._horizon.maxlen:
+            return
+        predicted_c = self._horizon[0].indoor_c
+        for step in self._horizon:
+            predicted_c = self._estimator.predict(
+                Regressor(
+                    indoor_c=predicted_c,
+                    outdoor_c=step.outdoor_c,
+                    command=step.command,
+                    occupancy=step.occupancy,
+                )
+            )
+        self._horizon_residual = measured_c - predicted_c
+        self._horizon_residuals.append(self._horizon_residual)
+
+    @property
+    def horizon_residual_sigma(self) -> float:
+        if len(self._horizon_residuals) < 2:
+            return 0.0
+        return float(statistics.pstdev(self._horizon_residuals))
+
+    def tick(self) -> ThermalEstimate | None:
+        """Advance the open-loop prediction one model step (FR-27).
+
+        Called once per sensor period. A no-op while the indoor sensor is
+        trusted, since readings drive the estimate then.
+
+        :returns: the estimate published, or None when not running open loop.
+        """
+        if self._open_loop_c is None or self._outdoor_c is None:
+            return None
+        regressor = Regressor(
+            indoor_c=self._open_loop_c,
+            outdoor_c=self._outdoor_c,
+            command=self._command,
+            occupancy=self._occupancy,
+        )
+        self._open_loop_c = self._estimator.predict(regressor)
+        heard_c = (
+            self._last_heard_c if self._last_heard_c is not None else self._open_loop_c
+        )
+        estimate = ThermalEstimate(
+            ts=self._clock.now(),
+            t_in=heard_c,
+            t_pred=self._open_loop_c,
+            residual=heard_c - self._open_loop_c,
+            residual_sigma=self._estimator.residual_sigma,
+            model_confidence=self._estimator.model_confidence,
+            adaptation=self._estimator.adaptation,
+        )
+        self._blackboard.publish(topics.ESTIMATE_THERMAL, estimate)
+        return estimate
 
     def _interval_is_usable(self, previous_ts: float, current_ts: float) -> bool:
         """Whether these two samples are one model step apart.
@@ -278,123 +368,6 @@ class ThermalEstimatorService:
         tolerance = self._config.estimator.sample_interval_tolerance
         return abs(interval_s - nominal_s) <= nominal_s * tolerance
 
-    def tick(self) -> bool:
-        """Advance the model when the room cannot be measured (FR-27).
-
-        This is the substitution FR-27 actually asks for. A one-step-ahead
-        prediction is formed *from* the current reading, so while that reading
-        is frozen or absent the prediction follows it and substituting one for
-        the other changes nothing. The model has to run free instead: its own
-        previous output becomes its next input, and it dead-reckons the room
-        forward from the last state anyone trusted.
-
-        The seed is already stale by construction. A stuck sensor is not
-        detected until its variance has collapsed for a whole window, so the
-        last trustworthy belief is minutes old before free-running begins, and
-        the error grows from there with nothing to correct it. That is the
-        reason the substitution is time-boxed at all (section 7.2), and it is
-        why the budget is a duration rather than a confidence.
-
-        :returns: whether an estimate was published. False is ordinary: the
-            sensor is fine, or nothing has been observed to seed from.
-        """
-        if self.indoor_trusted:
-            self._free_running_c = None
-            return False
-        if self._outdoor_c is None:
-            return False
-
-        seed = self._free_running_c
-        if seed is None:
-            seed = self._seed_from_before_the_fault()
-        if seed is None:
-            return False
-
-        regressor = Regressor(
-            indoor_c=seed,
-            outdoor_c=self._outdoor_c,
-            command=self._command,
-            occupancy=self._occupancy,
-        )
-        self._free_running_c = self._estimator.predict(regressor)
-        self._publish_free_running()
-        return True
-
-    def _seed_from_before_the_fault(self) -> float | None:
-        """Where to start dead-reckoning from, and how to get to now.
-
-        Not from the latest reading, and not from the latest prediction: both
-        are anchored to a sensor already known to be lying. A stuck sensor is
-        only detected once its variance has collapsed for a whole window, so
-        everything recent is contaminated by construction.
-
-        Instead the oldest state still held is taken, which predates the fault
-        because the history is kept longer than the slowest detector's window.
-        It is used as-is rather than rolled forward through the intervening
-        samples: rolling compounds the model's own error once per step, and
-        over a hundred steps that costs more than the staleness it removes --
-        measured, it turned a dropout the system had been riding out perfectly
-        into one it could not hold.
-
-        The result is a free run that starts behind the room by however far it
-        moved during the detection window. That is a real error and it is why
-        the substitution is time-boxed.
-
-        :returns: the caught-up temperature, or None when nothing has been
-            recorded yet.
-        """
-        if not self._history:
-            return self._last_prediction_c
-
-        if self._sensor_fell_silent():
-            # A sensor that stopped reporting told the truth right up until it
-            # stopped, so the newest state is the best one available and going
-            # further back would only add staleness.
-            return self._history[-1].indoor_c
-
-        temperature = self._history[0].indoor_c
-        LOGGER.info(
-            "seeding the free run at %.2f C, recorded %d sample(s) ago",
-            temperature,
-            len(self._history),
-        )
-        return temperature
-
-    def _sensor_fell_silent(self) -> bool:
-        """Whether the sensor stopped reporting rather than started lying.
-
-        The two faults contaminate the recent past differently. A sensor that
-        goes quiet leaves its last reading intact; one that freezes at a
-        plausible value fills the window with the fault itself. Silence is
-        visible here without asking the detectors which of them fired: nothing
-        has arrived for longer than a sample period.
-        """
-        if self._indoor_ts is None:
-            return False
-        silent_for = self._clock.now() - self._indoor_ts
-        return silent_for > self._config.loop.sensor_period_s
-
-    def _publish_free_running(self) -> None:
-        """Publish a dead-reckoned estimate.
-
-        ``t_in`` remains whatever the sensor last said, so the residual keeps
-        its meaning -- how far the untrusted sensor now sits from the model --
-        which is the number worth watching during a degraded run. The
-        controller reads ``t_pred`` and nothing else.
-        """
-        if self._free_running_c is None or self._indoor_c is None:
-            return
-        estimate = ThermalEstimate(
-            ts=self._clock.now(),
-            t_in=self._indoor_c,
-            t_pred=self._free_running_c,
-            residual=self._indoor_c - self._free_running_c,
-            residual_sigma=self._estimator.residual_sigma,
-            model_confidence=self._estimator.model_confidence,
-            adaptation=self._estimator.adaptation,
-        )
-        self._blackboard.publish(topics.ESTIMATE_THERMAL, estimate)
-
     def _publish(self, result: UpdateResult, measured_c: float) -> None:
         estimate = ThermalEstimate(
             ts=self._clock.now(),
@@ -404,8 +377,9 @@ class ThermalEstimatorService:
             residual_sigma=self._estimator.residual_sigma,
             model_confidence=self._estimator.model_confidence,
             adaptation=self._estimator.adaptation,
+            horizon_residual=self._horizon_residual,
+            horizon_residual_sigma=self.horizon_residual_sigma,
         )
-        self._last_prediction_c = result.prediction_c
         self._blackboard.publish(topics.ESTIMATE_THERMAL, estimate)
         self._blackboard.publish(
             topics.ESTIMATE_COEFFICIENTS, self._estimator.snapshot()
@@ -419,6 +393,18 @@ class ThermalEstimatorService:
             self._estimator.covariance,
             self._estimator.samples_since_reset,
         )
+
+    def _restart_from_prior(self) -> None:
+        """Discard the diverged estimate, as section 7.1 prescribes.
+
+        Without this the rejection window stayed full, so the same divergence
+        was re-announced as a new fault on every update -- one every 5 s --
+        and the estimator kept predicting from the coefficients it had just
+        declared untrustworthy. Resetting clears the window as well, so a
+        second divergence needs a fresh window of evidence.
+        """
+        self._estimator.reset()
+        LOGGER.error("coefficients reset to the configured prior after divergence")
 
     def _publish_divergence(self, result: UpdateResult) -> None:
         """Raise MODEL_DIVERGENCE (FR-06).

@@ -30,12 +30,6 @@ class InjectedFault(str, Enum):
     D4 (drift) is included because a drifting sensor is injectable at the
     source even though the detector that catches it works on the model
     residual rather than on the signal.
-
-    STUCK_OFF is the actuator's fault rather than a sensor's: the unit accepts
-    every command and drives nothing. FR-31 asks for every class in FR-20 to
-    FR-24 to be injectable, and FR-24 is the actuator, so without it one of
-    the five detectors could only ever be exercised by editing configuration
-    before a run -- which is the opposite of what FR-31 is for.
     """
 
     NONE = "NONE"
@@ -43,7 +37,10 @@ class InjectedFault(str, Enum):
     DROPOUT = "DROPOUT"
     OUT_OF_RANGE = "OUT_OF_RANGE"
     DRIFT = "DRIFT"
-    STUCK_OFF = "STUCK_OFF"
+    #: The actuator accepts every command and cools nothing (FR-24). Applied
+    #: to the unit, not a sensor, so D5 finds it the way it finds a real one:
+    #: from the room not responding, never from an acknowledgement.
+    NO_RESPONSE = "NO_RESPONSE"
 
 
 @dataclass(frozen=True)
@@ -67,15 +64,12 @@ FAULTS_REQUIRING_MAGNITUDE = frozenset(
     {InjectedFault.STUCK_AT, InjectedFault.OUT_OF_RANGE, InjectedFault.DRIFT}
 )
 
+#: Faults an actuator can be given. It has no reading to freeze or drift.
+ACTUATOR_SUPPORTED_FAULTS = frozenset({InjectedFault.NONE, InjectedFault.NO_RESPONSE})
+
 #: The absence of an injected fault. A sensor in this state still exhibits
 #: whatever nominal imperfection its implementation models.
 NO_FAULT = FaultInjection(kind=InjectedFault.NONE)
-
-#: Faults an actuator can suffer. It has no range to leave and no value to
-#: freeze at, so the only thing that can be done to it is to stop it working.
-ACTUATOR_SUPPORTED_FAULTS = frozenset(
-    {InjectedFault.NONE, InjectedFault.STUCK_OFF}
-)
 
 #: Faults meaningful for a two-valued signal. A binary sensor cannot drift
 #: and has no range to leave, so injecting either is refused rather than

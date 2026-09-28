@@ -54,6 +54,8 @@ _BOOLEAN_READING_VALUES = (0.0, 1.0)
 
 #: Keys inside a ValidationVerdict's proposed and applied objects.
 SETPOINT_KEY = "setpoint_c"
+#: Who proposed a goal, carried in a goal verdict's ``proposed`` mapping.
+SOURCE_KEY = "source"
 COMMAND_KIND_KEY = "kind"
 
 # --- Enumerations ----------------------------------------------------------
@@ -64,7 +66,6 @@ class Unit(str, Enum):
 
     CELSIUS = "C"
     PERCENT_RH = "%RH"
-    WATT = "W"
     BOOLEAN = "bool"
 
 
@@ -93,27 +94,18 @@ class Mode(str, Enum):
     SAFE_HOLD = "SAFE_HOLD"
 
 
-#: Section 5.6's state machine, as the transitions it permits out of each
-#: mode. Staying put is always permitted and is not listed. Written down once
-#: so that anything judging a recommended mode -- the Fault Diagnosis call in
-#: particular (section 6.3) -- judges it against the diagram rather than
-#: against its own reading of it.
-LEGAL_TRANSITIONS: Mapping[Mode, frozenset[Mode]] = MappingProxyType(
-    {
-        Mode.INIT: frozenset({Mode.NORMAL}),
-        Mode.NORMAL: frozenset(
-            {Mode.DEGRADED_SENSOR, Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD}
-        ),
-        Mode.DEGRADED_SENSOR: frozenset({Mode.NORMAL, Mode.SAFE_HOLD}),
-        Mode.DEGRADED_ACTUATOR: frozenset({Mode.NORMAL, Mode.SAFE_HOLD}),
-        Mode.SAFE_HOLD: frozenset({Mode.NORMAL}),
-    }
-)
-
-
-def is_legal_transition(current: Mode, target: Mode) -> bool:
-    """Whether section 5.6 allows moving from one mode to another."""
-    return target is current or target in LEGAL_TRANSITIONS[current]
+#: Section 5.6's transitions, as data, for anything that must check one
+#: without owning the state machine -- the Fault Diagnosis call checks a
+#: recommended mode against it (section 6.3). Staying put is always legal.
+LEGAL_TRANSITIONS: dict[Mode, frozenset[Mode]] = {
+    Mode.INIT: frozenset({Mode.INIT, Mode.NORMAL}),
+    Mode.NORMAL: frozenset(
+        {Mode.NORMAL, Mode.DEGRADED_SENSOR, Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD}
+    ),
+    Mode.DEGRADED_SENSOR: frozenset({Mode.DEGRADED_SENSOR, Mode.NORMAL, Mode.SAFE_HOLD}),
+    Mode.DEGRADED_ACTUATOR: frozenset({Mode.DEGRADED_ACTUATOR, Mode.NORMAL, Mode.SAFE_HOLD}),
+    Mode.SAFE_HOLD: frozenset({Mode.SAFE_HOLD, Mode.NORMAL}),
+}
 
 
 class FaultClass(str, Enum):
@@ -166,10 +158,10 @@ class ReasonCode(str, Enum):
     CMD_RATE = "CMD_RATE"
     MODE_BLOCK = "MODE_BLOCK"
     STALE_GOAL = "STALE_GOAL"
-    #: Not a V-rule: the proposal lost arbitration to a more authoritative
-    #: source (an occupant outranks the supervisor). Published so a supervisor
-    #: goal that changed nothing is visible as that, not as silence.
-    OUTRANKED = "OUTRANKED"
+    #: A supervisor proposal held back because the occupant asked for
+    #: something else recently. Arbitration, not a safety rule, but published
+    #: on the same topic so the override is visible rather than silent.
+    PREFERENCE_HOLD = "PREFERENCE_HOLD"
 
 
 class CommandKind(str, Enum):
@@ -284,6 +276,14 @@ class ThermalEstimate(TimestampedMessage):
         ge=0.0, le=1.0, description="Derived from trace(P). Not a probability."
     )
     adaptation: AdaptationState
+    horizon_residual: float = Field(
+        default=0.0,
+        description="Reading minus the model's prediction of it from the reading "
+        "drift_horizon_samples earlier; what D4 accumulates (FR-23)",
+    )
+    horizon_residual_sigma: float = Field(
+        default=0.0, ge=0.0, description="Spread of recent horizon residuals; 0 until measured"
+    )
 
     @model_validator(mode="after")
     def _residual_agrees_with_the_values_it_is_derived_from(self) -> ThermalEstimate:
@@ -432,7 +432,11 @@ class ValidationVerdict(TimestampedMessage):
         if self.verdict is Verdict.ACCEPTED:
             if self.reason is not ReasonCode.NONE:
                 raise ValueError("an ACCEPTED verdict must carry reason NONE")
-            if dict(self.applied) != dict(self.proposed):
+            # Compared on what was applied: a proposal may also say who made
+            # it (SOURCE_KEY), which is context rather than a decided value.
+            if any(
+                self.proposed.get(key) != value for key, value in self.applied.items()
+            ):
                 raise ValueError("an ACCEPTED verdict must apply the proposal unchanged")
         elif self.reason is ReasonCode.NONE:
             raise ValueError(f"a {self.verdict.value} verdict must carry a reason code")
@@ -491,6 +495,15 @@ class Intent(str, Enum):
     NONE = "none"
 
 
+#: Subjects a spoken preference may name and still be about the temperature.
+#: Empty covers the common case of the model leaving it blank. One definition,
+#: read by the goal path and by the assistant, so the two cannot disagree about
+#: whether a request will produce a setpoint.
+THERMAL_SUBJECTS = frozenset(
+    {"", "temperature", "heat", "cooling", "air conditioner", "ac", "air conditioning"}
+)
+
+
 class PreferenceHint(TimestampedMessage):
     """A spoken preference, forwarded as a supervisory input (FR-53).
 
@@ -527,6 +540,12 @@ class PreferenceHint(TimestampedMessage):
     rationale: str = Field(default="", description="What was said, briefly")
     spoken_reply: str = Field(
         default="", description="Plain-English answer to speak back to the occupant"
+    )
+    transcript: str = Field(
+        default="",
+        description="The utterance verbatim, so a consumer acting on it -- a "
+        "calendar entry needs the exact time said -- reads the words rather "
+        "than a model's paraphrase of them",
     )
 
     @model_validator(mode="after")
@@ -630,113 +649,77 @@ class InjectionCommand(TimestampedMessage):
         return self
 
 
-# --- Context: tariff and utterances (FR-16, FR-53) --------------------------
+# --- Reasoning layer (FR-46, FR-63) -----------------------------------------
 
 
-class TariffState(TimestampedMessage):
-    """The electricity pricing band in force, and when it next changes (FR-16).
-
-    Retained on ``space/context/tariff``. ``next_transition_ts`` is what the
-    supervisor's ``get_tariff_state`` tool returns (section 5.7.2) and what
-    lets it say "peak until 22:00" in a rationale rather than guess.
-    ``offset_c`` is the configured comfort-band shift, carried with the band so
-    a reader never has to look the number up somewhere else.
-    """
-
-    band: TariffBand
-    since_ts: float = Field(gt=0.0)
-    next_transition_ts: float = Field(gt=0.0)
-    offset_c: float = Field(
-        ge=0.0, description="How far the comfort band shifts up while peak"
-    )
-
-    @model_validator(mode="after")
-    def _the_next_transition_is_ahead_of_the_current_one(self) -> TariffState:
-        if self.next_transition_ts <= self.since_ts:
-            raise ValueError("next_transition_ts must follow since_ts")
-        return self
-
-
-class UtteranceSource(str, Enum):
-    """Where a piece of text addressed to the room came from."""
-
-    SPEECH = "speech"
-    CONSOLE = "console"
-    OPERATOR = "operator"
-
-
-class Utterance(TimestampedMessage):
-    """Something an occupant said or typed to the room.
-
-    The speech pipeline publishes its transcripts here rather than calling
-    the reasoning layer itself: Layer 1 turns sound into text and stops, and
-    Personal Context runs in the reasoning process (section 5.7.1). The same
-    topic is how a typed request reaches it from a terminal or the console, so
-    everything speech can ask for can be asked for without a microphone.
-
-    Not retained. A retained utterance would be answered again by a restarting
-    reasoning process, which is how one request becomes two calendar entries.
-    """
-
-    text: str = Field(min_length=1, max_length=2000)
-    source: UtteranceSource
-
-
-# --- Reasoning (FR-25, FR-43, FR-46, FR-63) --------------------------------
-
-
-class CallSite(str, Enum):
-    """Which of the three reasoning call sites ran (section 5.7.1)."""
+class ReasoningCaller(str, Enum):
+    """Which reasoning call site produced a record (section 5.7.1)."""
 
     SUPERVISOR = "supervisor"
-    PERSONAL_CONTEXT = "personal_context"
-    FAULT_DIAGNOSIS = "fault_diagnosis"
-
-
-class ReasoningOutcome(str, Enum):
-    """What became of one reasoning invocation.
-
-    Four values because they are four different findings. ``DISCARDED`` is the
-    model producing something that parsed and was wrong (FR-44), which is a
-    result about the model; ``UNAVAILABLE`` is the endpoint not answering,
-    which is a result about the deployment.
-    """
-
-    APPLIED = "APPLIED"
-    NO_ACTION = "NO_ACTION"
-    DISCARDED = "DISCARDED"
-    UNAVAILABLE = "UNAVAILABLE"
+    ASSISTANT = "assistant"
+    DIAGNOSIS = "diagnosis"
 
 
 class ReasoningRecord(TimestampedMessage):
-    """The audit record of one reasoning invocation (FR-46, FR-63).
+    """One reasoning invocation, for the append-only audit (FR-46, FR-63).
 
-    Published to ``space/audit/reasoning`` for every call, including the ones
-    that failed: inputs, what the model said, which tools it called, the
-    verdict on it, and what was applied as a result. Latency and token counts
-    ride along so NFR-03 and E7 are measured from the record rather than from
-    a separate instrument that might disagree with it.
+    Published to ``space/audit/reasoning``. It carries what the model was
+    given, what it said verbatim, what was decided about that, and what it
+    cost -- the four things needed to replay an argument about what the model
+    did, and the latency and token figures E7 reports.
     """
 
-    invocation_id: str = Field(min_length=1)
-    call_site: CallSite
-    trigger: str = Field(min_length=1, description="What caused the call")
-    inputs: str = Field(default="", description="What the model was given")
-    raw_output: str = Field(default="", description="What it said, verbatim")
-    tool_calls: tuple[str, ...] = Field(
-        default=(), description="Tool names called, in order"
+    caller: ReasoningCaller
+    trigger: str = Field(min_length=1, description="What caused the invocation")
+    model: str = Field(min_length=1)
+    inputs: str = Field(description="What the model was asked, as sent")
+    raw_output: str = Field(description="What the model said, verbatim")
+    verdict: str = Field(
+        min_length=1, description="What was decided about the output, one line"
     )
-    rounds: int = Field(ge=0, description="Model turns taken")
-    outcome: ReasoningOutcome
-    reason: str = Field(default="", description="Why the outcome is what it is")
-    applied: str = Field(default="", description="What was acted on, if anything")
-    latency_s: float = Field(ge=0.0)
+    applied: str = Field(default="", description="What changed as a result")
+    tool_calls: tuple[str, ...] = Field(
+        default=(), description="Tools the model asked for, in order"
+    )
+    latency_s: float = Field(ge=0.0, description="Wall time across every round")
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
 
 
+class AssistantReply(TimestampedMessage):
+    """What the system says back after acting on an utterance.
+
+    Published to ``space/context/reply``. The preference hint's own
+    ``spoken_reply`` is written before anything has happened and can only say
+    a request was passed on; this is written after the calendar answered or
+    the validator ruled, so it can say what actually happened.
+    """
+
+    transcript: str = Field(description="The utterance being answered")
+    intent: Intent
+    reply: str = Field(min_length=1, description="One or two plain sentences")
+    invocation_ids: tuple[str, ...] = Field(
+        default=(), description="Tool invocations made while answering"
+    )
+    awaiting_confirmation: str = Field(
+        default="",
+        description="Invocation id of a booking put to the occupant, if any "
+        "(FR-54); empty when nothing is waiting",
+    )
+
+
+class TariffState(TimestampedMessage):
+    """The electricity pricing band in force, retained (FR-16)."""
+
+    band: TariffBand
+    next_transition_ts: float = Field(gt=0.0, description="When the band next changes")
+
+
+# --- Fault diagnosis (FR-25, FR-43; section 6.3) ------------------------------
+
+
 class Hypothesis(str, Enum):
-    """The fixed set a Fault Diagnosis may name (section 6.3)."""
+    """What the Fault Diagnosis call may say is wrong. A fixed set (section 6.3)."""
 
     SENSOR_STUCK = "sensor_stuck"
     SENSOR_DROPOUT = "sensor_dropout"
@@ -748,22 +731,19 @@ class Hypothesis(str, Enum):
 
 
 class DiagnosisConfidence(str, Enum):
-    """Coarse on purpose: a model's own probability is not a probability."""
-
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
 
 class FaultDiagnosis(TimestampedMessage):
-    """What the Fault Diagnosis call made of one fault (section 6.3, FR-25).
+    """An explanation of a confirmed fault, for a person (section 6.3).
 
-    Published on ``space/diagnosis`` after the mode has already changed: the
-    call enriches the notification and never decides the transition (FR-26).
-    ``generated`` is false when the model was unavailable or its answer was
-    discarded, in which case the text is the generic notification section
-    5.7.1 specifies -- still published, because a fault with no explanation at
-    all is worse than one with a plain one.
+    Published to ``space/diagnosis/{fault_id}`` after the mode has already
+    changed: it enriches the notification and never delays the response
+    (FR-26, section 5.9.2). ``recommended_mode`` is advice checked against the
+    state machine; ``recommendation_legal`` says whether it passed, and the
+    detector-derived mode stands either way.
     """
 
     fault_id: str = Field(min_length=1)
@@ -771,5 +751,12 @@ class FaultDiagnosis(TimestampedMessage):
     confidence: DiagnosisConfidence
     supporting_evidence: tuple[str, ...] = ()
     recommended_mode: Mode
-    user_message: str = Field(min_length=1, max_length=500)
-    generated: bool
+    user_message: str = Field(min_length=1)
+    recommendation_legal: bool = Field(
+        default=True, description="Whether the recommended mode is reachable"
+    )
+    generic: bool = Field(
+        default=False,
+        description="True when the model gave nothing usable and the text is "
+        "the fixed notification for the detector (section 5.7.1)",
+    )

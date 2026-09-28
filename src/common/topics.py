@@ -18,7 +18,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import IntEnum
-from functools import lru_cache
 
 #: Root of the blackboard tree. ``space/#`` subscribes to everything, which is
 #: what the recorder (FR-62) and ``mosquitto_sub`` inspection (FR-60) use.
@@ -120,58 +119,6 @@ class TopicSpec:
         return _PARAMETER_PATTERN.sub(_SINGLE_LEVEL_WILDCARD, self.pattern)
 
 
-def _pattern_regex(pattern: str) -> re.Pattern[str]:
-    """A pattern as a matcher for concrete topics.
-
-    ``space/sensor/{sensor_id}/state`` matches ``space/sensor/temp_01/state``
-    and nothing with a different shape. Each parameter stands for exactly one
-    topic level, which is the same rule :func:`_require_valid_parameter`
-    enforces when a topic is built.
-    """
-    # Split on the parameter markers and escape only the literal parts, so
-    # nothing depends on which characters re.escape happens to escape.
-    parts = _PARAMETER_PATTERN.split(pattern)
-    rebuilt = [
-        re.escape(part) if index % 2 == 0 else "[^/]+"
-        for index, part in enumerate(parts)
-    ]
-    return re.compile("^" + "".join(rebuilt) + "$")
-
-
-@lru_cache(maxsize=1)
-def _declared_specs() -> tuple[tuple[TopicSpec, re.Pattern[str]], ...]:
-    """Every declared topic with its matcher, built once.
-
-    Cached because the replayer asks per message, and recompiling the whole
-    table for each line of a recording would make replay cost grow with the
-    size of the topic tree for no reason.
-    """
-    return tuple(
-        (value, _pattern_regex(value.pattern))
-        for value in globals().values()
-        if isinstance(value, TopicSpec)
-    )
-
-
-def spec_for(topic: str) -> TopicSpec | None:
-    """The declared contract for a concrete topic, if there is one.
-
-    The replayer needs this: a recording holds concrete topics and encoded
-    payloads, and republishing them has to use the quality of service and
-    retention the topic declares rather than whatever the recorder happened to
-    observe. Delivery is the topic's business even when the message is a
-    recording of one.
-
-    :returns: the matching spec, or None for a topic this build does not
-        declare. None rather than a raise: a recording made by a newer build
-        is a thing to report and skip, not a crash.
-    """
-    for spec, matcher in _declared_specs():
-        if matcher.match(topic):
-            return spec
-    return None
-
-
 # --- Sensing (FR-01, FR-02, FR-03) -----------------------------------------
 
 SENSOR_STATE = TopicSpec(
@@ -191,6 +138,9 @@ ESTIMATE_COEFFICIENTS = TopicSpec(
 # --- Faults and mode (FR-20 to FR-31, FR-61) -------------------------------
 
 FAULT = TopicSpec("space/fault/{fault_id}", Qos.AT_LEAST_ONCE, retain=True)
+#: A person-readable explanation of a confirmed fault (FR-25). Not retained:
+#: a diagnosis outliving its fault would explain something no longer true.
+DIAGNOSIS = TopicSpec("space/diagnosis/{fault_id}", Qos.AT_LEAST_ONCE, retain=False)
 SYSTEM_MODE = TopicSpec("space/system/mode", Qos.AT_LEAST_ONCE, retain=True)
 
 # --- Goals (FR-40, FR-45) --------------------------------------------------
@@ -211,29 +161,21 @@ ACTUATOR_STATE = TopicSpec(
 #: the same topics under their own id and carry ``simulated: true``.
 AIR_CONDITIONER_ID = "ac"
 
+# --- Tariff (FR-16) ---------------------------------------------------------
+
+#: The pricing band in force. Retained: it is state, and the supervisor reads
+#: it on start as much as on change.
+TARIFF_STATE = TopicSpec("space/tariff/state", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Speech and context (FR-53) --------------------------------------------
 
 CONTEXT_PREFERENCE = TopicSpec(
     "space/context/preference", Qos.AT_LEAST_ONCE, retain=False
 )
 
-#: Text addressed to the room, spoken or typed. Not retained: a restarting
-#: reasoning process must not answer yesterday's request again.
-CONTEXT_UTTERANCE = TopicSpec(
-    "space/context/utterance", Qos.AT_LEAST_ONCE, retain=False
-)
-
-#: The pricing band in force (FR-16). Retained, because a supervisor starting
-#: mid-peak has to know it is mid-peak without waiting for the next change.
-CONTEXT_TARIFF = TopicSpec("space/context/tariff", Qos.AT_LEAST_ONCE, retain=True)
-
-# --- Diagnosis (FR-25) -----------------------------------------------------
-
-#: The Fault Diagnosis call's explanation of a fault. Published after the mode
-#: has changed and never before it (FR-26). Deliberately outside
-#: ``space/fault/``: a pattern there would match ``space/fault/{fault_id}``
-#: and a recording would replay an explanation as a fault.
-DIAGNOSIS = TopicSpec("space/diagnosis", Qos.AT_LEAST_ONCE, retain=False)
+#: What the system says back once it has acted on an utterance. Not retained:
+#: a reply is an answer to one question, not state.
+CONTEXT_REPLY = TopicSpec("space/context/reply", Qos.AT_LEAST_ONCE, retain=False)
 
 # --- Assistance tools (FR-70 to FR-75) -------------------------------------
 

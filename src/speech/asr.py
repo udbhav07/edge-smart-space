@@ -127,6 +127,10 @@ class UtteranceDetector:
         return self.utterance_timed_out
 
 
+class ModelNotInstalledError(RuntimeError):
+    """A speech model is missing, and fetching it at runtime is forbidden."""
+
+
 class Transcriber:
     """Whisper, on this node, with nothing leaving it (FR-51)."""
 
@@ -149,11 +153,21 @@ class Transcriber:
             selection.compute_type,
             selection.reason,
         )
-        return WhisperModel(
-            config.asr_model,
-            device=selection.device,
-            compute_type=selection.compute_type,
-        )
+        try:
+            # Offline by construction (NFR-06). Without this faster-whisper
+            # asks huggingface.co for the latest revision on every start,
+            # which the live run caught doing even with the model cached.
+            return WhisperModel(
+                config.asr_model,
+                device=selection.device,
+                compute_type=selection.compute_type,
+                local_files_only=True,
+            )
+        except Exception as exc:
+            raise ModelNotInstalledError(
+                f"Whisper {config.asr_model!r} is not on this node; run "
+                f"'python setup_models.py' once while online"
+            ) from exc
 
     def transcribe(self, frames: list[np.ndarray]) -> str:
         """Transcribe buffered audio. Returns an empty string for silence."""

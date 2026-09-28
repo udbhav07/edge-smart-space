@@ -8,7 +8,10 @@ import pytest
 from src.common.clock import DEFAULT_SIM_EPOCH_S, Clock, RealClock, SimClock
 
 SECONDS_PER_DAY = 86400.0
-SHORT_SLEEP_S = 0.01
+#: Longer than one tick of the coarsest monotonic clock we run on. Windows
+#: advances time.monotonic() in steps of about 15.6 ms, so a 10 ms sleep can
+#: read as no time passing at all.
+SHORT_SLEEP_S = 0.05
 WALL_CLOCK_TOLERANCE_S = 1.0
 NEGATIVE_DURATION_S = -0.001
 
@@ -69,9 +72,11 @@ class TestRealClock:
     def test_sleep_actually_blocks_for_the_requested_duration(self):
         """NFR-01 measures loop period against real elapsed time."""
         clock = RealClock()
+        resolution_s = time.get_clock_info("monotonic").resolution
         wall_before = time.monotonic()
         clock.sleep(SHORT_SLEEP_S)
-        assert time.monotonic() - wall_before >= SHORT_SLEEP_S
+        # A coarse clock can under-read an interval by up to one tick.
+        assert time.monotonic() - wall_before >= SHORT_SLEEP_S - resolution_s
 
 
 class TestSimClock:

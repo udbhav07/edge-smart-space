@@ -17,7 +17,7 @@ from src.common.mqtt_client import Blackboard
 from src.control.service import build_service as build_control
 from src.faults.injector import FaultInjector
 from sim.run_sim import build_simulator
-from tools.bringup import POWER_SENSOR_ID, BringupMonitor
+from tools.bringup import BringupMonitor
 
 
 @pytest.fixture(name="config")
@@ -25,11 +25,8 @@ def _config():
     """Sampling loss off, so a verdict is about the injection, not the 1%."""
     config = load_config(Path("config/default.yaml"))
     noise = config.sim.sensor_noise.model_copy(update={"dropout_probability": 0.0})
-    meter = config.sim.power_meter.model_copy(update={"dropout_probability": 0.0})
     actuator = config.sim.actuator.model_copy(update={"command_loss_probability": 0.0})
-    sim = config.sim.model_copy(
-        update={"sensor_noise": noise, "power_meter": meter, "actuator": actuator}
-    )
+    sim = config.sim.model_copy(update={"sensor_noise": noise, "actuator": actuator})
     return config.model_copy(update={"sim": sim})
 
 
@@ -120,33 +117,6 @@ class TestSensors:
 
 
 class TestActuation:
-    def test_asking_for_cooling_makes_the_meter_see_the_compressor(self, config):
-        """The air conditioner takes real commands: the gate decided, the
-        controller commanded, and the draw rose. Nothing here wrote to an
-        actuator topic."""
-        room = Room(config, with_control=True)
-        room.run_for(60.0)
-        room.monitor.begin_actuation()
-        room.run_for(config.bringup.actuation_window_s)
-        verdict = room.monitor.actuation()
-        assert verdict.ok, verdict.problem
-
-    def test_a_dead_unit_fails_the_check(self, config):
-        room = Room(config, with_control=True)
-        room.injector.inject("ac", InjectedFault.STUCK_OFF)
-        room.run_for(60.0)
-        room.monitor.begin_actuation()
-        room.run_for(config.bringup.actuation_window_s)
-        verdict = room.monitor.actuation()
-        assert verdict.problem.startswith("NO RESPONSE")
-
-    def test_with_no_gate_running_it_says_so(self, config):
-        room = Room(config, with_control=False)
-        room.run_for(30.0)
-        room.monitor.begin_actuation()
-        room.run_for(30.0)
-        assert "gate never answered" in room.monitor.actuation().problem
-
     def test_the_check_asks_the_gate_it_never_commands(self, config):
         """FR-13: every command passes the validator, bring-up included."""
         room = Room(config, with_control=True)
@@ -161,41 +131,9 @@ class TestActuation:
         goal = room.monitor.begin_actuation()
         assert goal.expires_ts - goal.ts == config.bringup.actuation_window_s
 
-    def test_a_unit_already_running_is_inconclusive_not_failed(self, config):
-        """The off-draw is the reference; a unit that never switched off
-        before the check gives none, and a working unit must not fail."""
+    def test_a_room_with_no_meter_says_so_rather_than_guessing(self, config):
+        """An IR path cannot acknowledge (R-02); with no power meter wired
+        there is nothing to judge the command by, and the check says so."""
         room = Room(config, with_control=True)
-        for watts in (1290.0, 1300.0, 1310.0):
-            room.monitor._on_reading("", _power(room.clock, watts))
-            room.clock.advance(5.0)
-        room.monitor.begin_actuation()
-        room.run_for(config.bringup.actuation_window_s)
-        assert room.monitor.actuation().problem.startswith("INCONCLUSIVE")
-
-    def test_the_reference_is_the_off_draw_not_an_average(self, config):
-        room = Room(config, with_control=True)
-        for watts in (4.0, 1300.0, 1300.0, 1300.0):
-            room.monitor._on_reading("", _power(room.clock, watts))
-            room.clock.advance(5.0)
-        room.monitor.begin_actuation()
-        room.run_for(config.bringup.actuation_window_s)
-        assert room.monitor.actuation().baseline_w == 4.0
-
-    def test_a_room_with_no_meter_cannot_be_checked(self, config):
-        adapters = tuple(
-            a for a in config.sensors.adapters if a.sensor_id != POWER_SENSOR_ID
-        )
-        unmetered = config.model_copy(
-            update={"sensors": config.sensors.model_copy(update={"adapters": adapters})}
-        )
-        room = Room(unmetered, with_control=True)
         room.monitor.begin_actuation()
         assert "no power meter" in room.monitor.actuation().problem
-
-
-def _power(clock, watts):
-    from src.common.schemas import SensorReading, Unit
-
-    return SensorReading(
-        ts=clock.now(), sensor_id=POWER_SENSOR_ID, value=watts, unit=Unit.WATT
-    )

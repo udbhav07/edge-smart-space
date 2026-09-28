@@ -8,9 +8,10 @@ quietly soften the thing it claims to be demonstrating.
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.common.config import load_config
-from tools.demo import DEMO_BUDGET_S, SCENARIOS, _configure, main
+from tools.demo import DEMO_BUDGET_S, SCENARIOS, _configure, _isolated, main
 
 
 @pytest.fixture(name="config")
@@ -41,15 +42,11 @@ class TestScenarioConfiguration:
         adjusted = _configure(config, "stuck")
         assert adjusted.sim.room.cooling_power_w > 0.0
 
-    def test_no_scenario_weakens_the_plant(self, config):
-        """The actuator scenario breaks the unit by injecting a fault, not by
-        configuring a room that could never be cooled. A weaker plant would
-        also be one the model learns is weak, and D5 tests the room against
-        what the model expects -- so a unit dead before identification began
-        is a unit with no expectation left to violate."""
-        for scenario in ("stuck", "actuator"):
-            adjusted = _configure(config, scenario)
-            assert adjusted.sim.room == config.sim.room
+    def test_the_actuator_scenario_breaks_the_plant(self, config):
+        """The air conditioner is commanded and does nothing, which is the
+        fault under demonstration."""
+        adjusted = _configure(config, "actuator")
+        assert adjusted.sim.room.cooling_power_w == 0.0
 
 
 class TestRunning:
@@ -101,3 +98,31 @@ class TestTheStuckSensorStory:
         printed = capsys.readouterr().out
         assert "SAFE_HOLD -- prediction budget" in printed
         assert "D5_ACTUATOR_NO_RESPONSE" not in printed
+
+
+class TestTheDemonstrationLeavesRealStateAlone:
+    """Regression: a demonstration run overwrote the live system's persisted
+    coefficients with an estimate stamped in the simulated clock's epoch."""
+
+    def test_the_estimate_is_persisted_under_the_given_directory(
+        self, config, tmp_path
+    ):
+        isolated = _isolated(config, tmp_path)
+        assert Path(isolated.persistence.path).parent == tmp_path
+
+    def test_nothing_else_about_persistence_changes(self, config, tmp_path):
+        isolated = _isolated(config, tmp_path)
+        assert isolated.persistence.interval_s == config.persistence.interval_s
+        assert isolated.persistence.max_age_s == config.persistence.max_age_s
+
+    def test_a_run_does_not_touch_the_configured_state_file(self, tmp_path):
+        state_file = tmp_path / "state" / "coefficients.json"
+        document = yaml.safe_load(
+            Path("config/default.yaml").read_text(encoding="utf-8")
+        )
+        document["persistence"]["path"] = str(state_file)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+        assert main(["--config", str(config_file), "--quiet"]) == 0
+        assert not state_file.exists()

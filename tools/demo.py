@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import tempfile
 from pathlib import Path
 
 from src.common import topics
@@ -56,12 +57,6 @@ STUCK_VALUE_C = 27.0
 #: shipped value is 1800 s (section 7.2); what is being shown is that the
 #: budget exists and is enforced, not what it should be.
 DEMO_BUDGET_S = 420.0
-
-#: How long the room runs healthily before the actuator scenario breaks it.
-#: Long enough for the model to learn that cooling works, because D5 tests the
-#: room against the model's expectation and there is nothing to violate until
-#: that expectation exists.
-LEARNING_S = 3 * 3600.0
 
 
 class Narrator:
@@ -186,30 +181,13 @@ def _stuck_sensor(demo: Demo) -> None:
 
 
 def _dead_actuator(demo: Demo) -> None:
-    """The other detector a thermostat cannot have.
-
-    The room has to run healthily first. D5 judges the room against what the
-    model expects of it, and a unit that was already dead when identification
-    began teaches the model that cooling does nothing -- after which there is
-    no expectation left to violate. It detects an air conditioner that *stops*
-    working, which is the fault that actually happens.
-    """
+    """The other detector a thermostat cannot have."""
     window_s = demo.config.detectors.actuator.evaluation_window_s
     demo.narrator.say(
-        "START   healthy room; the model learns what cooling does"
+        "START   the air conditioner is commanded but cools nothing. "
+        "No acknowledgement exists to tell us (R-02)."
     )
-    demo.run_for(LEARNING_S)
-    demo.report_room("before the fault")
-
-    demo.narrator.say(
-        "INJECT  the air conditioner stops cooling. It still accepts every "
-        "command, and no acknowledgement exists to say otherwise (R-02)."
-    )
-    demo.injector.inject(topics.AIR_CONDITIONER_ID, InjectedFault.STUCK_OFF)
-    # Longer than the evaluation window: as the room heats, the cooling the
-    # model expects per step shrinks, so the expectation worth judging takes
-    # longer to build. Measured at about half an hour in this scenario.
-    demo.run_for(window_s + 1800.0)
+    demo.run_for(window_s + 300.0)
     demo.report_room("after the evaluation window")
     demo.narrator.say(
         "NOTE    the fault came from the room not responding, "
@@ -221,17 +199,37 @@ SCENARIOS = {"stuck": _stuck_sensor, "actuator": _dead_actuator}
 
 
 def _configure(config: Config, scenario: str) -> Config:
-    """Shorten the degradation budget so the whole story fits in one run.
+    """Shorten the budget, and for the actuator scenario break the plant.
 
-    It is the only policy number changed. Nothing about the plant or the
-    sensors is softened: the noise, quantisation, jitter, dropout and actuator
-    dead time are all the shipped ones, and the actuator scenario breaks the
-    unit by injecting a fault rather than by configuring a weaker room.
+    The budget is the only policy number changed, so the whole story fits in
+    one run. Nothing about the sensors is softened: the noise, quantisation,
+    jitter and dropout are the shipped ones.
     """
     mode = config.mode.model_copy(
         update={"degraded_sensor_budget_s": DEMO_BUDGET_S}
     )
-    return config.model_copy(update={"mode": mode})
+    config = config.model_copy(update={"mode": mode})
+    if scenario != "actuator":
+        return config
+    room = config.sim.room.model_copy(update={"cooling_power_w": 0.0})
+    return config.model_copy(
+        update={"sim": config.sim.model_copy(update={"room": room})}
+    )
+
+
+def _isolated(config: Config, directory: Path) -> Config:
+    """Keep the demonstration's estimate out of the real one.
+
+    The estimator persists its coefficients as it runs. Left at the configured
+    path, a demonstration -- stamped with the simulated clock's 2025 epoch --
+    overwrote the live system's state file, which then discarded it as a year
+    old on its next start. Starting from the prior also keeps every run of the
+    demonstration identical, which is what a fallback has to be.
+    """
+    persistence = config.persistence.model_copy(
+        update={"path": str(directory / "coefficients.json")}
+    )
+    return config.model_copy(update={"persistence": persistence})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -258,8 +256,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}")
         return 2
 
-    demo = Demo(_configure(config, arguments.scenario), arguments.quiet)
-    SCENARIOS[arguments.scenario](demo)
+    with tempfile.TemporaryDirectory(prefix="smart-space-demo-") as scratch:
+        configured = _isolated(_configure(config, arguments.scenario), Path(scratch))
+        demo = Demo(configured, arguments.quiet)
+        SCENARIOS[arguments.scenario](demo)
     print(
         f"\nDone. {demo.narrator.commands} commands issued, "
         f"final mode {demo.control.mode.value}."

@@ -4,7 +4,6 @@
     python -m tools.inject temp_01 dropout       # make it go quiet
     python -m tools.inject temp_01 range 999.0   # report something impossible
     python -m tools.inject temp_01 drift 0.01    # 0.01 degrees per second
-    python -m tools.inject ac dead               # the unit stops cooling
     python -m tools.inject temp_01 clear         # stop injecting
     python -m tools.inject --list                # what can be injected
 
@@ -48,7 +47,7 @@ FAULT_NAMES: dict[str, InjectedFault] = {
     "dropout": InjectedFault.DROPOUT,
     "range": InjectedFault.OUT_OF_RANGE,
     "drift": InjectedFault.DRIFT,
-    "dead": InjectedFault.STUCK_OFF,
+    "dead": InjectedFault.NO_RESPONSE,
     "clear": InjectedFault.NONE,
 }
 
@@ -59,10 +58,6 @@ MAGNITUDE_UNITS: dict[InjectedFault, str] = {
     InjectedFault.OUT_OF_RANGE: "the impossible value to report",
     InjectedFault.DRIFT: "drift rate, in units per second",
 }
-
-#: Subjects that are not sensors. The air conditioner is injectable too, so
-#: FR-24 can be triggered the same way FR-20 to FR-23 are.
-_ACTUATOR_SUBJECTS = (topics.AIR_CONDITIONER_ID,)
 
 #: MQTT delivers from the network thread, so the publish has to reach the
 #: broker before the process exits. One second is far longer than a local
@@ -120,13 +115,10 @@ def _list_targets(config) -> str:
         f"  {sensor.sensor_id:<12} {sensor.unit.value:<5} {sensor.description}"
         for sensor in config.sensors.adapters
     )
-    actuators = "\n".join(
-        f"  {name:<12} {'':<5} Air conditioner (takes 'dead')"
-        for name in _ACTUATOR_SUBJECTS
-    )
+    actuator = f"  {topics.AIR_CONDITIONER_ID:<12} {'':<5} Air conditioner: 'dead' or 'clear' only"
     return (
         f"{_describe_faults()}\n\nConfigured sensors:\n{sensors}"
-        f"\n\nActuators:\n{actuators}"
+        f"\n\nActuator:\n{actuator}"
     )
 
 
@@ -176,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     known = {sensor.sensor_id for sensor in config.sensors.adapters}
-    known.update(_ACTUATOR_SUBJECTS)
+    known.add(topics.AIR_CONDITIONER_ID)
     if arguments.subject not in known:
         # A warning rather than a refusal: the configured list is what this
         # machine expects, and a subject published by something else is a
