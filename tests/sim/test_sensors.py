@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from src.common.clock import SimClock
-from src.common.config import SensorNoiseConfig, load_config
-from src.common.schemas import Unit
+from src.common.config import Bounds, SensorNoiseConfig, load_config
+from src.common.schemas import Quality, Unit
 from src.common.injection import FaultInjection, InjectedFault
 from sim.sensors import BinarySensor, SimulatedSensor
 
@@ -173,6 +173,59 @@ class TestInjectedFaults:
         assert sensor.sample(TRUE_VALUE_C).quality.value == "ok"
 
 
+INDOOR_LIMITS = Bounds(low=-10.0, high=60.0)
+
+
+def _limited(noise, clock) -> SimulatedSensor:
+    return SimulatedSensor(
+        SENSOR_ID,
+        Unit.CELSIUS,
+        _perfect(noise),
+        random.Random(SEED),
+        clock,
+        limits=INDOOR_LIMITS,
+    )
+
+
+class TestInstantaneousQuality:
+    """Section 5.1: outside the instrument's limits is flagged, never hidden."""
+
+    def test_a_reading_beyond_the_limits_is_flagged_suspect(self, noise, clock):
+        sensor = _limited(noise, clock)
+        sensor.inject(FaultInjection(kind=InjectedFault.OUT_OF_RANGE, magnitude=999.0))
+        assert sensor.sample(TRUE_VALUE_C).quality is Quality.SUSPECT
+
+    def test_a_flagged_reading_is_still_published_with_its_value(self, noise, clock):
+        """D3 must see it: filtering here would blind the detector."""
+        sensor = _limited(noise, clock)
+        sensor.inject(FaultInjection(kind=InjectedFault.OUT_OF_RANGE, magnitude=999.0))
+        assert sensor.sample(TRUE_VALUE_C).value == 999.0
+
+    def test_a_reading_on_the_limit_is_ok(self, noise, clock):
+        sensor = _limited(noise, clock)
+        sensor.inject(
+            FaultInjection(kind=InjectedFault.STUCK_AT, magnitude=INDOOR_LIMITS.high)
+        )
+        assert sensor.sample(TRUE_VALUE_C).quality is Quality.OK
+
+    def test_a_reading_just_beyond_the_limit_is_suspect(self, noise, clock):
+        sensor = _limited(noise, clock)
+        sensor.inject(
+            FaultInjection(
+                kind=InjectedFault.STUCK_AT, magnitude=INDOOR_LIMITS.low - 0.1
+            )
+        )
+        assert sensor.sample(TRUE_VALUE_C).quality is Quality.SUSPECT
+
+    def test_a_nominal_reading_is_ok(self, noise, clock):
+        assert _limited(noise, clock).sample(TRUE_VALUE_C).quality is Quality.OK
+
+    def test_without_limits_nothing_is_flagged(self, noise, clock):
+        sensor = _sensor(_perfect(noise), clock)
+        sensor.inject(FaultInjection(kind=InjectedFault.OUT_OF_RANGE, magnitude=999.0))
+        assert sensor.sample(TRUE_VALUE_C).quality is Quality.OK
+
+
 class TestRandomDropout:
     def test_some_samples_are_lost_at_the_configured_rate(self, noise, clock):
         certain = noise.model_copy(update={"dropout_probability": 1.0})
@@ -249,3 +302,10 @@ class TestBinarySensor:
 
     def test_reports_its_own_id(self, noise, clock):
         assert self._binary(noise, clock).sensor_id == "pir_01"
+
+
+
+def test_a_sensor_refuses_to_be_unresponsive(noise, clock):
+    """An injection a sensor cannot honour must fail loudly, not do nothing."""
+    with pytest.raises(ValueError):
+        _sensor(noise, clock).inject(FaultInjection(kind=InjectedFault.NO_RESPONSE))

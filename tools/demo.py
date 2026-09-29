@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import tempfile
 from pathlib import Path
 
 from src.common import topics
@@ -125,6 +126,7 @@ class Demo:
         elapsed = 0.0
         while elapsed < seconds:
             self.simulator.step()
+            self.estimator.tick()
             self.bank.tick()
             self.control.tick()
             self.clock.advance(period_s)
@@ -215,6 +217,21 @@ def _configure(config: Config, scenario: str) -> Config:
     )
 
 
+def _isolated(config: Config, directory: Path) -> Config:
+    """Keep the demonstration's estimate out of the real one.
+
+    The estimator persists its coefficients as it runs. Left at the configured
+    path, a demonstration -- stamped with the simulated clock's 2025 epoch --
+    overwrote the live system's state file, which then discarded it as a year
+    old on its next start. Starting from the prior also keeps every run of the
+    demonstration identical, which is what a fallback has to be.
+    """
+    persistence = config.persistence.model_copy(
+        update={"path": str(directory / "coefficients.json")}
+    )
+    return config.model_copy(update={"persistence": persistence})
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tools.demo",
@@ -239,8 +256,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}")
         return 2
 
-    demo = Demo(_configure(config, arguments.scenario), arguments.quiet)
-    SCENARIOS[arguments.scenario](demo)
+    with tempfile.TemporaryDirectory(prefix="smart-space-demo-") as scratch:
+        configured = _isolated(_configure(config, arguments.scenario), Path(scratch))
+        demo = Demo(configured, arguments.quiet)
+        SCENARIOS[arguments.scenario](demo)
     print(
         f"\nDone. {demo.narrator.commands} commands issued, "
         f"final mode {demo.control.mode.value}."

@@ -21,6 +21,10 @@ import pytest
 from src.common import topics
 from src.common.injection import InjectedFault
 from src.common.schemas import (
+    AssistantReply,
+    ReasoningRecord,
+    TariffState,
+    FaultDiagnosis,
     Coefficients,
     PreferenceHint,
     FaultEvent,
@@ -114,6 +118,49 @@ PREFERENCE_HINT_PAYLOAD = {
     "target_c": 24.0,
     "rationale": "it is too warm in here",
     "spoken_reply": "I have passed that on.",
+    "transcript": "it is too warm in here, can you cool it down",
+}
+
+FAULT_DIAGNOSIS_PAYLOAD = {
+    "ts": 1756032301.8,
+    "fault_id": "f_temp01_stuck_1756032",
+    "primary_hypothesis": "sensor_stuck",
+    "confidence": "high",
+    "supporting_evidence": ["variance_collapse", "residual_step"],
+    "recommended_mode": "DEGRADED_SENSOR",
+    "user_message": "Temperature sensor appears stuck. Running on the room model.",
+    "recommendation_legal": True,
+    "generic": False,
+}
+
+TARIFF_STATE_PAYLOAD = {
+    "ts": 1756032000.0,
+    "band": "peak",
+    "next_transition_ts": 1756044000.0,
+}
+
+ASSISTANT_REPLY_PAYLOAD = {
+    "ts": 1756032003.2,
+    "transcript": "put the design review in my calendar at three",
+    "intent": "service",
+    "reply": "Added design review at 15:00 on 4 September.",
+    "invocation_ids": ["inv_1756032000_0"],
+    "awaiting_confirmation": "",
+}
+
+REASONING_RECORD_PAYLOAD = {
+    "ts": 1756032003.2,
+    "caller": "assistant",
+    "trigger": "utterance",
+    "model": "qwen2.5:7b",
+    "inputs": "put the design review in my calendar at three",
+    "raw_output": 'schedule_event({"starts_at": "2026-09-04T15:00:00", ...})',
+    "verdict": "tool results OK",
+    "applied": "schedule_event OK",
+    "tool_calls": ["schedule_event"],
+    "latency_s": 3.4,
+    "prompt_tokens": 812,
+    "completion_tokens": 64,
 }
 
 TOOL_INVOCATION_PAYLOAD = {
@@ -152,6 +199,10 @@ DOCUMENTED_PAYLOADS = [
     (PreferenceHint, PREFERENCE_HINT_PAYLOAD),
     (ToolInvocation, TOOL_INVOCATION_PAYLOAD),
     (ToolResult, TOOL_RESULT_PAYLOAD),
+    (AssistantReply, ASSISTANT_REPLY_PAYLOAD),
+    (ReasoningRecord, REASONING_RECORD_PAYLOAD),
+    (TariffState, TARIFF_STATE_PAYLOAD),
+    (FaultDiagnosis, FAULT_DIAGNOSIS_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -163,6 +214,7 @@ DOCUMENTED_TOPICS = frozenset(
         "space/estimate/thermal",
         "space/estimate/coefficients",
         "space/fault/{fault_id}",
+        "space/diagnosis/{fault_id}",
         "space/system/mode",
         "space/system/reset",
         "space/inject/{subject}",
@@ -171,6 +223,8 @@ DOCUMENTED_TOPICS = frozenset(
         "space/actuator/{actuator_id}/command",
         "space/actuator/{actuator_id}/state",
         "space/context/preference",
+        "space/context/reply",
+        "space/tariff/state",
         "space/assist/proposed",
         "space/assist/confirmed",
         "space/assist/result",

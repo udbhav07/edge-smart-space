@@ -80,11 +80,24 @@ class Regressor:
     outdoor_c: float
     command: float
     occupancy: float
+    #: The indoor temperature the ambient gap is measured from, when it is not
+    #: ``indoor_c`` itself. See :meth:`ambient_gap_c`.
+    gap_indoor_c: float | None = None
 
     @property
     def ambient_gap_c(self) -> float:
-        """T_out[k] - T[k]: what actually drives the room toward ambient."""
-        return self.outdoor_c - self.indoor_c
+        """T_out[k] - T[k]: what actually drives the room toward ambient.
+
+        Measured from ``gap_indoor_c`` when one is given. Fitting a change
+        ``T[k+1] - T[k]`` against a gap built from the same noisy ``T[k]`` puts
+        that sample's noise on both sides with opposite signs, which biases the
+        fit: over nine seeds a2 read about 60% high and a3 about 50% high,
+        enough to bias every multi-step prediction and blind D4 (FR-23). The
+        sample before carries independent noise and differs from ``T[k]`` by
+        one step's movement, about 0.02 C against a gap of several degrees.
+        """
+        indoor_c = self.indoor_c if self.gap_indoor_c is None else self.gap_indoor_c
+        return self.outdoor_c - indoor_c
 
     def as_array(self) -> np.ndarray:
         """phi[k] = [T_out[k] - T[k], u[k], o[k]] (section 5.2.2)."""

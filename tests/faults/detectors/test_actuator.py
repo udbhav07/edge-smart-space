@@ -19,6 +19,7 @@ ACTUATOR = "ac"
 SENSOR = "temp_01"
 WINDOW_S = 600.0
 MIN_COOLING_C = 0.3
+CAPACITY_GAP_C = 4.0
 START_C = 29.0
 
 
@@ -27,6 +28,9 @@ def _config(**overrides) -> ActuatorDetectorConfig:
         **{
             "evaluation_window_s": WINDOW_S,
             "min_cooling_c": MIN_COOLING_C,
+            "capacity_gap_c": CAPACITY_GAP_C,
+            "passive_warming_factor": 1.5,
+            "passive_warming_slack_c": 0.5,
             **overrides,
         }
     )
@@ -226,3 +230,107 @@ class TestConstruction:
         config = load_config(Path("config/default.yaml")).detectors.actuator
         assert config.evaluation_window_s == 600.0
         assert config.min_cooling_c == 0.3
+
+
+def _cool_through(detector, clock, values, ambient_c=None, period_s=5.0):
+    """Cool while reporting a sequence of readings, one per period."""
+    if ambient_c is not None:
+        detector.observe_ambient(ambient_c)
+    detector.observe_reading(_reading(clock, values[0]))
+    detector.observe_command(CommandKind.COOL)
+    for value in values[1:]:
+        clock.advance(period_s)
+        detector.observe_reading(_reading(clock, value))
+
+
+def _steps(start_c: float, change_c: float, count: int = 121) -> list[float]:
+    return [start_c + change_c * index / (count - 1) for index in range(count)]
+
+
+class TestAUnitAtCapacity:
+    """Regression: every healthy two-hour run in the shipped simulation ended
+    in DEGRADED_ACTUATOR, because a working unit cooling toward its capacity
+    slows asymptotically and missed a fixed 0.3 C per window."""
+
+    def test_holding_level_well_below_ambient_is_working(self, detector, clock):
+        _cool_through(detector, clock, _steps(25.3, -0.1), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.CLEAR
+
+    def test_warming_well_below_ambient_is_still_a_fault(self, detector, clock):
+        """A dead unit at a 6 C gap warms visibly."""
+        _cool_through(detector, clock, _steps(25.0, 1.0), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_near_ambient_the_room_must_still_cool(self, detector, clock):
+        """A working unit has headroom here; holding level is the fault."""
+        _cool_through(detector, clock, _steps(29.0, -0.1), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_without_ambient_the_original_test_applies(self, detector, clock):
+        _cool_through(detector, clock, _steps(25.3, -0.1))
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_the_gap_is_judged_against_the_configured_value(self, clock):
+        detector = ActuatorResponseDetector(
+            subject=ACTUATOR, config=_config(capacity_gap_c=8.0), clock=clock
+        )
+        _cool_through(detector, clock, _steps(25.3, -0.1), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_the_evidence_says_what_was_required(self, detector, clock):
+        _cool_through(detector, clock, _steps(25.3, -0.1), ambient_c=31.0)
+        assert detector.evaluate().evidence["required_cooling_c"] == -MIN_COOLING_C
+
+
+class TestCoolingIsFittedAcrossTheWindow:
+    """Two single readings carry the sensor noise twice; a line through the
+    whole window does not."""
+
+    def test_a_noisy_end_reading_does_not_decide_the_window(self, detector, clock):
+        values = _steps(29.0, -0.6)
+        values[-1] = 29.2
+        _cool_through(detector, clock, values)
+        assert detector.evaluate().judgment is Judgment.CLEAR
+
+    def test_the_fitted_change_is_reported(self, detector, clock):
+        _cool_through(detector, clock, _steps(29.0, -0.6))
+        assert detector.evaluate().evidence["cooled_c"] == pytest.approx(0.6)
+
+    def test_alternating_noise_around_a_trend_is_averaged_out(
+        self, detector, clock
+    ):
+        values = [
+            value + (0.2 if index % 2 else -0.2)
+            for index, value in enumerate(_steps(29.0, -0.6))
+        ]
+        _cool_through(detector, clock, values)
+        assert detector.evaluate().evidence["cooled_c"] == pytest.approx(0.6, abs=0.05)
+
+
+
+class TestADriftingSensorIsNotBlamedOnTheUnit:
+    """FR-23, FR-24: a dead unit warms the room passively, toward ambient and
+    no faster than its time constant allows; a drifting sensor rises at any
+    rate. A reading rising faster than a dead unit permits is left to D4."""
+
+    #: About a 35-minute time constant at 5 s steps.
+    COUPLING = 0.0024
+
+    def test_warming_within_passive_physics_is_the_units_fault(self, detector, clock):
+        detector.observe_coupling(self.COUPLING)
+        _cool_through(detector, clock, _steps(29.0, 0.6), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_warming_faster_than_a_dead_unit_allows_is_not(self, detector, clock):
+        detector.observe_coupling(self.COUPLING)
+        _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.UNKNOWN
+
+    def test_without_a_model_the_unit_is_still_judged(self, detector, clock):
+        _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_an_unphysical_coupling_is_ignored(self, detector, clock):
+        detector.observe_coupling(-0.1)
+        _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED

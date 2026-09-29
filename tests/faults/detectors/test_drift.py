@@ -276,3 +276,53 @@ class TestWarmUp:
         at 3.05 after 120 samples and stops improving beyond it."""
         config = load_config(Path("config/default.yaml")).detectors.drift
         assert config.warmup_samples == 120
+
+
+
+class TestNonOverlappingHorizons:
+    """FR-23: consecutive horizon residuals share all but one step, so only
+    every horizon's-worth is independent evidence."""
+
+    def _estimate(self, residual, sigma=0.15, horizon=None):
+        from src.common.schemas import AdaptationState, ThermalEstimate
+
+        return ThermalEstimate(
+            ts=TS, t_in=27.0 + residual, t_pred=27.0, residual=residual,
+            residual_sigma=sigma, model_confidence=0.9,
+            adaptation=AdaptationState.ACTIVE,
+            horizon_residual=horizon if horizon is not None else 0.0,
+            horizon_residual_sigma=sigma if horizon is not None else 0.0,
+        )
+
+    def test_only_every_nth_sample_accumulates(self):
+        from src.faults.detectors.drift import DriftDetector
+
+        detector = DriftDetector("temp_01", _config(warmup_samples=5), accumulate_every=12)
+        for _ in range(11):
+            detector.observe(self._estimate(0.6, horizon=0.6))
+        assert detector.cusum_high == 0.0
+        detector.observe(self._estimate(0.6, horizon=0.6))
+        assert detector.cusum_high > 0.0
+
+    def test_the_horizon_residual_is_used_once_measured(self):
+        from src.faults.detectors.drift import DriftDetector
+
+        detector = DriftDetector("temp_01", _config(warmup_samples=5))
+        for _ in range(5 + 1):
+            detector.observe(self._estimate(0.0, horizon=0.6))
+        assert detector.cusum_high > 0.0
+
+    def test_the_one_step_residual_stands_in_until_then(self):
+        from src.faults.detectors.drift import DriftDetector
+
+        detector = DriftDetector("temp_01", _config(warmup_samples=5))
+        for _ in range(5 + 1):
+            detector.observe(self._estimate(0.6))
+        assert detector.cusum_high > 0.0
+
+    def test_a_non_positive_interval_is_refused(self):
+        import pytest
+        from src.faults.detectors.drift import DriftDetector
+
+        with pytest.raises(ValueError):
+            DriftDetector("temp_01", _config(warmup_samples=5), accumulate_every=0)

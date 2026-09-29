@@ -24,8 +24,12 @@ from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import Config, load_config
-from src.common.injection import FaultInjection, InjectedFault
+from src.common.config import Bounds, Config, load_config
+from src.common.injection import (
+    ACTUATOR_SUPPORTED_FAULTS,
+    FaultInjection,
+    InjectedFault,
+)
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -58,6 +62,13 @@ OCCUPANCY_ID = "pir_01"
 _SIMULATED_PLANT = True
 
 _FULL_CYCLE_RADIANS = 2.0 * math.pi
+
+#: Commands that change what the unit is doing. The published state reports
+#: the last of these: MAINTAIN and HOLD mean "carry on", and echoing them as
+#: the state left a late subscriber -- a restarted estimator -- unable to
+#: tell that the compressor was running, so it fitted and predicted with
+#: cooling off while the room was being cooled.
+_STATE_CHANGING_COMMANDS = frozenset({CommandKind.COOL, CommandKind.OFF})
 
 #: Chance that a present occupant trips the PIR in one sampling period. A
 #: person at a desk moves enough to be seen every minute or so, which at a 5 s
@@ -147,8 +158,28 @@ class RoomSimulator:
 
     def _on_command(self, topic: str, command: Command) -> None:
         LOGGER.debug("command on %s: %s", topic, command.kind.value)
-        self._last_kind = command.kind
+        if command.kind in _STATE_CHANGING_COMMANDS:
+            self._last_kind = command.kind
         self._last_ack = self._actuator.command(command.kind, command.setpoint_c)
+
+    def _inject_actuator(self, command: InjectionCommand) -> None:
+        """Break or repair the unit itself (FR-24, FR-31).
+
+        A dead unit keeps accepting commands -- an IR blaster has no idea the
+        compressor failed -- so D5 has to find it from the room.
+        """
+        if command.kind not in ACTUATOR_SUPPORTED_FAULTS:
+            LOGGER.warning(
+                "injection on %s refused: an actuator cannot be %s",
+                command.subject,
+                command.kind.value,
+            )
+            return
+        failed = command.kind is InjectedFault.NO_RESPONSE
+        self._actuator.inject_failure(failed)
+        LOGGER.info(
+            "%s the unit %s", "failing" if failed else "restoring", command.subject
+        )
 
     def _on_injection(self, _topic: str, command: InjectionCommand) -> None:
         """Obey an injection (FR-31).
@@ -159,6 +190,9 @@ class RoomSimulator:
         logged rather than ignored: an injection that appears to work and does
         nothing turns a detection trial into a phantom missed detection.
         """
+        if command.subject == topics.AIR_CONDITIONER_ID:
+            self._inject_actuator(command)
+            return
         sensor = self._sensors_by_id().get(command.subject)
         if sensor is None:
             LOGGER.warning(
@@ -299,6 +333,14 @@ class RoomSimulator:
             completed += 1
 
 
+def _limits_for(config: Config, sensor_id: str) -> Bounds | None:
+    """The configured physical limits of one sensor, if it is registered."""
+    for adapter in config.sensors.adapters:
+        if adapter.sensor_id == sensor_id:
+            return adapter.limits
+    return None
+
+
 def build_simulator(
     config: Config, clock: Clock, blackboard: Blackboard
 ) -> RoomSimulator:
@@ -312,13 +354,16 @@ def build_simulator(
         actuator=SimulatedActuator(config.sim.actuator, rng, clock),
         rng=rng,
         indoor=SimulatedSensor(
-            INDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
+            INDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, INDOOR_TEMPERATURE_ID),
         ),
         humidity=SimulatedSensor(
-            INDOOR_HUMIDITY_ID, Unit.PERCENT_RH, config.sim.sensor_noise, rng, clock
+            INDOOR_HUMIDITY_ID, Unit.PERCENT_RH, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, INDOOR_HUMIDITY_ID),
         ),
         outdoor=SimulatedSensor(
-            OUTDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock
+            OUTDOOR_TEMPERATURE_ID, Unit.CELSIUS, config.sim.sensor_noise, rng, clock,
+            limits=_limits_for(config, OUTDOOR_TEMPERATURE_ID),
         ),
         occupancy=BinarySensor(
             OCCUPANCY_ID, config.sim.sensor_noise, rng, clock

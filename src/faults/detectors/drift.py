@@ -68,11 +68,16 @@ class DriftDetector:
     combined sum could not tell the difference.
     """
 
-    def __init__(self, subject: str, config: DriftDetectorConfig) -> None:
+    def __init__(
+        self, subject: str, config: DriftDetectorConfig, accumulate_every: int = 1
+    ) -> None:
         if not subject:
             raise ValueError("a detector must name the subject it watches")
+        if accumulate_every <= 0:
+            raise ValueError(f"accumulate_every must be positive, got {accumulate_every!r}")
         self._subject = subject
         self._config = config
+        self._accumulate_every = accumulate_every
         self._high = _SUM_FLOOR
         self._low = _SUM_FLOOR
         self._samples = 0
@@ -102,21 +107,40 @@ class DriftDetector:
         enormous normalised residuals and declare drift on a healthy sensor
         within seconds of boot.
         """
-        self._sigma_c = estimate.residual_sigma
-        if estimate.residual_sigma < self._config.min_residual_sigma_c:
+        residual, sigma = self._residual(estimate)
+        self._sigma_c = sigma
+        if sigma < self._config.min_residual_sigma_c:
             return
 
         self._samples += 1
         if self._samples <= self._config.warmup_samples:
             # Seen, but not yet evidence about the sensor: the model is still
             # converging and its error is its own.
-            self._normalised = estimate.residual / estimate.residual_sigma
+            self._normalised = residual / sigma
             return
-        self._normalised = estimate.residual / estimate.residual_sigma
+        self._normalised = residual / sigma
+        if self._samples % self._accumulate_every:
+            # Consecutive horizon residuals share all but one step of their
+            # horizon, so they are one piece of evidence counted many times;
+            # a cumulative sum over them alarmed on every healthy run. Only
+            # non-overlapping horizons are independent (FR-23).
+            return
         bounded = self._bounded(self._normalised)
         slack = self._config.slack_sigma
         self._high = max(_SUM_FLOOR, self._high + bounded - slack)
         self._low = max(_SUM_FLOOR, self._low - bounded - slack)
+
+    @staticmethod
+    def _residual(estimate: ThermalEstimate) -> tuple[float, float]:
+        """The horizon residual once the estimator has measured one (FR-23).
+
+        The one-step residual sees a drift only by its increment per sample,
+        which sits inside the slack for any realistic rate, so it is used only
+        until a horizon residual exists.
+        """
+        if estimate.horizon_residual_sigma > 0.0:
+            return estimate.horizon_residual, estimate.horizon_residual_sigma
+        return estimate.residual, estimate.residual_sigma
 
     def _bounded(self, normalised: float) -> float:
         """Limit what one sample may contribute.

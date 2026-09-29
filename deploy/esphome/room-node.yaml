@@ -1,0 +1,98 @@
+# ESP32 node: indoor temperature and humidity, outdoor temperature, motion,
+# the door reed switch, and the IR blaster for the air conditioner.
+#
+# UNVERIFIED. No node has been flashed with this yet, and it is written to be
+# obviously unfinished rather than plausibly complete (R-03). Three things are
+# guesses until a board exists:
+#
+#   * the pins and the one-wire address below,
+#   * the topics, which are set explicitly to exactly what `devices:` in
+#     config/default.yaml subscribes to -- one board standing in for the
+#     room-node, outdoor-node and ac-node that config names,
+#   * whether the air conditioner responds to the IR codes at all, which is
+#     what D5 exists to find out.
+#
+# Every topic is set explicitly rather than left to ESPHome's default, because
+# the default derives from the entity name and a rename would silently move the
+# topic out from under the bridge. Check it with `python -m tools.bringup`.
+
+esphome:
+  name: room-node
+
+esp32:
+  board: esp32dev
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # A node that drops off WiFi must look absent rather than stale. The bridge
+  # ages a held value out after devices.stale_after_s for the same reason.
+  reboot_timeout: 5min
+
+logger:
+api:
+ota:
+
+mqtt:
+  broker: !secret mqtt_broker
+  # Readings are transient: the next sample supersedes a lost one, and a
+  # retained reading would hand a restarting bridge a stale temperature as
+  # though it had just been measured.
+  discovery: false
+
+sensor:
+  - platform: dht
+    pin: GPIO4                    # PLACEHOLDER
+    model: DHT22
+    temperature:
+      name: indoor temperature
+      state_topic: room-node/sensor/temperature/state
+      # A-02 says 5 s. Jitter is expected and handled above; what must not
+      # happen is a node quietly reporting at a different rate.
+      filters:
+        - throttle: 5s
+    humidity:
+      name: indoor humidity
+      state_topic: room-node/sensor/humidity/state
+      filters:
+        - throttle: 5s
+    update_interval: 5s
+
+  - platform: dallas
+    address: 0x0000000000000000   # PLACEHOLDER: read from the bus at bring-up
+    name: outdoor temperature
+    state_topic: outdoor-node/sensor/temperature/state
+    # FR-03: 60 s or faster. Slower than indoor on purpose -- ambient moves
+    # slowly, and D1's timeout for this sensor is derived from this cadence.
+    update_interval: 60s
+
+binary_sensor:
+  - platform: gpio
+    pin: GPIO15                   # PLACEHOLDER
+    name: motion
+    state_topic: room-node/binary_sensor/motion/state
+    device_class: motion
+    # Raw motion only. The vacancy hold-off that turns motion into presence
+    # lives in src/common/occupancy.py, so the simulator and this node derive
+    # occupancy identically (FR-02).
+
+  - platform: gpio
+    pin:
+      number: GPIO27              # PLACEHOLDER
+      mode: INPUT_PULLUP
+    name: door
+    state_topic: room-node/binary_sensor/door/state
+    device_class: door
+
+remote_transmitter:
+  pin: GPIO14                     # PLACEHOLDER
+  carrier_duty_percent: 50%
+
+climate:
+  - platform: coolix              # PLACEHOLDER: the protocol depends on the unit
+    name: air conditioner
+    mode_command_topic: ac-node/climate/air_conditioner/mode/command
+    target_temperature_command_topic: ac-node/climate/air_conditioner/target_temperature/command
+    # R-02: an IR blaster is open loop. Nothing here reports back, which is
+    # why devices.ac_mode_state_topic is empty and D5 decides whether a
+    # command landed by watching the room respond.

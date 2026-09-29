@@ -35,8 +35,8 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 CLIENT_ID = "thermal-estimator"
 
-#: The service is entirely callback-driven, so the main thread only has to
-#: stay alive and remain interruptible.
+#: Readings drive the estimate through callbacks; the main thread wakes this
+#: often to stay interruptible and to tick the open-loop prediction.
 _IDLE_INTERVAL_S = 1.0
 
 
@@ -51,6 +51,26 @@ def build_service(
         estimator=ThermalEstimator(config.estimator, clock),
         store=CoefficientStore(config.persistence, clock),
     )
+
+
+def run(
+    service: ThermalEstimatorService,
+    clock: Clock,
+    period_s: float,
+    wakes: int | None = None,
+) -> None:
+    """Stay alive, ticking the open-loop prediction once per period (FR-27).
+
+    ``wakes`` bounds the loop so a test drives the real one.
+    """
+    next_tick = clock.monotonic() + period_s
+    completed = 0
+    while wakes is None or completed < wakes:
+        clock.sleep(_IDLE_INTERVAL_S)
+        completed += 1
+        if clock.monotonic() >= next_tick:
+            service.tick()
+            next_tick += period_s
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,8 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         topics.ESTIMATE_COEFFICIENTS.pattern,
     )
     try:
-        while True:
-            clock.sleep(_IDLE_INTERVAL_S)
+        run(service, clock, config.loop.sensor_period_s)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:

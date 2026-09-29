@@ -22,7 +22,15 @@ loop:
 # at a 5 s interval: tracks daily variation without chasing noise.
 estimator:
   forgetting_factor: 0.995
-  initial_covariance: 100.0
+  # P0. The coefficients are around 0.002 to 0.02, so 0.01 is a prior spread
+  # of about 0.1 -- loose against the values, tight against nonsense. At
+  # startup the three regressors are nearly collinear (gap, u and o all near
+  # constant), and at 100.0 the first few samples could throw the estimate
+  # anywhere in the plausibility box: live, a2 = 0.997 and a3 = -1.91 within
+  # 35 s. Over 8 seeds, a 20-minute dropout ridden 10 min after startup
+  # erred by up to 2.65 C at 0.01 against 10.96 C at 100; E1's 24 h errors
+  # are unchanged.
+  initial_covariance: 0.01
   initial_theta: [0.02, -0.05, 0.01]   # [a2, a3, a4]; a1 = 1 - a2 = 0.98
   max_covariance_trace: 1000.0
   min_excitation: 0.001
@@ -36,6 +44,20 @@ estimator:
   occupancy_sensor_id: pir_01
   excitation_window_samples: 20
   residual_sigma_window_samples: 60
+  # FR-23. A one-step residual sees a drifting sensor only by its increment
+  # per sample -- 0.05 C at 0.01 C/s, a quarter of the noise -- so D4 never
+  # accumulated anything. Predicting each reading from the one this many
+  # samples earlier shows the same drift as the whole offset built up over
+  # the horizon (0.6 C over 60 s), while a healthy model's one-minute error
+  # stays small.
+  drift_horizon_samples: 12
+  # a2 sits on its lower bound and noise crosses it. A crossing is weighed by
+  # the gap, as the heat flow against the gradient it claims: healthy runs
+  # never claimed more than 0.083 C per step, a room warming while cooled a
+  # median 0.13. Below this the rejection is refused but not counted toward
+  # divergence (section 5.2.3).
+  edge_noise_c_per_step: 0.1
+  horizon_sigma_window_samples: 240
   sample_interval_tolerance: 0.4   # +/-40% of the nominal period (A-02)
   # Plausibility box, section 5.2.1. a3 stays negative: an estimate crossing
   # zero claims the air conditioner heats the room.
@@ -57,6 +79,21 @@ controller:
   deadband_c: 0.5
   min_off_s: 180.0
   default_setpoint_c: 24.0
+  # R-02: the IR path is open-loop and commands are lost. Re-asserting the
+  # intended state is what a real IR integration does; a dropped OFF otherwise
+  # leaves the compressor running while the controller believes it stopped.
+  # Longer than the validator's 30 s command rate so a refresh is never
+  # throttled into a no-op.
+  reassert_interval_s: 60.0
+  # R-01: drive the compressor on a schedule independent of the temperature
+  # after startup, so u and (T_out - T) stop being collinear and the model is
+  # identifiable. OFF here: this branch addresses R-01 with a tighter startup
+  # prior instead (FR-04), and its detector tuning was measured without
+  # excitation. Set excitation_duration_s to 5400 to reproduce the E2/E5 runs
+  # that were measured with it.
+  excitation_duration_s: 0.0
+  excitation_period_s: 900.0      # Full cycle; half on, half off
+  excitation_envelope_c: 2.0      # Never excite the room past this from setpoint
 
 # Rules V-1 to V-6, section 5.4.
 validator:
@@ -83,8 +120,13 @@ detectors:
   # sensor. R-04 re-derives both from measured sigma during bring-up; these are
   # the textbook starting pair.
   drift:
-    slack_sigma: 0.5              # k: drift smaller than this is absorbed, not accumulated
-    threshold_sigma: 5.0          # h: cumulative sum at which drift is called
+    # Measured on the horizon residual, accumulated once per non-overlapping
+    # horizon (FR-23). Six healthy four-hour runs peaked at 2.0 to 6.3; drift
+    # was found in 2-3 min at 3 C/min, 8-16 min at 0.6 C/min, 25-28 min at
+    # 0.18 C/min, and not within 30 min at 0.06 C/min -- the floor, set by how
+    # far the identified model can predict unaided. R-04 re-derives these.
+    slack_sigma: 1.0              # k: drift smaller than this is absorbed, not accumulated
+    threshold_sigma: 8.0          # h: cumulative sum at which drift is called
     min_residual_sigma_c: 0.02    # Below this the noise floor is not characterised yet
     # No single sample may carry the test on its own. A cumulative test is
     # meant to be driven by persistence, not by magnitude; without a cap one
@@ -106,6 +148,20 @@ detectors:
   actuator:
     evaluation_window_s: 600.0    # Sustained cooling before the test is applied
     min_cooling_c: 0.3            # Cooling the room must have achieved over that window
+    # A working unit cooling toward its capacity slows asymptotically: with 31 C
+    # outside, the shipped room crept 25.3 -> 25.2 C in ten minutes and every
+    # healthy two-hour run ended in DEGRADED_ACTUATOR. Beyond this gap below
+    # ambient, a dead unit would warm visibly (about 2 C per window at 6 C), so
+    # holding level is evidence the unit works and only warming by
+    # min_cooling_c is a fault. Within it the room must still cool. Derived
+    # from the simulated plant's capacity; R-04 re-derives it on hardware.
+    capacity_gap_c: 4.0
+    # A dead unit lets the room warm passively toward ambient, at a rate set by
+    # its time constant; a drifting sensor rises at any rate. A reading that
+    # rose faster than this multiple of the passive bound, plus the slack, is
+    # not the unit's doing, and D5 leaves it to D4 (FR-23, FR-24).
+    passive_warming_factor: 1.5
+    passive_warming_slack_c: 0.5
 
 mode:
   degraded_sensor_budget_s: 1800.0   # Section 7.2; E4 tests whether this is right
@@ -188,6 +244,78 @@ assistance:
   # answering without it. A calendar that has stopped responding must not hold
   # a reply to the occupant open indefinitely.
   result_timeout_s: 5.0
+  # FR-58. The occupant's own calendar, kept on the node: a hosted one needs
+  # the outbound connection NFR-06 forbids. Bounded so a misheard request
+  # repeated in a loop cannot fill the disk.
+  calendar_path: state/calendar.json
+  calendar_max_events: 500
+
+# The goal path (FR-53). A spoken preference is proposed through the same
+# validator as everything else; these only decide what is proposed and who
+# outranks whom.
+goals:
+  comfort_step_c: 1.0       # "cooler" or "warmer" moves the setpoint this far
+  preference_ttl_s: 600.0   # a spoken preference is a valid proposal this long
+  # Without a hold, the next supervisory cycle would undo what the occupant
+  # just asked for, and the system would appear to ignore them.
+  preference_hold_s: 3600.0
+  # V-2 grants at most max_step_c per proposal, so "make it 22" from 26 is
+  # granted 24 and would stop there. A part-granted preference is proposed
+  # again this often -- each time a fresh invocation the validator judges --
+  # until it is reached, meets a bound, or lapses.
+  pursue_interval_s: 60.0
+
+# Week 5. Layer 1 is the simulator or the real nodes, and nothing above Layer 1
+# can tell which (section 4.2). The topics are the nodes' ESPHome MQTT topics,
+# placeholders until the nodes are flashed; ESPHome publishes plain values
+# ("27.4", "ON") under <node>/<component>/<name>/state.
+devices:
+  source: simulated
+  sensor_topics:
+    temp_01: room-node/sensor/temperature/state
+    hum_01: room-node/sensor/humidity/state
+    outdoor_01: outdoor-node/sensor/temperature/state
+    pir_01: room-node/binary_sensor/motion/state
+  door_topic: room-node/binary_sensor/door/state
+  stale_after_s: 20.0
+  ac_mode_command_topic: ac-node/climate/air_conditioner/mode/command
+  ac_target_command_topic: ac-node/climate/air_conditioner/target_temperature/command
+  ac_mode_state_topic: ""   # IR has no readback (R-02); set it if the path has one
+
+# FR-16. Peak pricing, as a local-time timetable. During peak the setpoint in
+# force rises by the offset -- never past the validator's upper bound.
+tariff:
+  peak_start_hour: 18
+  peak_end_hour: 22
+  peak_offset_c: 1.0
+
+# Section 8.3. Evaluation policy, used by the experiments and nothing that runs
+# in production: the room is comfortable while within this of the setpoint.
+evaluation:
+  comfort_band_c: 1.0
+
+# Week 5. What tools/bringup.py accepts as an instrument that is really there.
+bringup:
+  # Three outdoor periods. Measured on a live stack: 60 s saw the ambient
+  # sensor once and the check failed every time by default.
+  listen_s: 180.0
+  max_interval_factor: 1.5      # Past this, D1 starts calling dropouts
+  actuation_drop_c: 2.0         # Ask for this far below the room
+  actuation_window_s: 300.0     # Longer than the 180 s dwell
+  min_power_rise_w: 200.0       # Used only once a power meter is configured
+
+# The Environmental Supervisor (sections 5.7.1, 5.7.2; FR-40, FR-41).
+supervisor:
+  period_s: 300.0           # FR-41's default cadence
+  max_steps: 6              # four reads and a proposal, with one to spare
+  goal_ttl_s: 900.0         # a proposal outlives three cycles, then lapses
+  event_holdoff_s: 60.0     # a flapping sensor cannot trigger every tick
+  # The policy the supervisor is asked to apply. Stated to the model as
+  # numbers, and the occupancy tool reports whether the setback applies, so a
+  # 7B model reads the decision rather than doing arithmetic.
+  occupied_setpoint_c: 24.0
+  vacant_setpoint_c: 27.0
+  setback_after_s: 600.0
 
 # Adversarial by default. Every value here is switched on, not off: a kind
 # simulator makes simulated success predict nothing about hardware.

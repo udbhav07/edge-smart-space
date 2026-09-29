@@ -33,6 +33,7 @@ from src.common.config import ValidatorConfig
 from src.common.schemas import (
     COMMAND_KIND_KEY,
     SETPOINT_KEY,
+    SOURCE_KEY,
     Command,
     CommandKind,
     Goal,
@@ -96,7 +97,7 @@ class GoalValidator:
 
         if self._is_stale(goal, now):
             return self._verdict(
-                now, goal.setpoint_c, Verdict.BLOCKED, ReasonCode.STALE_GOAL
+                now, goal, Verdict.BLOCKED, ReasonCode.STALE_GOAL
             )
 
         candidate = goal.setpoint_c
@@ -112,7 +113,16 @@ class GoalValidator:
 
         verdict = Verdict.ACCEPTED if reason is ReasonCode.NONE else Verdict.CLAMPED
         self._applied_setpoint_c = candidate
-        return self._verdict(now, goal.setpoint_c, verdict, reason, candidate)
+        return self._verdict(now, goal, verdict, reason, candidate)
+
+    def refuse(self, goal: Goal, reason: ReasonCode) -> ValidationVerdict:
+        """A verdict for a goal refused before reaching the rules.
+
+        Used for arbitration (a supervisor held back by an occupant's
+        preference), so that a refusal is published in the same shape as a
+        clamp and the setpoint in force is reported unchanged.
+        """
+        return self._verdict(self._clock.now(), goal, Verdict.BLOCKED, reason)
 
     def _is_stale(self, goal: Goal, now: float) -> bool:
         """V-6. Also rejects a goal that has passed its own expiry."""
@@ -131,14 +141,16 @@ class GoalValidator:
     def _verdict(
         self,
         now: float,
-        proposed: float,
+        goal: Goal,
         verdict: Verdict,
         reason: ReasonCode,
         applied: float | None = None,
     ) -> ValidationVerdict:
+        # The source travels with the proposal so a reply to an occupant can
+        # say what became of *their* request rather than someone else's.
         return ValidationVerdict(
             ts=now,
-            proposed={SETPOINT_KEY: proposed},
+            proposed={SETPOINT_KEY: goal.setpoint_c, SOURCE_KEY: goal.source.value},
             verdict=verdict,
             reason=reason,
             applied={

@@ -51,13 +51,17 @@ PERSONAL_CONTEXT_PROMPT = (
     "control anything: you describe the request so the control system can "
     "weigh it. Reply with a JSON object and nothing else, with keys: "
     '"intent" (one of "environment" for a request about the space, '
-    '"service" for an external action such as a booking, or "none" when '
-    "nothing was asked), "
+    '"service" for anything about their calendar, schedule, reminders, '
+    "meetings or bookings -- including a question about what is planned -- "
+    'or "none" when nothing was asked), '
     '"subject" (a short noun for what it was about, such as "temperature", '
     '"lights" or "booking", or "" for none), '
     '"comfort" (one of "warmer", "cooler", "unchanged"; use "unchanged" '
     "unless a temperature preference was expressed), "
-    '"target_c" (a number, or null if no temperature was named), '
+    '"target_c" (the exact number of degrees they said, or null if no '
+    "temperature was named; never adjust it to something sensible or safe, "
+    "because limits are enforced by the control system and it must see what "
+    "was actually asked), "
     '"rationale" (a short quote of what they asked for), and '
     '"spoken_reply" (one short sentence of plain English to say back). '
     "Never claim anything has been changed or switched: say a request has "
@@ -81,6 +85,20 @@ def _is_empty(hint: PreferenceHint) -> bool:
         and hint.target_c is None
         and not hint.subject
     )
+
+
+#: A comfort left blank rather than answered. Read as the prompt's default.
+_BLANK_COMFORT = (None, "")
+
+
+def _comfort_field(decoded: dict) -> object:
+    """The comfort answer, with a blank one read as "unchanged".
+
+    A missing key is passed through as None so the enum rejects it.
+    """
+    if "comfort" in decoded and decoded["comfort"] in _BLANK_COMFORT:
+        return Comfort.UNCHANGED.value
+    return decoded.get("comfort")
 
 
 class ReasoningUnavailableError(RuntimeError):
@@ -142,7 +160,12 @@ class PersonalContext:
             return None
 
         raw = self._complete(transcript)
-        return self._validate(raw)
+        hint = self._validate(raw)
+        if hint is None:
+            return None
+        # The words themselves travel with the hint, so whatever acts on it --
+        # a calendar entry needs the exact time -- need not trust a paraphrase.
+        return hint.model_copy(update={"transcript": transcript.strip()})
 
     def _complete(self, transcript: str) -> str:
         try:
@@ -153,6 +176,11 @@ class PersonalContext:
                     {"role": "user", "content": transcript},
                 ],
                 response_format=_JSON_RESPONSE_FORMAT,
+                # An extraction, not a composition: the same words should give
+                # the same hint every time. At the default temperature a
+                # calendar question was classified as a request on one run
+                # and as nothing on the next, and was then silently dropped.
+                temperature=0.0,
             )
         except Exception as exc:
             raise ReasoningUnavailableError(f"inference failed: {exc}") from exc
@@ -164,6 +192,13 @@ class PersonalContext:
         Discards anything that does not parse, names a comfort outside the
         enum, or carries a target that is not a number. Nothing is published
         and the previous state stands.
+
+        A comfort given but *blank* -- null or empty -- is read as the
+        prompt's stated default, "unchanged". Served models leave it blank for
+        a booking or a calendar entry, where no temperature preference exists,
+        and discarding those threw away every service request the live run
+        made. A comfort key that is missing, or present and wrong, is still
+        discarded: the model did not answer the question it was asked.
         """
         try:
             decoded = json.loads(raw)
@@ -179,7 +214,7 @@ class PersonalContext:
             hint = PreferenceHint(
                 ts=self._clock.now(),
                 intent=Intent(decoded.get("intent", Intent.ENVIRONMENT.value)),
-                comfort=Comfort(decoded.get("comfort")),
+                comfort=Comfort(_comfort_field(decoded)),
                 subject=str(decoded.get("subject", "")),
                 target_c=decoded.get("target_c"),
                 rationale=str(decoded.get("rationale", "")),

@@ -187,3 +187,68 @@ class TestBroaderThanTemperature:
         """Nothing here can switch a device, so the reply must not say one
         was switched (FR-45)."""
         assert "Never claim anything has been changed" in PERSONAL_CONTEXT_PROMPT
+
+
+class TestWhatServedModelsActuallySend:
+    """Regression, from a live run against qwen2.5:7b through Ollama."""
+
+    @pytest.mark.parametrize("blank", ['""', "null"], ids=["empty", "null"])
+    def test_a_service_request_with_a_blank_comfort_is_kept(self, config, blank):
+        """The model leaves comfort blank for a booking, where no temperature
+        preference exists; every service request was being discarded."""
+        client = StubClient(
+            '{"intent": "service", "subject": "booking", "comfort": ' + blank + ', '
+            '"target_c": null, "rationale": "book a flight", '
+            '"spoken_reply": "Shall I request that?"}'
+        )
+        hint = _context(config, client).extract(TRANSCRIPT)
+        assert hint is not None
+        assert hint.intent is Intent.SERVICE
+
+    def test_a_blank_comfort_reads_as_unchanged(self, config):
+        client = StubClient(
+            '{"intent": "environment", "subject": "temperature", "comfort": "", '
+            '"target_c": 40.0, "rationale": "make it 40", "spoken_reply": "Passed on."}'
+        )
+        hint = _context(config, client).extract(TRANSCRIPT)
+        assert hint.comfort is Comfort.UNCHANGED
+        assert hint.target_c == 40.0
+
+    def test_the_prompt_forbids_adjusting_the_number(self):
+        """The model turned "5 degrees" into 20: the validator must see what
+        was asked, or the clamp it exists to show never happens."""
+        assert "never adjust it" in PERSONAL_CONTEXT_PROMPT
+
+    def test_an_unsafe_target_is_forwarded_as_asked(self, config):
+        client = StubClient(
+            '{"intent": "environment", "subject": "temperature", "comfort": "cooler", '
+            '"target_c": 5.0, "rationale": "set it to 5", "spoken_reply": "Passed on."}'
+        )
+        assert _context(config, client).extract(TRANSCRIPT).target_c == 5.0
+
+
+class TestTheTranscriptTravelsWithTheHint:
+    def test_the_hint_carries_the_utterance_verbatim(self, config):
+        client = StubClient(
+            '{"intent": "service", "subject": "calendar", "comfort": "unchanged", '
+            '"target_c": null, "rationale": "a meeting", "spoken_reply": "Passed on."}'
+        )
+        hint = _context(config, client).extract("  meet Ravi on Thursday at 3  ")
+        assert hint.transcript == "meet Ravi on Thursday at 3"
+
+    def test_a_discarded_extraction_still_returns_nothing(self, config):
+        assert _context(config, StubClient("not json")).extract(TRANSCRIPT) is None
+
+
+
+class TestClassifiesConsistently:
+    """Regression from a live run: a calendar question was a request on one
+    run and nothing on the next, and so was silently dropped."""
+
+    def test_a_question_about_the_schedule_is_a_service_request(self):
+        assert "a question about what is planned" in PERSONAL_CONTEXT_PROMPT
+
+    def test_the_extraction_asks_for_a_deterministic_decode(self, config):
+        client = StubClient('{"comfort": "cooler", "target_c": 23, "rationale": "x"}')
+        _context(config, client).extract(TRANSCRIPT)
+        assert client.calls[-1]["temperature"] == 0.0

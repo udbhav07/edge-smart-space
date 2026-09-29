@@ -1,5 +1,6 @@
 """Unit tests for the injectable time source."""
 
+import threading
 import time
 
 import pytest
@@ -7,7 +8,10 @@ import pytest
 from src.common.clock import DEFAULT_SIM_EPOCH_S, Clock, RealClock, SimClock
 
 SECONDS_PER_DAY = 86400.0
-SHORT_SLEEP_S = 0.01
+#: Longer than one tick of the coarsest monotonic clock we run on. Windows
+#: advances time.monotonic() in steps of about 15.6 ms, so a 10 ms sleep can
+#: read as no time passing at all.
+SHORT_SLEEP_S = 0.05
 WALL_CLOCK_TOLERANCE_S = 1.0
 NEGATIVE_DURATION_S = -0.001
 
@@ -68,9 +72,11 @@ class TestRealClock:
     def test_sleep_actually_blocks_for_the_requested_duration(self):
         """NFR-01 measures loop period against real elapsed time."""
         clock = RealClock()
+        resolution_s = time.get_clock_info("monotonic").resolution
         wall_before = time.monotonic()
         clock.sleep(SHORT_SLEEP_S)
-        assert time.monotonic() - wall_before >= SHORT_SLEEP_S
+        # A coarse clock can under-read an interval by up to one tick.
+        assert time.monotonic() - wall_before >= SHORT_SLEEP_S - resolution_s
 
 
 class TestSimClock:
@@ -114,3 +120,37 @@ class TestSimClock:
         clock = SimClock(start_epoch_s=0.0)
         clock.advance(0.0)
         assert clock.now() == 0.0
+
+
+class TestWaitFor:
+    """Waiting for another thread's answer, without a direct time call."""
+
+    def test_a_set_event_returns_at_once_on_the_real_clock(self):
+        event = threading.Event()
+        event.set()
+        assert RealClock().wait_for(event, 5.0) is True
+
+    def test_an_unset_event_times_out_on_the_real_clock(self):
+        assert RealClock().wait_for(threading.Event(), 0.01) is False
+
+    def test_the_sim_clock_reports_a_set_event(self):
+        event = threading.Event()
+        event.set()
+        assert SimClock().wait_for(event, 5.0) is True
+
+    def test_the_sim_clock_never_blocks_on_an_unset_event(self):
+        """A missing answer must not cost a batch run real seconds."""
+        started = RealClock().monotonic()
+        assert SimClock().wait_for(threading.Event(), 30.0) is False
+        assert RealClock().monotonic() - started < 1.0
+
+    def test_waiting_does_not_move_simulated_time(self):
+        clock = SimClock()
+        before = clock.now()
+        clock.wait_for(threading.Event(), 30.0)
+        assert clock.now() == before
+
+    @pytest.mark.parametrize("make_clock", [RealClock, SimClock])
+    def test_a_negative_timeout_is_refused(self, make_clock):
+        with pytest.raises(ValueError):
+            make_clock().wait_for(threading.Event(), -1.0)

@@ -35,7 +35,9 @@ from src.common.clock import Clock
 from src.common.config import Bounds, Config, SensorConfig
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    Coefficients,
     Command,
+    DetectorId,
     FaultEvent,
     ModeReset,
     ModeState,
@@ -55,6 +57,17 @@ from src.faults.detectors.stuck_at import StuckAtDetector
 from src.faults.mode_manager import ModeManager
 
 LOGGER = logging.getLogger(__name__)
+
+#: Detectors that judge a sensor from its own readings alone. Only these can
+#: discredit a finding derived from that sensor: D4 is itself derived, from a
+#: model that assumes the air conditioner works, so it cannot referee D5.
+_DIRECT_SENSOR_TESTS = frozenset(
+    {DetectorId.D1_DROPOUT, DetectorId.D2_STUCK_AT, DetectorId.D3_OUT_OF_RANGE}
+)
+
+#: Faults raised outside this bank that still decide the mode. The estimator
+#: detects divergence because it owns the evidence (section 5.2.3).
+_EXTERNAL_DETECTORS = frozenset({DetectorId.MODEL_DIVERGENCE})
 
 #: Units for which variance and range tests are meaningful. Everything else
 #: gets dropout detection only.
@@ -157,11 +170,15 @@ class DetectorBankService:
             topics.ESTIMATE_THERMAL, ThermalEstimate, self._on_estimate
         )
         self._blackboard.subscribe(
+            topics.ESTIMATE_COEFFICIENTS, Coefficients, self._on_coefficients
+        )
+        self._blackboard.subscribe(
             topics.ACTUATOR_COMMAND, Command, self._on_command
         )
         self._blackboard.subscribe(
             topics.SYSTEM_RESET, ModeReset, self._on_reset
         )
+        self._blackboard.subscribe(topics.FAULT, FaultEvent, self._on_fault)
 
     @property
     def watched_subjects(self) -> frozenset[str]:
@@ -195,15 +212,29 @@ class DetectorBankService:
         subject.observe(reading)
         self._last_reading_ts[reading.sensor_id] = reading.ts
 
+        if reading.sensor_id == self._config.estimator.outdoor_sensor_id:
+            # D5 needs ambient to know whether the unit may be at capacity.
+            if reading.quality is Quality.OK and self._subject_is_trusted(
+                reading.sensor_id
+            ):
+                self._actuator.observe_ambient(reading.value)
+            return
         if reading.sensor_id != self._config.estimator.indoor_sensor_id:
             return
         # D5 judges the actuator by what the room did, so it needs the room's
         # temperature and no other sensor's -- and only while that temperature
-        # means anything.
-        if self._indoor_is_trusted():
-            self._actuator.observe_reading(reading)
-        else:
+        # means anything. A reading its own sensor flags as suspect is skipped
+        # without abandoning the window: D3 needs two samples to confirm, and
+        # the first 999 C sample landing on D5's evaluation was read as the
+        # room warming by 970 C and blamed on the air conditioner.
+        if not self._indoor_is_trusted():
             self._actuator.reset()
+        elif reading.quality is Quality.OK:
+            self._actuator.observe_reading(reading)
+
+    def _on_coefficients(self, _topic: str, coefficients: Coefficients) -> None:
+        """Hand D5 the identified coupling, which bounds passive warming."""
+        self._actuator.observe_coupling(coefficients.a2)
 
     def _on_estimate(self, _topic: str, estimate: ThermalEstimate) -> None:
         """Route the model's prediction error to D4.
@@ -214,6 +245,11 @@ class DetectorBankService:
         if not self._indoor_is_trusted():
             # The residual is measured against a reading already known to be
             # wrong, so it says nothing about drift.
+            return
+        if not self._actuator_is_trusted():
+            # The model expects the room to respond to cooling. With the air
+            # conditioner known not to, every residual is that expectation
+            # failing, and D4 would pin the actuator's fault on the sensor.
             return
         subject = self._detectors.get(self._config.estimator.indoor_sensor_id)
         if subject is None:
@@ -240,12 +276,55 @@ class DetectorBankService:
         indoor = self._config.estimator.indoor_sensor_id
         return not any(event.subject == indoor for event in self._aggregator.active)
 
+    def _subject_is_trusted(self, subject: str) -> bool:
+        """Whether no active fault names this subject."""
+        return not any(event.subject == subject for event in self._aggregator.active)
+
+    def _actuator_is_trusted(self) -> bool:
+        """Whether the air conditioner has no active fault against it."""
+        return not any(
+            event.subject == self._actuator.subject
+            for event in self._aggregator.active
+        )
+
     def _on_command(self, _topic: str, command: Command) -> None:
         """Route an actuator command to D5."""
         if command.actuator_id != self._actuator.subject:
             LOGGER.debug("no detector for actuator %s", command.actuator_id)
             return
         self._actuator.observe_command(command.kind)
+
+    def _on_fault(self, _topic: str, event: FaultEvent) -> None:
+        """Reconcile a fault on the blackboard with the set this bank holds.
+
+        Two cases matter, and both were found by running the system:
+
+        * **A fault this bank does not own.** The estimator raises
+          MODEL_DIVERGENCE, and nothing turned it into a mode, so section
+          7.1's SAFE_HOLD never happened. It is adopted, and the mode is
+          published at once rather than on the next tick (FR-26).
+        * **A retained fault of this bank's own that it no longer holds.** A
+          detector process killed mid-fault leaves its fault retained, and
+          its replacement starts with nothing active, so the blackboard said
+          "faulted" beside a mode saying "no active faults". It is withdrawn:
+          if the condition persists, the detector raises it again from live
+          evidence within its own window.
+
+        This bank's own publications echo back here and match the held set,
+        so they are ignored.
+        """
+        held = {active.fault_id for active in self._aggregator.active}
+        if event.fault_id in held:
+            return
+        if event.detector in _EXTERNAL_DETECTORS:
+            if self._aggregator.adopt(event):
+                self._publish_mode(self._aggregator.active)
+            return
+        LOGGER.warning(
+            "withdrawing %s: retained from an earlier run and not held now",
+            event.fault_id,
+        )
+        self._withdraw_fault(event)
 
     def _on_reset(self, _topic: str, reset: ModeReset) -> None:
         """Take an operator's acknowledgement (section 5.6).
@@ -274,17 +353,78 @@ class DetectorBankService:
         findings: list[Finding] = []
         for subject in self._detectors.values():
             findings.extend(subject.evaluate())
+        if not self._indoor_is_trusted():
+            # Suspended on every tick, not only when a reading arrives: a
+            # dropped sensor delivers none, and D5 would otherwise judge its
+            # window on the last value heard before the silence.
+            self._actuator.reset()
         findings.append(self._actuator.evaluate())
 
         outcome = self._aggregator.ingest(findings)
         for event in outcome.raised:
             self._publish_fault(event)
+            if event.subject == self._actuator.subject:
+                self._forget_drift_evidence()
         for event in outcome.cleared:
             self._withdraw_fault(event)
             self._reset_detector(event)
+        for event in self._discredited_by(outcome.raised):
+            self._withdraw_fault(event)
+            self._actuator.reset()
         self._publish_health(findings)
-        self._publish_mode(outcome.active)
+        self._publish_mode(self._aggregator.active)
         return outcome
+
+    def _discredited_by(
+        self, raised: tuple[FaultEvent, ...]
+    ) -> tuple[FaultEvent, ...]:
+        """Retract an actuator fault judged on a sensor now found broken.
+
+        D5's verdict is only as good as the indoor readings it compared. A
+        stuck sensor takes D2 about five minutes to confirm, and in that time
+        D5's window can close on the frozen value and blame the air
+        conditioner -- two subjects faulted, SAFE_HOLD, and FR-27 switched off
+        by the very fault it exists to survive. So when the indoor sensor is
+        confirmed faulted, a D5 fault raised within one evaluation window of
+        that is withdrawn: its evidence was read from the broken sensor. It is
+        re-tested once the sensor is trusted again, so nothing is concealed.
+        """
+        indoor = self._config.estimator.indoor_sensor_id
+        horizon_s = self._config.detectors.actuator.evaluation_window_s
+        sensor_faults = [
+            event
+            for event in raised
+            if event.subject == indoor and event.detector in _DIRECT_SENSOR_TESTS
+        ]
+        if not sensor_faults:
+            return ()
+        confirmed_ts = min(event.detected_ts for event in sensor_faults)
+        retracted = []
+        for event in self._aggregator.active:
+            if event.detector is not DetectorId.D5_ACTUATOR_NO_RESPONSE:
+                continue
+            if confirmed_ts - event.detected_ts > horizon_s:
+                continue
+            if self._aggregator.retract(event.detector, event.subject) is not None:
+                LOGGER.warning(
+                    "withdrew %s: judged on %s, which is now known to be faulted",
+                    event.fault_id,
+                    indoor,
+                )
+                retracted.append(event)
+        return tuple(retracted)
+
+    def _forget_drift_evidence(self) -> None:
+        """Drop what D4 accumulated while the actuator was failing unseen.
+
+        D5 needs a full evaluation window to confirm, and through that window
+        the room was not cooling as the model expected, so D4's sums were
+        growing on the actuator's fault. Left in place they would raise drift
+        on a healthy sensor minutes later -- which the live demonstration did.
+        """
+        subject = self._detectors.get(self._config.estimator.indoor_sensor_id)
+        if subject is not None:
+            subject.reset_accumulated()
 
     def _publish_mode(self, active: tuple[FaultEvent, ...]) -> None:
         """Turn the fault set into a mode and publish it (FR-26).
@@ -458,7 +598,9 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
             ),
             drift=(
                 DriftDetector(
-                    subject=sensor.sensor_id, config=config.detectors.drift
+                    subject=sensor.sensor_id,
+                    config=config.detectors.drift,
+                    accumulate_every=config.estimator.drift_horizon_samples,
                 )
                 if sensor.sensor_id == config.estimator.indoor_sensor_id
                 else None
@@ -483,6 +625,7 @@ def build_service(
             subject=topics.AIR_CONDITIONER_ID,
             config=config.detectors.actuator,
             clock=clock,
+            sample_period_s=config.loop.sensor_period_s,
         ),
         mode_manager=ModeManager(config=config.mode, clock=clock),
     )

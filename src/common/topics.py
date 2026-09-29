@@ -138,6 +138,9 @@ ESTIMATE_COEFFICIENTS = TopicSpec(
 # --- Faults and mode (FR-20 to FR-31, FR-61) -------------------------------
 
 FAULT = TopicSpec("space/fault/{fault_id}", Qos.AT_LEAST_ONCE, retain=True)
+#: A person-readable explanation of a confirmed fault (FR-25). Not retained:
+#: a diagnosis outliving its fault would explain something no longer true.
+DIAGNOSIS = TopicSpec("space/diagnosis/{fault_id}", Qos.AT_LEAST_ONCE, retain=False)
 SYSTEM_MODE = TopicSpec("space/system/mode", Qos.AT_LEAST_ONCE, retain=True)
 
 # --- Goals (FR-40, FR-45) --------------------------------------------------
@@ -158,11 +161,21 @@ ACTUATOR_STATE = TopicSpec(
 #: the same topics under their own id and carry ``simulated: true``.
 AIR_CONDITIONER_ID = "ac"
 
+# --- Tariff (FR-16) ---------------------------------------------------------
+
+#: The pricing band in force. Retained: it is state, and the supervisor reads
+#: it on start as much as on change.
+TARIFF_STATE = TopicSpec("space/tariff/state", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Speech and context (FR-53) --------------------------------------------
 
 CONTEXT_PREFERENCE = TopicSpec(
     "space/context/preference", Qos.AT_LEAST_ONCE, retain=False
 )
+
+#: What the system says back once it has acted on an utterance. Not retained:
+#: a reply is an answer to one question, not state.
+CONTEXT_REPLY = TopicSpec("space/context/reply", Qos.AT_LEAST_ONCE, retain=False)
 
 # --- Assistance tools (FR-70 to FR-75) -------------------------------------
 

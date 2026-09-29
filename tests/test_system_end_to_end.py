@@ -50,91 +50,10 @@ from src.estimation.__main__ import build_service as build_estimator
 from src.faults.injector import FaultInjector
 from src.faults.service import build_service as build_bank
 from eval.loopback import LoopbackTransport
+from eval.system import System
 from sim.run_sim import INDOOR_TEMPERATURE_ID, build_simulator
 
 STUCK_VALUE_C = 27.0
-
-
-class System:
-    """Four services and a plant, on one in-process bus."""
-
-    def __init__(self, config, clock) -> None:
-        self.config = config
-        self.clock = clock
-        self.transport = LoopbackTransport()
-
-        boards = [Blackboard(config.mqtt, self.transport) for _ in range(5)]
-        plant_board, estimator_board, bank_board, control_board, operator = boards
-
-        self.simulator = build_simulator(config, clock, plant_board)
-        self.estimator = build_estimator(config, clock, estimator_board)
-        self.bank = build_bank(config, clock, bank_board)
-        self.control = build_control(config, clock, control_board)
-        self.injector = FaultInjector(operator, clock)
-
-        for service in (self.simulator, self.estimator, self.bank, self.control):
-            service.subscribe()
-        for board in boards:
-            self.transport.attach(board)
-
-    def run_for(self, seconds: float) -> None:
-        """Advance every process one period at a time.
-
-        Order within a tick matters and mirrors reality: the plant publishes,
-        whoever is listening reacts, and the controller acts on what it heard.
-        """
-        period_s = self.config.loop.sensor_period_s
-        elapsed = 0.0
-        while elapsed < seconds:
-            self.simulator.step()
-            self.bank.tick()
-            self.control.tick()
-            self.clock.advance(period_s)
-            elapsed += period_s
-
-    # --- what the bus saw ---------------------------------------------
-
-    def _decode(self, topic_test, schema):
-        return [
-            schema.model_validate_json(payload)
-            for topic, payload, _, _ in self.transport.published
-            if topic_test(topic) and payload
-        ]
-
-    def faults(self) -> list[FaultEvent]:
-        return self._decode(lambda t: t.startswith("space/fault/"), FaultEvent)
-
-    def modes(self) -> list[ModeState]:
-        return self._decode(lambda t: t == "space/system/mode", ModeState)
-
-    def commands(self) -> list[Command]:
-        return self._decode(lambda t: t.endswith("/command"), Command)
-
-    def estimates(self) -> list[ThermalEstimate]:
-        return self._decode(
-            lambda t: t == "space/estimate/thermal", ThermalEstimate
-        )
-
-    def coefficients(self) -> list[Coefficients]:
-        return self._decode(
-            lambda t: t == "space/estimate/coefficients", Coefficients
-        )
-
-    def health(self, sensor_id: str) -> list[SensorHealth]:
-        return self._decode(
-            lambda t: t == f"space/sensor/{sensor_id}/health", SensorHealth
-        )
-
-    def mode(self) -> Mode:
-        modes = self.modes()
-        return modes[-1].mode if modes else Mode.INIT
-
-    def commands_since(self, count: int) -> list[Command]:
-        return self.commands()[count:]
-
-    def room_temperature_c(self) -> float:
-        """Ground truth, which only the test is allowed to look at."""
-        return self.simulator.room_temperature_c
 
 
 @pytest.fixture(name="config")
@@ -168,6 +87,15 @@ class TestNominalOperation:
         faults, no detection below proves anything."""
         system.run_for(600.0)
         assert system.faults() == []
+
+    def test_a_healthy_room_raises_no_faults_over_two_hours(self, system):
+        """Regression: ten minutes was never long enough to see it. Once the
+        room neared the setpoint the unit was cooling toward its capacity,
+        slowly enough to miss D5's 0.3 C per window, and every healthy run
+        ended in DEGRADED_ACTUATOR within two hours."""
+        system.run_for(2 * 3600.0)
+        assert system.faults() == []
+        assert system.mode() is Mode.NORMAL
 
     def test_the_room_is_driven_towards_the_setpoint(self, system, config):
         """It starts at 29 C and is asked for 24 C."""
@@ -416,3 +344,92 @@ class TestTheLoopSurvivesWhatIsAboveIt:
         started = system.clock.now()
         system.run_for(300.0)
         assert system.clock.now() - started == pytest.approx(300.0)
+
+
+class TestEverySensorFaultRidesThroughOnTheModel:
+    """FR-27 for every sensor fault class, not only the one the demo uses.
+
+    Regression, found by running the system live: the prediction handed to
+    the controller was built from the faulted reading itself, so it restated
+    the fault; a single 999 C sample landing on D5's window was blamed on the
+    air conditioner; and a dropped sensor let D5 judge a window on stale data
+    and escalate to SAFE_HOLD. Each case now degrades on the sensor and stays
+    there, controlling on a prediction that owes nothing to the fault.
+    """
+
+    #: Injected on the D5 evaluation boundary deliberately: that is the timing
+    #: which exposed the out-of-range race.
+    WARMUP_S = 600.0
+    RIDE_S = 1200.0
+
+    def _ride(self, system, kind, magnitude=None):
+        system.run_for(self.WARMUP_S)
+        if magnitude is None:
+            system.injector.inject(INDOOR_TEMPERATURE_ID, kind)
+        else:
+            system.injector.inject(INDOOR_TEMPERATURE_ID, kind, magnitude)
+        system.run_for(self.RIDE_S)
+
+    @pytest.mark.parametrize(
+        ("kind", "magnitude"),
+        [
+            (InjectedFault.OUT_OF_RANGE, 999.0),
+            (InjectedFault.DROPOUT, None),
+            (InjectedFault.STUCK_AT, STUCK_VALUE_C),
+        ],
+    )
+    def test_it_ends_degraded_on_the_sensor(self, system, kind, magnitude):
+        self._ride(system, kind, magnitude)
+        assert system.mode() is Mode.DEGRADED_SENSOR
+
+    @pytest.mark.parametrize(
+        ("kind", "magnitude"),
+        [(InjectedFault.OUT_OF_RANGE, 999.0), (InjectedFault.DROPOUT, None)],
+    )
+    def test_the_air_conditioner_is_never_blamed(self, system, kind, magnitude):
+        self._ride(system, kind, magnitude)
+        assert "ac" not in {event.subject for event in system.faults()}
+
+    def test_the_prediction_owes_nothing_to_an_impossible_reading(self, system):
+        self._ride(system, InjectedFault.OUT_OF_RANGE, 999.0)
+        latest = system.estimates()[-1]
+        assert latest.t_in == 999.0
+        assert abs(latest.t_pred - system.room_temperature_c()) < 10.0
+
+    def test_the_prediction_keeps_moving_through_a_dropout(self, system):
+        self._ride(system, InjectedFault.DROPOUT)
+        predictions = {round(e.t_pred, 6) for e in system.estimates()[-60:]}
+        assert len(predictions) > 1
+
+    def test_control_continues_through_a_dropout(self, system):
+        self._ride(system, InjectedFault.DROPOUT)
+        before = len(system.commands())
+        system.run_for(120.0)
+        issued = system.commands_since(before)
+        assert len(issued) >= 20
+        assert all(command.kind is not CommandKind.HOLD for command in issued)
+
+
+class TestDriftIsFoundAndNamed:
+    """FR-23 end to end, which nothing tested until the detector had been
+    shown blind to it: a one-step residual never accumulated a realistic
+    drift, and a drifting reading was blamed on the air conditioner."""
+
+    def _drift(self, system, rate_c_per_s, ride_s):
+        system.run_for(1800.0)
+        system.injector.inject(INDOOR_TEMPERATURE_ID, InjectedFault.DRIFT, rate_c_per_s)
+        system.run_for(ride_s)
+        return {event.detector.value for event in system.faults()}
+
+    def test_a_fast_drift_is_found_within_five_minutes(self, system):
+        assert "D4_DRIFT" in self._drift(system, 0.05, 300.0)
+
+    def test_a_drift_of_0_6_c_per_minute_is_found_within_twenty(self, system):
+        assert "D4_DRIFT" in self._drift(system, 0.01, 1200.0)
+
+    def test_the_air_conditioner_is_not_blamed_for_it(self, system):
+        assert "D5_ACTUATOR_NO_RESPONSE" not in self._drift(system, 0.01, 1200.0)
+
+    def test_the_system_degrades_on_the_sensor(self, system):
+        self._drift(system, 0.01, 1200.0)
+        assert system.mode() is Mode.DEGRADED_SENSOR

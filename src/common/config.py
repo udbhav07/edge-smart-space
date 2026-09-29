@@ -14,6 +14,8 @@ sections 5.2.2, 5.3, 5.4 and 5.5.
 
 from __future__ import annotations
 
+from enum import Enum
+
 from pathlib import Path
 
 import yaml
@@ -125,6 +127,18 @@ class EstimatorConfig(_Section):
     excitation_window_samples: int = Field(
         gt=1, description="Samples over which regressor variation is judged"
     )
+    edge_noise_c_per_step: float = Field(
+        ge=0.0,
+        description="Heat flow against the gradient, in C per step, an a2 "
+        "rejection may imply and still count as edge noise, not divergence",
+    )
+    drift_horizon_samples: int = Field(
+        gt=0,
+        description="Steps over which the horizon residual D4 uses is predicted",
+    )
+    horizon_sigma_window_samples: int = Field(
+        gt=1, description="Horizon residuals kept to measure their spread"
+    )
     residual_sigma_window_samples: int = Field(
         gt=1, description="Samples backing the published residual_sigma"
     )
@@ -187,6 +201,48 @@ class ControllerConfig(_Section):
     default_setpoint_c: float = Field(
         description="Held before any goal arrives and when every goal is stale"
     )
+    reassert_interval_s: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="How often the intended actuator state is re-sent, so a "
+        "lost command on an open-loop path is not permanent (R-02)",
+    )
+    excitation_duration_s: float = Field(
+        default=0.0,
+        ge=0.0,
+        description="Identification phase after startup during which the "
+        "compressor is driven on a schedule rather than by the error (R-01). "
+        "Zero disables it.",
+    )
+    excitation_period_s: float = Field(
+        default=900.0,
+        gt=0.0,
+        description="Full excitation cycle, half cooling and half off",
+    )
+    excitation_envelope_c: float = Field(
+        default=2.0,
+        gt=0.0,
+        description="Excitation is abandoned if the room is further than this "
+        "from setpoint, so identification never costs more comfort than stated",
+    )
+
+    @model_validator(mode="after")
+    def _excitation_stays_outside_the_deadband(self) -> ControllerConfig:
+        """An envelope inside the deadband would abandon excitation instantly.
+
+        The deadband is the band in which the controller does nothing, so an
+        envelope narrower than it means the room is outside the envelope
+        exactly when the controller would have acted anyway -- and the
+        excitation never runs, silently.
+        """
+        if self.excitation_duration_s > 0.0 and (
+            self.excitation_envelope_c <= self.deadband_c
+        ):
+            raise ValueError(
+                f"excitation_envelope_c ({self.excitation_envelope_c}) must "
+                f"exceed deadband_c ({self.deadband_c}), or excitation never runs"
+            )
+        return self
 
 
 class ValidatorConfig(_Section):
@@ -199,6 +255,20 @@ class ValidatorConfig(_Section):
         gt=0.0, description="V-4 maximum command frequency"
     )
     goal_max_age_s: float = Field(gt=0.0, description="V-6 staleness horizon")
+
+
+class EvaluationConfig(_Section):
+    """Policy for the experiments (section 8.3), not for the running system.
+
+    It lives in config rather than in ``eval`` because a success criterion
+    somebody can change by editing a constant is not a criterion.
+    """
+
+    comfort_band_c: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Distance from setpoint still counted as comfortable, in C",
+    )
 
 
 class DropoutDetectorConfig(_Section):
@@ -304,6 +374,19 @@ class ActuatorDetectorConfig(_Section):
     )
     min_cooling_c: float = Field(
         gt=0.0, description="Cooling the room must have achieved over that window"
+    )
+    capacity_gap_c: float = Field(
+        gt=0.0,
+        description="Ambient minus room, in C, beyond which a working unit may "
+        "be at capacity and hold the room level; there only warming is a fault",
+    )
+    passive_warming_factor: float = Field(
+        ge=1.0,
+        description="How far beyond the fastest a room with a dead unit could "
+        "warm a reading may rise before the sensor, not the unit, is suspected",
+    )
+    passive_warming_slack_c: float = Field(
+        ge=0.0, description="Added to that bound, for noise and unmodelled gains, in C"
     )
 
 
@@ -459,6 +542,101 @@ class AssistanceConfig(_Section):
     result_timeout_s: float = Field(
         gt=0.0, description="Seconds to wait for a tool result before answering without"
     )
+    calendar_path: str = Field(
+        min_length=1, description="Where the local calendar is kept (FR-58)"
+    )
+    calendar_max_events: int = Field(
+        gt=0, description="Entries the local calendar holds before refusing more"
+    )
+
+
+class DeviceSource(str, Enum):
+    """Where Layer 1 comes from. Nothing above Layer 1 reads this."""
+
+    SIMULATED = "simulated"
+    ESPHOME = "esphome"
+
+
+class DevicesConfig(_Section):
+    """Layer 1 selection and the real devices' own topics (Week 5).
+
+    The topics are the nodes' ESPHome MQTT state and command topics. They are
+    configuration, not code: what a node publishes under is decided when it
+    is flashed, and guessing it in code would produce a bridge that looks
+    finished and silently matches nothing.
+    """
+
+    source: DeviceSource = Field(description="simulated or esphome")
+    sensor_topics: dict[str, str] = Field(
+        default_factory=dict, description="Sensor id to the device state topic"
+    )
+    door_topic: str = Field(default="", description="Reed switch state topic, if any")
+    stale_after_s: float = Field(
+        gt=0.0, description="A device value older than this is absence, not a reading"
+    )
+    ac_mode_command_topic: str = Field(default="")
+    ac_target_command_topic: str = Field(default="")
+    ac_mode_state_topic: str = Field(
+        default="", description="Readback of the unit's mode, if the path has one (R-02)"
+    )
+
+
+class TariffConfig(_Section):
+    """Peak-tariff schedule and the comfort shift it asks for (FR-16)."""
+
+    peak_start_hour: int = Field(ge=0, le=23, description="Local hour peak begins")
+    peak_end_hour: int = Field(ge=1, le=24, description="Local hour peak ends")
+    peak_offset_c: float = Field(
+        ge=0.0, description="How far the setpoint rises during peak, in C"
+    )
+
+    @model_validator(mode="after")
+    def _peak_ends_after_it_starts(self) -> TariffConfig:
+        if self.peak_end_hour <= self.peak_start_hour:
+            raise ValueError("peak_end_hour must be after peak_start_hour")
+        return self
+
+
+class GoalsConfig(_Section):
+    """The goal path: preferences into proposals, and who outranks whom."""
+
+    comfort_step_c: float = Field(
+        gt=0.0, description="How far 'cooler' or 'warmer' moves the setpoint, in C"
+    )
+    preference_ttl_s: float = Field(
+        gt=0.0, description="Seconds a spoken preference stays a valid proposal"
+    )
+    preference_hold_s: float = Field(
+        ge=0.0,
+        description="Seconds an occupant's preference outranks the supervisor",
+    )
+    pursue_interval_s: float = Field(
+        gt=0.0,
+        description="Seconds between re-proposals of a preference the rate "
+        "limit has only part-granted",
+    )
+
+
+class SupervisorConfig(_Section):
+    """The Environmental Supervisor (DESIGN.md sections 5.7.1 and 5.7.2)."""
+
+    period_s: float = Field(gt=0.0, description="Seconds between cycles (FR-41)")
+    max_steps: int = Field(
+        gt=0, description="Tool calls one cycle may make before it must stop"
+    )
+    goal_ttl_s: float = Field(
+        gt=0.0, description="Seconds a supervisor proposal stays valid"
+    )
+    event_holdoff_s: float = Field(
+        ge=0.0,
+        description="Minimum seconds between event-triggered cycles, so a "
+        "flapping sensor cannot make the supervisor run every tick",
+    )
+    occupied_setpoint_c: float = Field(description="Policy target while occupied")
+    vacant_setpoint_c: float = Field(description="Policy target once set back")
+    setback_after_s: float = Field(
+        ge=0.0, description="Seconds empty before the vacant target applies"
+    )
 
 
 class SensorNoiseConfig(_Section):
@@ -538,6 +716,39 @@ class SimConfig(_Section):
     )
 
 
+class BringupConfig(_Section):
+    """What ``tools/bringup.py`` accepts as a working instrument (Week 5)."""
+
+    listen_s: float = Field(
+        default=180.0,
+        gt=0.0,
+        description="How long to listen by default, in s. Several outdoor "
+        "periods, or the 60 s ambient sensor is seen once and judged unratable",
+    )
+    max_interval_factor: float = Field(
+        default=1.5,
+        gt=1.0,
+        description="Median interval allowed, as a multiple of the expected "
+        "period. Past this D1 starts calling dropouts",
+    )
+    actuation_drop_c: float = Field(
+        default=2.0,
+        gt=0.0,
+        description="How far below the room the actuation check asks for, in C",
+    )
+    actuation_window_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description="How long to watch for the compressor's draw, in s. Longer "
+        "than the validator's dwell, or a recent OFF hides a working unit",
+    )
+    min_power_rise_w: float = Field(
+        default=200.0,
+        gt=0.0,
+        description="Rise in draw that counts as the compressor starting, in W",
+    )
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -553,7 +764,13 @@ class Config(_Section):
     speech: SpeechConfig
     reasoning: ReasoningConfig
     assistance: AssistanceConfig
+    goals: GoalsConfig
+    tariff: TariffConfig
+    devices: DevicesConfig
+    supervisor: SupervisorConfig
     sim: SimConfig
+    bringup: BringupConfig = BringupConfig()
+    evaluation: EvaluationConfig = EvaluationConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

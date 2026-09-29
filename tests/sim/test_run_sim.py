@@ -19,6 +19,7 @@ from src.common.schemas import (
     Command,
     CommandKind,
     InjectionCommand,
+    Quality,
     SensorReading,
     Unit,
 )
@@ -230,6 +231,42 @@ class TestClosedLoop:
         payload = transport.payloads_on("space/actuator/ac/state")[-1]
         assert ActuatorState.model_validate_json(payload).kind is CommandKind.COOL
 
+    def _command(self, blackboard, clock, kind):
+        command = Command(
+            ts=clock.now(),
+            actuator_id=topics.AIR_CONDITIONER_ID,
+            kind=kind,
+            setpoint_c=22.0 if kind is CommandKind.COOL else None,
+        )
+        blackboard.dispatch(
+            "space/actuator/ac/command", command.model_dump_json().encode()
+        )
+
+    def _published_kind(self, transport):
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        return ActuatorState.model_validate_json(payload).kind
+
+    @pytest.mark.parametrize("carry_on", [CommandKind.MAINTAIN, CommandKind.HOLD])
+    def test_carrying_on_leaves_the_published_state_as_it_was(
+        self, quiet_config, carry_on
+    ):
+        """Regression: the state echoed MAINTAIN, so a subscriber that missed
+        the one COOL -- a restarted estimator -- believed cooling was off."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._command(blackboard, clock, CommandKind.COOL)
+        simulator.step()
+        self._command(blackboard, clock, carry_on)
+        simulator.step()
+        assert self._published_kind(transport) is CommandKind.COOL
+
+    def test_switching_off_is_published_as_off(self, quiet_config):
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._command(blackboard, clock, CommandKind.COOL)
+        simulator.step()
+        self._command(blackboard, clock, CommandKind.OFF)
+        simulator.step()
+        assert self._published_kind(transport) is CommandKind.OFF
+
 
 class TestRunLoop:
     def test_run_executes_the_requested_number_of_steps(self, quiet_config):
@@ -272,6 +309,37 @@ class TestInjectionAtLayerOne:
         blackboard.dispatch(
             f"space/inject/{subject}", command.model_dump_json().encode()
         )
+
+    def test_a_dead_unit_cools_nothing(self, quiet_config):
+        """FR-24, FR-31: the actuator fault is injectable like any other."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.NO_RESPONSE)
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=22.0
+        )
+        blackboard.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        start = simulator.room_temperature_c
+        for _ in range(120):
+            simulator.step()
+            clock.advance(quiet_config.loop.sensor_period_s)
+        assert simulator.room_temperature_c >= start
+
+    def test_a_dead_unit_still_reports_what_it_was_told(self, quiet_config):
+        """No acknowledgement betrays it (R-02): D5 must find it from the room."""
+        simulator, transport, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.NO_RESPONSE)
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=22.0
+        )
+        blackboard.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        simulator.step()
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        assert ActuatorState.model_validate_json(payload).kind is CommandKind.COOL
+
+    def test_a_sensor_fault_on_the_unit_is_refused(self, quiet_config):
+        simulator, _, clock, blackboard = _running(quiet_config)
+        self._inject(blackboard, "ac", InjectedFault.STUCK_AT, 27.0)
+        assert simulator._actuator.is_failed is False
 
     def test_the_simulator_listens_for_injections(self, config):
         simulator, transport, _, blackboard = _running(config)
@@ -317,6 +385,20 @@ class TestInjectionAtLayerOne:
             transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")[0]
         )
         assert reading.value == 999.0
+
+    def test_an_out_of_range_reading_is_flagged_by_the_configured_limits(
+        self, quiet_config
+    ):
+        """The limits come from config.sensors, the same ones D3 uses."""
+        simulator, transport, _, blackboard = _running(quiet_config)
+        self._inject(
+            blackboard, INDOOR_TEMPERATURE_ID, InjectedFault.OUT_OF_RANGE, 999.0
+        )
+        simulator.step()
+        reading = SensorReading.model_validate_json(
+            transport.payloads_on(f"space/sensor/{INDOOR_TEMPERATURE_ID}/state")[0]
+        )
+        assert reading.quality is Quality.SUSPECT
 
     def test_clearing_returns_the_sensor_to_the_plant(self, quiet_config):
         simulator, transport, _, blackboard = _running(quiet_config)
