@@ -51,6 +51,11 @@ estimator:
   # the horizon (0.6 C over 60 s), while a healthy model's one-minute error
   # stays small.
   drift_horizon_samples: 12
+  # FR-27. Trusted steps kept so that, when the indoor sensor is confirmed
+  # faulted, the model restarts from the last reading before the onset the
+  # detector reported -- D2's frozen window, D4's change point -- instead of
+  # from the fault itself. 15 min; must exceed D2's window.
+  reanchor_history_samples: 180
   # a2 sits on its lower bound and noise crosses it. A crossing is weighed by
   # the gap, as the heat flow against the gradient it claims: healthy runs
   # never claimed more than 0.083 C per step, a room warming while cooled a

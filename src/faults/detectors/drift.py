@@ -51,7 +51,7 @@ chasing the fault while the system decides what to do about it.
 from __future__ import annotations
 
 from src.common.config import DriftDetectorConfig
-from src.common.schemas import DetectorId, ThermalEstimate
+from src.common.schemas import ONSET_KEY, DetectorId, ThermalEstimate
 from src.faults.detectors.base import Finding, Judgment
 
 #: A cumulative sum cannot go negative: the test is "has evidence accumulated",
@@ -80,6 +80,9 @@ class DriftDetector:
         self._accumulate_every = accumulate_every
         self._high = _SUM_FLOOR
         self._low = _SUM_FLOOR
+        #: Estimate timestamps at which each sum last stood at the floor.
+        self._high_since_ts: float | None = None
+        self._low_since_ts: float | None = None
         self._samples = 0
         self._normalised = 0.0
         self._sigma_c = 0.0
@@ -129,6 +132,12 @@ class DriftDetector:
         slack = self._config.slack_sigma
         self._high = max(_SUM_FLOOR, self._high + bounded - slack)
         self._low = max(_SUM_FLOOR, self._low - bounded - slack)
+        # The textbook CUSUM change-point estimate: the drift began after the
+        # last time its sum stood at the floor.
+        if self._high == _SUM_FLOOR:
+            self._high_since_ts = estimate.ts
+        if self._low == _SUM_FLOOR:
+            self._low_since_ts = estimate.ts
 
     @staticmethod
     def _residual(estimate: ThermalEstimate) -> tuple[float, float]:
@@ -169,6 +178,14 @@ class DriftDetector:
         """
         self._high = _SUM_FLOOR
         self._low = _SUM_FLOOR
+        self._high_since_ts = None
+        self._low_since_ts = None
+
+    def _onset_ts(self) -> float | None:
+        """When the side that tripped last stood at zero, or None if unknown."""
+        if self._high >= self._low:
+            return self._high_since_ts
+        return self._low_since_ts
 
     def evaluate(self) -> Finding:
         """Judge the subject on the evidence accumulated so far.
@@ -210,5 +227,10 @@ class DriftDetector:
                 "residual_sigma_c": self._sigma_c,
                 "samples": float(self._samples),
                 "warmup_samples": float(self._config.warmup_samples),
+                **(
+                    {ONSET_KEY: self._onset_ts()}
+                    if judgment is Judgment.FAULTED and self._onset_ts() is not None
+                    else {}
+                ),
             },
         )

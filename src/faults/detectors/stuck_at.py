@@ -36,7 +36,7 @@ from collections import deque
 
 from src.common.clock import Clock
 from src.common.config import StuckAtDetectorConfig
-from src.common.schemas import DetectorId, SensorReading, Unit
+from src.common.schemas import ONSET_KEY, DetectorId, SensorReading, Unit
 from src.faults.detectors.base import Finding, Judgment
 
 #: Variance of a genuinely frozen signal is exactly zero, which maps to full
@@ -75,6 +75,9 @@ class StuckAtDetector:
         # its size is the only memory this detector ever uses (NFR-05).
         self._values: deque[float] = deque(maxlen=config.window_samples)
         self._arrivals_s: deque[float] = deque(maxlen=config.window_samples)
+        #: The same arrivals as wall time, so the onset can be compared with
+        #: other components' timestamps; spans still use monotonic time.
+        self._arrival_epochs: deque[float] = deque(maxlen=config.window_samples)
         self._consecutive_below = 0
 
     @property
@@ -101,6 +104,7 @@ class StuckAtDetector:
             )
         self._values.append(reading.value)
         self._arrivals_s.append(self._clock.monotonic())
+        self._arrival_epochs.append(self._clock.now())
 
     def evaluate(self) -> Finding:
         """Judge the subject as of the samples collected so far.
@@ -150,5 +154,12 @@ class StuckAtDetector:
                 "window_s": self._window_span_s(),
                 "window_samples": float(len(self._values)),
                 "consecutive_windows": float(self._consecutive_below),
+                # Every sample in a window found frozen is suspect, so the
+                # sensor was stuck since at least the oldest of them.
+                **(
+                    {ONSET_KEY: self._arrival_epochs[0]}
+                    if faulted and self._arrival_epochs
+                    else {}
+                ),
             },
         )

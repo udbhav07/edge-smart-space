@@ -57,6 +57,12 @@ SETPOINT_KEY = "setpoint_c"
 #: Who proposed a goal, carried in a goal verdict's ``proposed`` mapping.
 SOURCE_KEY = "source"
 COMMAND_KIND_KEY = "kind"
+#: Inside a sensor FaultEvent's evidence: epoch seconds from which the
+#: detector's own evidence says the readings were already wrong. Present only
+#: where a detector can say -- D2's frozen window, D4's change point -- so the
+#: estimator can predict from a reading taken before the fault rather than
+#: from the last one before it was confirmed (FR-27).
+ONSET_KEY = "onset_ts"
 
 # --- Enumerations ----------------------------------------------------------
 

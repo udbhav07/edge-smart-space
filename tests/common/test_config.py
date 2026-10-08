@@ -151,6 +151,18 @@ class TestCrossSectionConsistency:
             load_config(path)
 
 
+class TestReanchorHistory:
+    def test_a_history_inside_the_stuck_window_is_rejected(self, tmp_path):
+        """It would only ever hold frozen readings to restart from (FR-27)."""
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
+            "reanchor_history_samples: 180", "reanchor_history_samples: 60"
+        )
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_config(path)
+
+
 class TestLoadFailures:
     def test_a_missing_file_is_reported_clearly(self, tmp_path):
         with pytest.raises(ConfigError):

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from src.common.config import DriftDetectorConfig, load_config
-from src.common.schemas import AdaptationState, DetectorId, ThermalEstimate
+from src.common.schemas import ONSET_KEY, AdaptationState, DetectorId, ThermalEstimate
 from src.faults.detectors.base import Judgment
 from src.faults.detectors.drift import DriftDetector
 
@@ -326,3 +326,41 @@ class TestNonOverlappingHorizons:
 
         with pytest.raises(ValueError):
             DriftDetector("temp_01", _config(warmup_samples=5), accumulate_every=0)
+
+
+def _timed(residual_c: float, ts: float) -> ThermalEstimate:
+    return _estimate(residual_c).model_copy(update={"ts": ts})
+
+
+class TestOnset:
+    """FR-27: a drift finding names its change point, the last time the
+    cumulative sum stood at zero."""
+
+    def _drift_from(self, detector, quiet: int, drifting: int) -> float:
+        for index in range(quiet):
+            detector.observe(_timed(0.0, TS + index))
+        for index in range(drifting):
+            detector.observe(_timed(SIGMA_C * 2.0, TS + quiet + index))
+        return TS + quiet - 1
+
+    def test_an_upward_drift_dates_from_the_last_zero(self, detector):
+        last_zero = self._drift_from(detector, quiet=10, drifting=10)
+        finding = detector.evaluate()
+        assert finding.faulted
+        assert finding.evidence[ONSET_KEY] == last_zero
+
+    def test_a_downward_drift_dates_its_own_side(self, detector):
+        for index in range(10):
+            detector.observe(_timed(0.0, TS + index))
+        for index in range(10):
+            detector.observe(_timed(-SIGMA_C * 2.0, TS + 10 + index))
+        assert detector.evaluate().evidence[ONSET_KEY] == TS + 9
+
+    def test_a_clear_finding_dates_nothing(self, detector):
+        _feed(detector, residual_c=0.0, samples=5)
+        assert ONSET_KEY not in detector.evaluate().evidence
+
+    def test_a_reset_forgets_the_change_point(self, detector):
+        self._drift_from(detector, quiet=10, drifting=10)
+        detector.reset()
+        assert ONSET_KEY not in detector.evaluate().evidence

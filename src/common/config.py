@@ -132,6 +132,12 @@ class EstimatorConfig(_Section):
         description="Heat flow against the gradient, in C per step, an a2 "
         "rejection may imply and still count as edge noise, not divergence",
     )
+    reanchor_history_samples: int = Field(
+        default=180,
+        gt=0,
+        description="Trusted steps kept so the open-loop prediction can restart "
+        "from before a fault's reported onset (FR-27); must cover D2's window",
+    )
     drift_horizon_samples: int = Field(
         gt=0,
         description="Steps over which the horizon residual D4 uses is predicted",
@@ -808,6 +814,22 @@ class Config(_Section):
             raise ValueError(
                 f"controller.min_off_s ({self.controller.min_off_s}) must equal "
                 f"validator.min_off_s ({self.validator.min_off_s})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reanchor_history_reaches_before_a_stuck_window(self) -> Config:
+        """The estimator restarts a prediction from before D2's frozen window.
+
+        A history no longer than that window would only ever hold frozen
+        readings, and FR-27 would quietly restart from the fault again.
+        """
+        window = self.detectors.stuck_at.window_samples
+        if self.estimator.reanchor_history_samples <= window:
+            raise ValueError(
+                f"estimator.reanchor_history_samples "
+                f"({self.estimator.reanchor_history_samples}) must exceed "
+                f"detectors.stuck_at.window_samples ({window})"
             )
         return self
 
