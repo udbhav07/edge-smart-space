@@ -27,6 +27,7 @@ from sim.run_sim import (
     INDOOR_TEMPERATURE_ID,
     OCCUPANCY_ID,
     OUTDOOR_TEMPERATURE_ID,
+    POWER_ID,
     build_simulator,
 )
 
@@ -491,3 +492,64 @@ class TestAmbientFollowsTheLocalDay:
         assert launched_early.outdoor_temperature_c() == pytest.approx(
             build_simulator(config, late, board).outdoor_temperature_c()
         )
+
+
+class TestPowerMeter:
+    """R-02: the unit's draw follows what the room receives, not the command."""
+
+    def _power(self, transport) -> list[float]:
+        return [
+            SensorReading.model_validate_json(payload).value
+            for payload in transport.payloads_on(f"space/sensor/{POWER_ID}/state")
+        ]
+
+    def _cool(self, simulator, clock, blackboard, steps: int) -> None:
+        blackboard.dispatch(
+            topics.ACTUATOR_COMMAND.format(actuator_id="ac"),
+            Command(ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=24.0)
+            .model_dump_json().encode(),
+        )
+        for _ in range(steps):
+            simulator.step()
+            clock.advance(5.0)
+
+    def test_the_meter_is_published_as_watts(self, quiet_config):
+        simulator, transport, _, _ = _running(quiet_config)
+        simulator.step()
+        reading = SensorReading.model_validate_json(
+            transport.payloads_on(f"space/sensor/{POWER_ID}/state")[-1]
+        )
+        assert reading.unit is Unit.WATT
+
+    def test_a_running_unit_draws_its_rated_power(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        self._cool(simulator, clock, board, 20)
+        rated = quiet_config.sim.power_meter.rated_power_w
+        assert self._power(transport)[-1] == pytest.approx(rated, abs=50.0)
+
+    def test_a_dead_unit_draws_standby_while_told_to_cool(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        simulator._actuator.inject_failure(True)
+        self._cool(simulator, clock, board, 20)
+        assert self._power(transport)[-1] < 50.0
+
+    def test_an_idle_meter_never_reads_negative(self, quiet_config):
+        simulator, transport, clock, _ = _running(quiet_config)
+        for _ in range(200):
+            simulator.step()
+            clock.advance(5.0)
+        assert min(self._power(transport)) >= 0.0
+
+    def test_adding_the_meter_moves_no_other_instrument(self, quiet_config):
+        """Its own random stream: every seeded result already measured stands."""
+        with_meter, transport_a, clock_a, _ = _running(quiet_config)
+        adapters = tuple(s for s in quiet_config.sensors.adapters if s.sensor_id != POWER_ID)
+        without = quiet_config.model_copy(
+            update={"sensors": quiet_config.sensors.model_copy(update={"adapters": adapters})}
+        )
+        without_meter, transport_b, clock_b, _ = _running(without)
+        for _ in range(50):
+            with_meter.step(); clock_a.advance(5.0)
+            without_meter.step(); clock_b.advance(5.0)
+        topic = f"space/sensor/{INDOOR_TEMPERATURE_ID}/state"
+        assert transport_a.payloads_on(topic) == transport_b.payloads_on(topic)

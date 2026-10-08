@@ -1,11 +1,12 @@
 # ESP32 node: indoor temperature and humidity, outdoor temperature, motion,
-# the door reed switch, and the IR blaster for the air conditioner.
+# the door reed switch, the air conditioner's power draw, and the IR blaster.
 #
 # UNVERIFIED. No node has been flashed with this yet, and it is written to be
 # obviously unfinished rather than plausibly complete (R-03). Three things are
 # guesses until a board exists:
 #
-#   * the pins and the one-wire address below,
+#   * the pins and the one-wire address below, and the power meter's UART
+#     pins and Modbus address,
 #   * the topics, which are set explicitly to exactly what `devices:` in
 #     config/default.yaml subscribes to -- one board standing in for the
 #     room-node, outdoor-node and ac-node that config names,
@@ -40,7 +41,27 @@ mqtt:
   # though it had just been measured.
   discovery: false
 
+# The air conditioner's own supply is metered by a PZEM-004T v3 on UART2.
+uart:
+  tx_pin: GPIO17                  # PLACEHOLDER
+  rx_pin: GPIO16                  # PLACEHOLDER
+  baud_rate: 9600
+
+modbus:
+
 sensor:
+  # Not a control input. The IR path cannot acknowledge a command (R-02), and
+  # whether the compressor draws running current or standby is the one direct
+  # evidence that it landed; the bridge acknowledges on it.
+  - platform: pzemac
+    address: 1                    # PLACEHOLDER: the meter's factory default
+    power:
+      name: ac power
+      state_topic: room-node/sensor/ac_power/state
+      filters:
+        - throttle: 5s
+    update_interval: 5s
+
   - platform: dht
     pin: GPIO4                    # PLACEHOLDER
     model: DHT22

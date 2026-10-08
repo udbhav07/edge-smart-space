@@ -37,6 +37,7 @@ INDOOR = "temp_01"
 HUMIDITY = "hum_01"
 OUTDOOR = "outdoor_01"
 OCCUPANCY = "pir_01"
+POWER = "pwr_01"
 STUCK_VALUE = 27.0
 
 
@@ -160,6 +161,45 @@ class TestBankConstruction:
         assert [
             event for event in transport.faults() if event.subject == OCCUPANCY
         ] == []
+
+    def test_a_silent_humidity_sensor_does_not_degrade_control(
+        self, wired, clock, config
+    ):
+        """It once switched the loop onto prediction with a healthy temperature
+        sensor and ended, 1800 s later, in SAFE_HOLD."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock, "hum_01", 55.0, Unit.PERCENT_RH))
+        for _ in range(10):
+            _deliver(blackboard, _reading(clock, "temp_01", 25.0))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        dropped = [event for event in transport.faults() if event.subject == "hum_01"]
+        assert dropped and dropped[0].mode_impact is Mode.NORMAL
+        assert service.mode is not Mode.DEGRADED_SENSOR
+
+    def test_an_idle_meter_reading_standby_all_night_raises_nothing(
+        self, wired, clock, config
+    ):
+        """A resting unit draws a constant standby; D2 on the meter would
+        fault it every time the compressor stopped."""
+        service, transport, blackboard = wired
+        for _ in range(config.detectors.stuck_at.window_samples + 4):
+            _deliver(blackboard, _reading(clock, POWER, 4.0, Unit.WATT))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert [event for event in transport.faults() if event.subject == POWER] == []
+
+    def test_a_meter_reporting_negative_draw_is_out_of_range(self, wired, clock, config):
+        """A unit cannot generate power: a meter wired backwards (FR-22)."""
+        service, transport, blackboard = wired
+        for _ in range(config.detectors.out_of_range.debounce_samples + 1):
+            _deliver(blackboard, _reading(clock, POWER, -300.0, Unit.WATT))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert any(
+            event.subject == POWER and event.detector.value == "D3_OUT_OF_RANGE"
+            for event in transport.faults()
+        )
 
     def test_a_continuous_sensor_is_watched_by_all_three(self, wired, clock, config):
         """Each detector is reachable on temp_01: silence raises D1, a frozen

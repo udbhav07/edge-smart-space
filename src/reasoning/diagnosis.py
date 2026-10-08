@@ -62,8 +62,10 @@ DIAGNOSIS_PROMPT = (
     "doing about it). For a sensor fault the system is running on its room "
     "model instead of the sensor. For an actuator fault the air conditioner "
     "has been put on hold until someone checks it, so the room may warm; "
-    "never say the temperature will be kept or maintained. Do not invent "
-    "evidence."
+    "never say the temperature will be kept or maintained. If "
+    "mode_the_fault_caused is NORMAL, the fault is on an instrument the "
+    "temperature control does not depend on: name that instrument and say "
+    "control is unaffected. Do not invent evidence."
 )
 
 #: What a person is told when the model gives nothing usable (section 5.7.1).
@@ -202,6 +204,14 @@ class FaultDiagnoser:
         hypothesis, message = _GENERIC.get(
             event.detector, (Hypothesis.UNKNOWN, "A fault was detected; the system is handling it.")
         )
+        if event.mode_impact is Mode.NORMAL:
+            # The per-detector sentences are about the temperature sensor; an
+            # advisory fault is not, and must not be described as if it were.
+            message = (
+                f"The {event.subject} instrument appears faulty "
+                f"({event.detector.value}). Temperature control does not "
+                f"depend on it and is unaffected."
+            )
         return FaultDiagnosis(
             ts=self._clock.now(),
             fault_id=event.fault_id,

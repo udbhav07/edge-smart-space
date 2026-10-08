@@ -69,9 +69,10 @@ _DIRECT_SENSOR_TESTS = frozenset(
 #: detects divergence because it owns the evidence (section 5.2.3).
 _EXTERNAL_DETECTORS = frozenset({DetectorId.MODEL_DIVERGENCE})
 
-#: Units for which variance and range tests are meaningful. Everything else
-#: gets dropout detection only.
-_CONTINUOUS_UNITS = frozenset({Unit.CELSIUS, Unit.PERCENT_RH})
+#: Units for which a collapse of variance means a stuck sensor. Not power: an
+#: idle air conditioner's meter reads standby, constant by design, and D2
+#: would fault it every time the compressor rested.
+_VARIANCE_UNITS = frozenset({Unit.CELSIUS, Unit.PERCENT_RH})
 
 
 class SubjectDetectors:
@@ -554,20 +555,23 @@ def _bounds_for(config: Config, unit: Unit) -> Bounds | None:
         return out_of_range.temperature_c
     if unit is Unit.PERCENT_RH:
         return out_of_range.humidity_pct
+    if unit is Unit.WATT:
+        return out_of_range.power_w
     return None
 
 
 def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]:
     """Assemble the bank from the configured sensors.
 
-    Every sensor gets D1. Only continuous ones get D2 and D3, because variance
-    and range say nothing about a binary signal. Only the indoor sensor gets
+    Every sensor gets D1. D3 goes to every sensor with a range to leave, and
+    D2 only to temperature and humidity: variance says nothing about a binary
+    signal, nor about a meter that is constant whenever the unit rests. Only
+    the indoor sensor gets
     D4: the model predicts that one temperature, so it is the only subject
     there is a residual for (section 5.5).
     """
     bank: dict[str, SubjectDetectors] = {}
     for sensor in config.sensors.adapters:
-        continuous = sensor.unit in _CONTINUOUS_UNITS
         bounds = _bounds_for(config, sensor.unit)
         bank[sensor.sensor_id] = SubjectDetectors(
             dropout=DropoutDetector(
@@ -583,7 +587,7 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
                     config=config.detectors.stuck_at,
                     clock=clock,
                 )
-                if continuous
+                if sensor.unit in _VARIANCE_UNITS
                 else None
             ),
             out_of_range=(
@@ -593,7 +597,7 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
                     bounds=bounds,
                     debounce_samples=config.detectors.out_of_range.debounce_samples,
                 )
-                if continuous and bounds is not None
+                if bounds is not None
                 else None
             ),
             drift=(
@@ -618,7 +622,11 @@ def build_service(
         clock=clock,
         blackboard=blackboard,
         aggregator=FaultAggregator(
-            clock=clock, clear_confirm_s=config.mode.fault_clear_confirm_s
+            clock=clock,
+            clear_confirm_s=config.mode.fault_clear_confirm_s,
+            controlling_subjects=frozenset(
+                {config.estimator.indoor_sensor_id, topics.AIR_CONDITIONER_ID}
+            ),
         ),
         detectors=build_detectors(config, clock),
         actuator=ActuatorResponseDetector(

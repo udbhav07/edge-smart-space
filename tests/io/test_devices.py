@@ -212,3 +212,47 @@ class TestInjection:
         self._inject(board, clock, "ac", InjectedFault.NONE)
         TestTheUnit()._command(board, clock, CommandKind.COOL, 23.0)
         assert transport.on(config.devices.ac_mode_command_topic)[-1] == b"cool"
+
+
+class TestAcknowledgementFromTheMeter:
+    """R-02: with no mode readback, the unit's draw says whether it obeyed."""
+
+    @pytest.fixture(name="metered")
+    def _metered(self):
+        config = load_config(Path("config/default.yaml"))
+        clock = SimClock()
+        transport = Transport()
+        board = Blackboard(config.mqtt, transport)
+        bridge = DeviceBridge(config, clock, board)
+        bridge.subscribe()
+        board.on_connected()
+        return bridge, transport, board, clock, config
+
+    def _ack(self, metered, kind, draw_w, wait_s=None):
+        bridge, transport, board, clock, config = metered
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=kind,
+            setpoint_c=23.0 if kind is CommandKind.COOL else None,
+        )
+        board.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        clock.advance(config.devices.ac_ack_grace_s if wait_s is None else wait_s)
+        _device(board, config, "pwr_01", f"{draw_w:.1f}")
+        bridge.tick()
+        return ActuatorState.model_validate_json(transport.on("space/actuator/ac/state")[-1]).ack
+
+    def test_a_cool_drawing_running_power_is_acknowledged(self, metered):
+        assert self._ack(metered, CommandKind.COOL, 1150.0) is AckStatus.ACKNOWLEDGED
+
+    def test_a_cool_drawing_standby_has_failed(self, metered):
+        """The IR command was lost, or the unit is dead: either way it did not obey."""
+        assert self._ack(metered, CommandKind.COOL, 4.0) is AckStatus.FAILED
+
+    def test_an_off_drawing_standby_is_acknowledged(self, metered):
+        assert self._ack(metered, CommandKind.OFF, 4.0) is AckStatus.ACKNOWLEDGED
+
+    def test_an_off_still_drawing_running_power_has_failed(self, metered):
+        assert self._ack(metered, CommandKind.OFF, 1150.0) is AckStatus.FAILED
+
+    def test_inside_the_grace_period_it_is_unknown(self, metered):
+        """A compressor takes time to start; judging sooner would fail it."""
+        assert self._ack(metered, CommandKind.COOL, 4.0, wait_s=5.0) is AckStatus.UNKNOWN

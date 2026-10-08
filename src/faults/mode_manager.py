@@ -132,6 +132,12 @@ class ModeManager:
         self, active_faults: Sequence[FaultEvent], sensors_reporting: bool
     ) -> tuple[Mode, str]:
         """Which mode the current evidence calls for, and why in one line."""
+        advisory = [event for event in active_faults if event.mode_impact is Mode.NORMAL]
+        active_faults = [
+            event for event in active_faults if event.mode_impact is not Mode.NORMAL
+        ]
+        # Distinct broken things that bear on control. An advisory fault -- a
+        # humidity sensor, the power meter -- counts toward nothing.
         subjects = {event.subject for event in active_faults}
 
         if self._reset_pending:
@@ -149,6 +155,12 @@ class ModeManager:
             return Mode.INIT, "waiting for the first sensor reading"
 
         if not active_faults:
+            if advisory:
+                return Mode.NORMAL, (
+                    f"{len(advisory)} advisory fault(s) on "
+                    f"{', '.join(sorted({event.subject for event in advisory}))}; "
+                    f"control unaffected"
+                )
             return Mode.NORMAL, "no active faults"
 
         dominant = active_faults[0]
@@ -207,8 +219,11 @@ class ModeManager:
             self._track_substitution(target)
             self._mode = target
             self._since_ts = now
-            self._reason = reason
 
+        # The reason follows the fault set, not only the mode: a fault added
+        # within a mode -- an advisory one in NORMAL -- otherwise left "no
+        # active faults" published beside a list of them.
+        self._reason = reason
         self._fault_ids = fault_ids
         return ModeState(
             ts=now,

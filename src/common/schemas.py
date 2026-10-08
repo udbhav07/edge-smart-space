@@ -73,6 +73,8 @@ class Unit(str, Enum):
     CELSIUS = "C"
     PERCENT_RH = "%RH"
     BOOLEAN = "bool"
+    #: Electrical power, from the meter on the air conditioner's supply.
+    WATT = "W"
 
 
 class Quality(str, Enum):

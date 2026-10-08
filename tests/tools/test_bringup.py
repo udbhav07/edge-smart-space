@@ -134,6 +134,34 @@ class TestActuation:
     def test_a_room_with_no_meter_says_so_rather_than_guessing(self, config):
         """An IR path cannot acknowledge (R-02); with no power meter wired
         there is nothing to judge the command by, and the check says so."""
-        room = Room(config, with_control=True)
+        sensors = config.sensors.model_copy(
+            update={
+                "adapters": tuple(
+                    sensor for sensor in config.sensors.adapters if sensor.sensor_id != "pwr_01"
+                )
+            }
+        )
+        room = Room(config.model_copy(update={"sensors": sensors}), with_control=True)
         room.monitor.begin_actuation()
         assert "no power meter" in room.monitor.actuation().problem
+
+
+class TestActuationAgainstTheMeter:
+    """With the meter on the unit's supply, the check judges the draw (R-02)."""
+
+    def test_a_working_unit_passes(self, config):
+        room = Room(config, with_control=True)
+        room.run_for(10.0)
+        room.monitor.begin_actuation()
+        room.run_for(config.bringup.actuation_window_s)
+        verdict = room.monitor.actuation()
+        assert verdict.ok, verdict.problem
+        assert verdict.peak_w - verdict.baseline_w >= config.bringup.min_power_rise_w
+
+    def test_a_dead_unit_fails(self, config):
+        room = Room(config, with_control=True)
+        room.run_for(10.0)
+        room.simulator._actuator.inject_failure(True)
+        room.monitor.begin_actuation()
+        room.run_for(config.bringup.actuation_window_s)
+        assert not room.monitor.actuation().ok

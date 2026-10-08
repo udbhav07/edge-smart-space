@@ -143,3 +143,13 @@ def test_every_diagnosis_is_audited():
     record = room.published("space/audit/reasoning", ReasoningRecord)[-1]
     assert record.caller.value == "diagnosis"
     assert record.latency_s == 2.0
+
+
+def test_an_advisory_fault_is_not_described_as_the_temperature_sensor():
+    """The per-detector sentences are about the temperature sensor."""
+    room = Room(ScriptedChat(UNAVAILABLE))
+    diagnosis = room.fault(subject="hum_01", fault_id="f_hum01_dropout_1",
+                           detector="D1_DROPOUT", mode_impact="NORMAL")[0]
+    assert "hum_01" in diagnosis.user_message
+    assert "unaffected" in diagnosis.user_message
+    assert "temperature sensor" not in diagnosis.user_message

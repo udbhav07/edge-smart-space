@@ -306,6 +306,10 @@ class OutOfRangeDetectorConfig(_Section):
 
     temperature_c: Bounds
     humidity_pct: Bounds
+    power_w: Bounds = Field(
+        description="An air conditioner cannot generate power, nor draw more "
+        "than its circuit; outside is a meter broken or wired backwards"
+    )
     debounce_samples: int = Field(gt=0, description="Consecutive samples before raising")
 
 
@@ -585,6 +589,22 @@ class DevicesConfig(_Section):
     ac_mode_state_topic: str = Field(
         default="", description="Readback of the unit's mode, if the path has one (R-02)"
     )
+    ac_power_sensor_id: str = Field(
+        default="",
+        description="The meter on the unit's supply, if any. Its draw is the "
+        "acknowledgement an IR path cannot give (R-02)",
+    )
+    ac_running_power_w: float = Field(
+        default=200.0,
+        gt=0.0,
+        description="Draw above which the compressor counts as running, in W",
+    )
+    ac_ack_grace_s: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="How long after a command the draw must agree with it, in "
+        "s; longer than the unit's own start-up delay",
+    )
 
 
 class SiteConfig(_Section):
@@ -726,6 +746,26 @@ class RoomConfig(_Section):
     )
 
 
+class PowerMeterConfig(_Section):
+    """The simulated meter on the air conditioner's supply (R-02).
+
+    Draw follows the drive the room actually receives, so a dead unit reads
+    standby while still being told to cool: evidence about the actuator, not
+    an echo of the command.
+    """
+
+    rated_power_w: float = Field(gt=0.0, description="Draw with the compressor running")
+    standby_power_w: float = Field(ge=0.0, description="Draw with it stopped")
+    sigma_w: float = Field(ge=0.0, description="Meter noise, one standard deviation")
+    resolution_w: float = Field(ge=0.0, description="Reporting resolution")
+    dropout_probability: float = Field(ge=0.0, le=1.0)
+    seed_offset: int = Field(
+        ge=1,
+        description="Its own random stream, so adding the meter moves no other "
+        "instrument's noise and no seeded result already measured",
+    )
+
+
 class SimConfig(_Section):
     room: RoomConfig
     sensor_noise: SensorNoiseConfig
@@ -733,6 +773,7 @@ class SimConfig(_Section):
     outdoor_mean_c: float
     outdoor_amplitude_c: float = Field(ge=0.0)
     outdoor_period_s: float = Field(gt=0.0)
+    power_meter: PowerMeterConfig
     outdoor_peak_hour: float = Field(
         default=15.0,
         ge=0.0,

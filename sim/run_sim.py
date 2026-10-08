@@ -24,7 +24,7 @@ from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import Bounds, Config, load_config
+from src.common.config import Bounds, Config, SensorNoiseConfig, load_config
 from src.common.injection import (
     ACTUATOR_SUPPORTED_FAULTS,
     FaultInjection,
@@ -56,6 +56,7 @@ INDOOR_TEMPERATURE_ID = "temp_01"
 INDOOR_HUMIDITY_ID = "hum_01"
 OUTDOOR_TEMPERATURE_ID = "outdoor_01"
 OCCUPANCY_ID = "pir_01"
+POWER_ID = "pwr_01"
 
 #: The simulated air conditioner is not a real actuator, but it is the stand
 #: -in for the one that is, so it publishes under the real id and is *not*
@@ -99,6 +100,7 @@ class RoomSimulator:
         outdoor: SimulatedSensor,
         occupancy: BinarySensor,
         presence: OccupancyTracker,
+        power: SimulatedSensor | None = None,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -111,6 +113,7 @@ class RoomSimulator:
         self._outdoor = outdoor
         self._occupancy = occupancy
         self._presence = presence
+        self._power = power
         self._occupied = True
         self._last_outdoor_publish_ts: float | None = None
         self._last_ack = AckStatus.UNKNOWN
@@ -224,6 +227,7 @@ class RoomSimulator:
                 self._humidity,
                 self._outdoor,
                 self._occupancy,
+                *((self._power,) if self._power is not None else ()),
             )
         }
 
@@ -259,6 +263,7 @@ class RoomSimulator:
         self._publish_humidity()
         self._publish_outdoor(outdoor_c)
         self._publish_occupancy()
+        self._publish_power()
         self._publish_actuator_state()
 
     def _publish_indoor(self) -> None:
@@ -301,6 +306,30 @@ class RoomSimulator:
         self._publish_reading(
             self._occupancy.sample(self._presence.occupied), OCCUPANCY_ID
         )
+
+    def electrical_power_w(self) -> float:
+        """What the unit is drawing, as a meter on its supply sees it.
+
+        Follows the drive the room actually receives, so a dead unit draws
+        standby power while still being told to cool (R-02).
+        """
+        meter = self._config.sim.power_meter
+        return meter.standby_power_w + self._actuator.cooling_fraction * (
+            meter.rated_power_w - meter.standby_power_w
+        )
+
+    def _publish_power(self) -> None:
+        """Electrical power, from the same kind of meter hardware will carry."""
+        if self._power is None:
+            return
+        reading = self._power.sample(self.electrical_power_w())
+        if reading is not None and self._power.injected_fault is InjectedFault.NONE:
+            # A meter reports a magnitude and never a negative draw. Noise
+            # around a few watts of standby would, and D3 would then call a
+            # healthy meter wired backwards. An injected fault is left as
+            # injected, so an examiner can still make it report the impossible.
+            reading = reading.model_copy(update={"value": max(0.0, reading.value)})
+        self._publish_reading(reading, POWER_ID)
 
     def _motion_this_step(self) -> bool:
         """Whether an occupant moved enough to trip the PIR this period."""
@@ -378,7 +407,32 @@ def build_simulator(
         presence=OccupancyTracker(
             hold_off_s=config.sensors.vacancy_hold_off_s, clock=clock
         ),
+        power=_power_meter(config, clock),
     )
+
+
+def _power_meter(config: Config, clock: Clock) -> SimulatedSensor | None:
+    """The meter on the unit's supply, if one is configured.
+
+    It draws from its own random stream: sharing the plant's would shift
+    every other instrument's noise by one draw per step, and every seeded
+    result already measured would move for a reason unrelated to it. The
+    noise model is unit-agnostic; its fields are named for the temperature
+    sensors it was written for, so watts are mapped onto them here.
+    """
+    limits = _limits_for(config, POWER_ID)
+    if limits is None:
+        return None
+    meter = config.sim.power_meter
+    noise = SensorNoiseConfig(
+        sigma_c=meter.sigma_w,
+        quantisation_c=meter.resolution_w,
+        jitter_s=config.sim.sensor_noise.jitter_s,
+        dropout_probability=meter.dropout_probability,
+        bias_c=0.0,
+    )
+    rng = random.Random(config.sim.random_seed + meter.seed_offset)
+    return SimulatedSensor(POWER_ID, Unit.WATT, noise, rng, clock, limits=limits)
 
 
 def main(argv: list[str] | None = None) -> int:
