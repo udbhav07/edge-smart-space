@@ -185,13 +185,24 @@ class CommandValidator:
         """Admit, downgrade, or block a command.
 
         Rules apply in order V-5, V-3, V-4: most restrictive first, so a mode
-        that forbids actuation is never overridden by a timing rule.
+        that forbids actuation is never overridden by a timing rule. A stop is
+        the exception V-5 makes: always admitted, never throttled.
         """
         now = self._clock.now()
 
-        if mode in NON_ACTUATING_MODES and command.kind in _STATE_CHANGING_COMMANDS:
+        if mode in NON_ACTUATING_MODES and command.kind is CommandKind.COOL:
             return self._verdict(
                 now, command, _BLOCKED_COMMAND, Verdict.BLOCKED, ReasonCode.MODE_BLOCK
+            )
+
+        if mode in NON_ACTUATING_MODES and command.kind is CommandKind.OFF:
+            # V-5 forbids driving the plant, and stopping it is not driving
+            # it: an OFF cannot breach dwell and its worst case is a room
+            # drifting toward ambient. Neither throttled nor refused, because
+            # a suppressed stop would leave the unit running unsupervised.
+            self._record_admitted(command.kind, now)
+            return self._verdict(
+                now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
             )
 
         if command.kind not in _STATE_CHANGING_COMMANDS:
