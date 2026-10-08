@@ -125,7 +125,7 @@ class SupervisorAgent:
             {
                 "role": "system",
                 "content": SUPERVISOR_PROMPT.format(
-                    now=local_now(self._clock),
+                    now=local_now(self._clock, self._state.utc_offset_h),
                     vacant=self._config.vacant_setpoint_c,
                     occupied=self._config.occupied_setpoint_c,
                 ),

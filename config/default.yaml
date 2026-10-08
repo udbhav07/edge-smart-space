@@ -282,6 +282,13 @@ devices:
   ac_target_command_topic: ac-node/climate/air_conditioner/target_temperature/command
   ac_mode_state_topic: ""   # IR has no readback (R-02); set it if the path has one
 
+# Local time is epoch plus this fixed offset, never the machine's zone, so a
+# simulated day replays the same from its seed on any laptop, and 18:00 means
+# the same thing to the tariff, to the model and to the calendar however the
+# Orin was provisioned.
+site:
+  utc_offset_h: 5.5             # Hyderabad; the room does not move
+
 # FR-16. Peak pricing, as a local-time timetable. During peak the setpoint in
 # force rises by the offset -- never past the validator's upper bound.
 tariff:

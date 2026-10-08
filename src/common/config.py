@@ -581,6 +581,22 @@ class DevicesConfig(_Section):
     )
 
 
+class SiteConfig(_Section):
+    """Where the room is, as far as time is concerned.
+
+    One offset, read by everything that turns an epoch into a wall time: the
+    tariff, the date a model is told, and the times the supervisor reads. The
+    machine's own zone is never consulted (``src/common/localtime.py``).
+    """
+
+    utc_offset_h: float = Field(
+        default=0.0,
+        ge=-12.0,
+        le=14.0,
+        description="Local time minus UTC, in hours. Fixed: a room does not move",
+    )
+
+
 class TariffConfig(_Section):
     """Peak-tariff schedule and the comfort shift it asks for (FR-16)."""
 
@@ -766,6 +782,7 @@ class Config(_Section):
     assistance: AssistanceConfig
     goals: GoalsConfig
     tariff: TariffConfig
+    site: SiteConfig = SiteConfig()
     devices: DevicesConfig
     supervisor: SupervisorConfig
     sim: SimConfig

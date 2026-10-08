@@ -1,8 +1,7 @@
 """Unit tests for the tariff schedule (FR-16).
 
-Timestamps are built from local wall-clock times, because the schedule is
-defined in local hours; a fixed epoch would pass in one time zone and fail in
-another.
+Timestamps are built from local wall-clock times at the site offset, because
+the schedule is defined in local hours -- the site's, never the machine's.
 """
 
 from datetime import datetime
@@ -10,17 +9,22 @@ from datetime import datetime
 import pytest
 
 from src.common.config import TariffConfig
+from src.common.localtime import epoch_of
 from src.common.schemas import TariffBand
 from src.common.tariff import TariffSchedule
 
 
+SITE_OFFSET_H = 5.5
+PEAK = TariffConfig(peak_start_hour=18, peak_end_hour=22, peak_offset_c=1.0)
+
+
 def _at(hour: int, minute: int = 0, day: int = 1) -> float:
-    return datetime(2026, 10, day, hour, minute).timestamp()
+    return epoch_of(datetime(2026, 10, day, hour, minute), SITE_OFFSET_H)
 
 
 @pytest.fixture(name="schedule")
 def _schedule() -> TariffSchedule:
-    return TariffSchedule(TariffConfig(peak_start_hour=18, peak_end_hour=22, peak_offset_c=1.0))
+    return TariffSchedule(PEAK, SITE_OFFSET_H)
 
 
 class TestBands:
@@ -57,3 +61,11 @@ class TestConfiguration:
     def test_a_peak_ending_before_it_starts_is_refused(self):
         with pytest.raises(ValueError):
             TariffConfig(peak_start_hour=20, peak_end_hour=18, peak_offset_c=1.0)
+
+
+class TestSiteTime:
+    def test_the_band_follows_the_site_offset_not_the_machine(self):
+        """19:00 at the site is 13:30 UTC; a schedule read at UTC calls it normal."""
+        ts = _at(19)
+        assert TariffSchedule(PEAK, SITE_OFFSET_H).band_at(ts) is TariffBand.PEAK
+        assert TariffSchedule(PEAK, 0.0).band_at(ts) is TariffBand.NORMAL

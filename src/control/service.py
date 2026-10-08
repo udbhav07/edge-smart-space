@@ -318,5 +318,5 @@ def build_service(
         ),
         command_validator=CommandValidator(config=config.validator, clock=clock),
         goal_manager=GoalManager(config.goals, clock),
-        tariff=TariffSchedule(config.tariff),
+        tariff=TariffSchedule(config.tariff, config.site.utc_offset_h),
     )

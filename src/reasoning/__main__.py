@@ -50,6 +50,7 @@ def build_assistant(
         blackboard,
         chat,
         safe_range_c=config.validator.setpoint_bounds_c,
+        utc_offset_h=config.site.utc_offset_h,
     )
 
 

@@ -15,6 +15,7 @@ from src.assistance.__main__ import build_service as build_executor
 from src.common import topics
 from src.common.clock import SimClock
 from src.common.config import load_config
+from src.common.localtime import epoch_of
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     AssistantReply,
@@ -32,7 +33,9 @@ from src.reasoning.__main__ import build_assistant
 from tests.reasoning.stubs import UNAVAILABLE, ScriptedChat, call, calling, saying
 
 #: A Saturday afternoon, in local time, so weekday resolution is deterministic.
-SATURDAY_AFTERNOON = datetime(2026, 9, 26, 15, 0).timestamp()
+SATURDAY_AFTERNOON = epoch_of(
+    datetime(2026, 9, 26, 15, 0), load_config(Path("config/default.yaml")).site.utc_offset_h
+)
 
 
 @pytest.fixture(name="config")

@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import AssistanceConfig, Bounds
+from src.common.localtime import local_time
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     SETPOINT_KEY,
@@ -111,19 +112,19 @@ _NO_RESULT = "The request got no answer in time, so nothing is confirmed."
 _DAYS_LISTED = 8
 
 
-def local_now(clock: Clock) -> str:
-    """The present, as the model is told it: weekday, date and time."""
-    moment = datetime.fromtimestamp(clock.now())
+def local_now(clock: Clock, utc_offset_h: float) -> str:
+    """The present at the site, as the model is told it: weekday, date and time."""
+    moment = local_time(clock.now(), utc_offset_h)
     return f"{moment:%A} {moment.day} {moment:%B %Y}, {moment:%H:%M}"
 
 
-def coming_days(clock: Clock) -> str:
+def coming_days(clock: Clock, utc_offset_h: float) -> str:
     """A lookup table of weekday to date, for the model to copy from.
 
     A 7B model asked for "Thursday" from a Saturday answered Sunday. Working
     out a weekday is arithmetic it is bad at; reading one off a list is not.
     """
-    today = datetime.fromtimestamp(clock.now()).date()
+    today = local_time(clock.now(), utc_offset_h).date()
     lines = []
     for offset in range(_DAYS_LISTED):
         day = today + timedelta(days=offset)
@@ -142,8 +143,10 @@ class Assistant:
         blackboard: Blackboard,
         chat: ChatClient,
         safe_range_c: Bounds,
+        utc_offset_h: float,
     ) -> None:
         self._config = config
+        self._utc_offset_h = utc_offset_h
         self._safe_range_c = safe_range_c
         self._clock = clock
         self._blackboard = blackboard
@@ -249,11 +252,11 @@ class Assistant:
 
     def _serve(self, hint: PreferenceHint) -> AssistantReply:
         utterance = hint.transcript or hint.rationale
-        now = local_now(self._clock)
+        now = local_now(self._clock, self._utc_offset_h)
         messages: list[dict[str, object]] = [
             {
                 "role": "system",
-                "content": ASSISTANT_PROMPT.format(now=now, days=coming_days(self._clock)),
+                "content": ASSISTANT_PROMPT.format(now=now, days=coming_days(self._clock, self._utc_offset_h)),
             },
             {
                 "role": "user",
@@ -316,7 +319,7 @@ class Assistant:
         )
 
     def _today(self):
-        return datetime.fromtimestamp(self._clock.now()).date()
+        return local_time(self._clock.now(), self._utc_offset_h).date()
 
     def _ask_to_confirm(self, result: ToolResult) -> str:
         """The question put before a booking, written from its own arguments.

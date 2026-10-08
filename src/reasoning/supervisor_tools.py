@@ -17,11 +17,11 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from datetime import datetime
 
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import Config
+from src.common.localtime import local_time
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     Coefficients,
@@ -143,6 +143,11 @@ class SupervisorState:
         blackboard.subscribe(topics.FAULT, FaultEvent, self._on_fault)
 
     @property
+    def utc_offset_h(self) -> float:
+        """The site's offset, so every time the supervisor reads is local to the room."""
+        return self._config.site.utc_offset_h
+
+    @property
     def thermal_known(self) -> bool:
         return self._estimate is not None
 
@@ -242,7 +247,7 @@ class SupervisorState:
         setback = not occupied and vacancy_s >= self._config.supervisor.setback_after_s
         return {
             "occupied": occupied,
-            "last_transition": _local(self._occupancy_changed_ts),
+            "last_transition": self._local(self._occupancy_changed_ts),
             "vacancy_duration_s": vacancy_s,
             "setback_applies": setback,
         }
@@ -252,7 +257,7 @@ class SupervisorState:
             return {"band": "unknown", "next_transition": _UNKNOWN}
         return {
             "band": self._tariff.band.value,
-            "next_transition": _local(self._tariff.next_transition_ts),
+            "next_transition": self._local(self._tariff.next_transition_ts),
         }
 
     def _active_faults(self) -> dict[str, object]:
@@ -263,12 +268,17 @@ class SupervisorState:
                     "fault_id": event.fault_id,
                     "class": event.fault_class.value,
                     "subject": event.subject,
-                    "since": _local(event.detected_ts),
+                    "since": self._local(event.detected_ts),
                     "mode_impact": event.mode_impact.value,
                 }
                 for event in self._faults.values()
             ],
         }
+
+    def _local(self, ts: float | None) -> str | None:
+        if ts is None:
+            return None
+        return local_time(ts, self.utc_offset_h).isoformat(timespec="minutes")
 
     # --- the proposal -------------------------------------------------
 
@@ -306,8 +316,3 @@ class SupervisorState:
 def _rounded(value: float | None) -> float | None:
     return None if value is None else round(value, 2)
 
-
-def _local(ts: float | None) -> str | None:
-    if ts is None:
-        return None
-    return datetime.fromtimestamp(ts).isoformat(timespec="minutes")

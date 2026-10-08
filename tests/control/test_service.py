@@ -393,13 +393,17 @@ class TestSpokenPreferences:
 class TestPeakTariff:
     """FR-16: during peak the loop tracks a shifted setpoint, within bounds."""
 
-    def _at_hour(self, hour: int) -> SimClock:
+    def _at_hour(self, config, hour: int) -> SimClock:
         from datetime import datetime
 
-        return SimClock(start_epoch_s=datetime(2026, 10, 1, hour, 0).timestamp())
+        from src.common.localtime import epoch_of
+
+        return SimClock(
+            start_epoch_s=epoch_of(datetime(2026, 10, 1, hour, 0), config.site.utc_offset_h)
+        )
 
     def _wired_at(self, config, hour: int):
-        clock = self._at_hour(hour)
+        clock = self._at_hour(config, hour)
         transport = FakeTransport()
         blackboard = Blackboard(config.mqtt, transport)
         service = build_service(config, clock, blackboard)
