@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.11 |
+| Version | 1.12 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.12 | **FR-52 built: speaker profiles, and what the room remembers about each person** (§5.8.3). The speech pipeline judges whose voice an utterance was, from the buffer it already holds and before dropping it, and the hint carries a `profile_id`; only feature statistics are stored, never audio. Long-term memory is one Markdown file per person, short-term context one expiring JSON file per person; facts are written only through two new `write` tools, `remember` and `forget`, whose `profile_id` is supplied by the system and never shown to the model. Each person's context is published retained on `space/context/profile/{profile_id}`. Recognition personalises and permits nothing, and the first reply of a conversation says so. `tools.enroll` and `tools.profiles` enrol voices and manage what is kept. |
 | 1.11 | Weeks 6–7 in software, and defects found by running the experiments rather than the tests. **Experiments made meaningful:** the simulated unit could not hold its own room (a healthy 24 h run was out of band 20 % of the day), so it is resized to 3500 W, a 1-ton split (§8.5); the ambient cycle follows the site's day rather than the launch time; local time is `site.utc_offset_h`, never the machine's zone, so a seed replays identically on any machine; and the harness scores both systems against the setpoint each was actually tracking, peak tariff included, with the baseline given the same schedule (§8.2). E5's criterion 4 is now met (§8.5). **Safety:** SAFE_HOLD stops the compressor instead of freezing it running, and V-5 always admits a stop (§5.3, §5.4); a re-asserted state is not a V-4 change. **FR-27:** a degraded prediction restarts from the last reading before the fault's reported *onset* and rolls back what the frozen window taught the estimator (§5.2.3); D2 and D4 publish that onset (§5.5). **Advisory faults:** a sensor fault on an instrument the loop does not control on — humidity, the power meter — is published but no longer degrades the mode; a dropped humidity sensor had driven a healthy system to SAFE_HOLD (§5.6). **Week 6–7 software:** the air conditioner's power meter (`pwr_01`) and an acknowledgement from its draw (R-02); non-finite device values are absence, not readings; `tools.calibrate` re-derives D1, D2 and D4 from a recorded healthy run (R-04, §9.4) into a configuration layer (`extends:`); the node reads `site.yaml` over `calibration.yaml` over the reference. The coil no longer dries a room below its dew point, which had faulted a healthy humidity sensor. |
 | 1.10 | Weeks 5 and 6, and the gaps of Weeks 1–6 closed. **Week 6:** the Environmental Supervisor (§5.7.2; FR-40, FR-41), the assistant that acts on what the speech pipeline heard (FR-42), the goal path from a spoken preference to a gated setpoint — pursued step by step when V-2 only part-grants it, and outranking the supervisor for `goals.preference_hold_s` with a new `PREFERENCE_HOLD` verdict (§5.4) — the assistance executor with a local calendar and a mock travel desk (§5.7.6; FR-54, FR-55, FR-58, FR-70 to FR-75), and Fault Diagnosis (§6.3; FR-25, FR-43). Every reasoning call is audited (FR-46, FR-63) on `space/audit/reasoning`, and replies go to a new `space/context/reply`. The day an occupant names is resolved from their words, not by the model, and a tool call on the wrong day is corrected (FR-44). **FR-16:** a peak-tariff schedule and a new `space/tariff/state`. **FR-23:** D4 now runs on a horizon residual accumulated once per non-overlapping horizon (§5.5), which exposed and forced a fix of the errors-in-variables bias in §5.2.1 — the ambient gap is measured from `T[k−1]` — with a2's edge crossings weighed by the heat flow they imply before they count toward divergence (§5.2.3); D5 no longer blames the unit for a reading that rose faster than a dead unit allows. A stalled estimate now counts as divergence. **Week 5 software:** `devices.source` selects the simulator or an ESPHome bridge (`python -m src.io`), `deploy/systemd` holds one unit per service, and `start.py` restarts a service that exits (NFR-08). The actuator fault is injectable (`tools.inject ac dead`; FR-31). **FR-62:** `tools.record` and `sim/replay.py`. **E3** and **E6** exist and pass (§8.3). |
 | 1.9 | Defects found by running the whole system live against a broker and a served model. **FR-27 was not what it claimed:** the prediction substituted in `DEGRADED_SENSOR` was one step ahead of the previous *reading*, so it restated the fault — a stuck value, something derived from 999 °C, or a value frozen through a dropout. The estimator now steps the model forward on its own output from the last trusted reading, once per sensor period (§5.2.3). Readings a sensor flags `suspect` are no longer fitted, and the simulated sensors now flag them as the real adapter does. §5.5 gains three more cases of one broken thing being blamed on another: D5 skips suspect readings, is suspended on every tick rather than on reading arrival, and a D5 fault raised within one window of D1–D3 confirming the indoor sensor is withdrawn; D4 is suspended while the actuator is faulted. §5.6: `DEGRADED_ACTUATOR` is released once no actuator fault holds it. §7.1's divergence response is now implemented — `MODEL_DIVERGENCE` reached nothing that decides the mode, and the coefficients were never reset — and a restarted detector bank withdraws faults retained by its predecessor. §8.4's E1 figures were one seed's; they are restated over nine, and `a3` misses its tolerance. Two more found in the final live run: `P0` falls from 100 to 0.01, because near-collinear regressors at startup let the first samples throw the estimate anywhere in the box (live, `a2` = 0.997 within 35 s); and D5 no longer faults a working unit at capacity, which every healthy two-hour run had done. The simulator's actuator state now reports the last state-changing command rather than echoing `MAINTAIN`. |
@@ -1272,6 +1273,26 @@ a number edited upward to make a sentence true.
 Speech is the lowest-priority feature set (R-05) and FR-50 to FR-55 are
 cuttable, so this does not affect success criteria 1 to 5.
 
+#### 5.8.3 Speaker profiles and memory (v1.12)
+
+FR-52 is built, in the shape the requirement allows: recognising a voice selects whose profile the assistant answers with and **grants nothing**. No tool, setpoint, confirmation or mode is gated on it, a booking from a recognised voice waits for confirmation like any other, and the first reply of each conversation says that the voice was recognised and that this only personalises. That is what makes a modest recogniser acceptable: its worst error is a reply addressed to the wrong name.
+
+**Recognition** (`src/speech/speaker_profile.py`, Layer 1). The pipeline judges the utterance from the buffer it already holds for transcription, in memory, before the buffer is dropped (FR-51), and the hint carries a `profile_id` — empty for a guest. The features are numpy only: liftered cepstral mean and spread over the voiced frames, and the median and range of pitch, behind a `SpeakerEmbedder` seam a neural embedding can take over. Cosine similarity was measured first and could not separate voices (same-speaker minimum 0.906, different-speaker maximum 0.991), so a voice is matched by its distance in the enrolled voice's own spread, `exp(−mean(z²)/2)`, after at least three enrolment utterances. On synthetic voices (`tests/speech/voices.py`) at the shipped threshold of 0.15: 79 of 90 household utterances recognised, **none attributed to the wrong person**, 3 of 60 strangers mistaken. A guest is the safe error and the threshold is set for it; real voices are a bring-up measurement, and `tools.enroll` reports how close each new voice is to those already enrolled. Only feature statistics are stored, never audio.
+
+**Memory** (`src/assistance/`, Layer 1, beside the calendar — it is system-owned data the reasoning layer may write):
+
+| Kind | Where | Format | Kept |
+|---|---|---|---|
+| Long-term | `profiles.directory/<id>.md` | Markdown: name, preferences, facts | until forgotten; ≤ 50 facts, ≤ 8 people |
+| Short-term | `profiles.context_directory/<id>.json` | JSON: recent exchanges | 30 min, ≤ 10 exchanges |
+| Voiceprint | `speech.voiceprints_path` | JSON: feature statistics | until the person is deleted |
+
+Long-term memory is Markdown because memory about a person should be legible to that person: they can read it, correct it and delete it with no tool. It is parsed tolerantly — a section added by hand survives the next write — and a fact cannot carry Markdown that rewrites its own file. A full memory refuses a new fact rather than silently dropping an old one. A guest has short-term context and never long-term memory.
+
+**Writing it** goes through the tool surface (§5.7.6): `remember` and `forget`, effect `write`, so they run on the reasoning layer's authority and are removable afterwards. Their `profile_id` parameter is `supplied_by_system`: it is absent from the schema the model is shown, required by the executor, and filled in by the assistant from the voice, overruling anything the model wrote — a model naming another profile cannot write into it. A guest is offered neither tool.
+
+**Reading it** goes through the blackboard (FR-60). The assistance service publishes each person's `ProfileContext` retained on `space/context/profile/{profile_id}` after every change and on `profiles.publish_interval_s`, so a hand edit arrives without a restart and a deleted person is withdrawn. Every reply the assistant publishes becomes the speaker's short-term context, so no second path writes conversation. The assistant tells the model who it is speaking with, their facts and preferences, and the conversation so far; a guest is told nothing about anyone.
+
 #### 5.8.2 Compute placement
 
 Wake-word detection and transcription select CUDA first and fall back to CPU
@@ -1442,7 +1463,9 @@ edge-smart-space/
 └── tests/
 ```
 
-As of v1.11 the following are specified above but **not yet implemented**: `speaker_profile.py` (FR-52) — the speech pipeline is left untouched until it is re-verified on the microphone — `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, `deploy/docker-compose.yml`, `sim/scenarios/`, and the local console (FR-56 to FR-58). They are named so the gap is explicit. `deploy/esphome/room-node.yaml` exists and is marked unverified: no node has been flashed.
+As of v1.12 the following are specified above but **not yet implemented**: `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, `deploy/docker-compose.yml`, `sim/scenarios/`, and the local console (FR-56 to FR-58). They are named so the gap is explicit. `deploy/esphome/room-node.yaml` exists and is marked unverified: no node has been flashed. `speaker_profile.py` exists (§5.8.3) and has been measured on synthetic voices only; it has not been run against the microphone.
+
+Added as of v1.12: `src/speech/speaker_profile.py`; `src/assistance/memory.py`, `src/assistance/profiles.py` and `src/assistance/providers/profile_memory.py`; `tools/enroll.py` and `tools/profiles.py`.
 
 Added as of v1.11: `src/common/localtime.py` (the room's one conversion from epoch to wall time); `eval/baseline_thermostat.py`, `eval/harness.py`, `eval/metrics.py` and E2, E4, E5; `tools/calibrate.py` (R-04), `tools/bringup.py` and `tools/confirm.py`; `deploy/provision.sh`, `deploy/llama-server.service` and `deploy/mosquitto.conf`.
 
@@ -1583,7 +1606,8 @@ startup, which NFR-06 forbids.
   "target_c": 24.0,              // null when no temperature was named
   "rationale": "it is too warm in here",
   "spoken_reply": "I have passed that on.",
-  "transcript": "it is too warm in here, can you cool it down"
+  "transcript": "it is too warm in here, can you cool it down",
+  "profile_id": "ravi"           // the recognised voice; "" for a guest (FR-52)
 }
 
 // TariffState
@@ -1600,7 +1624,21 @@ startup, which NFR-06 forbids.
   "intent": "service",
   "reply": "Added design review at 15:00 on 4 September.",
   "invocation_ids": ["inv_1756032000_0"],
-  "awaiting_confirmation": ""      // invocation id of a booking put to the occupant
+  "awaiting_confirmation": "",     // invocation id of a booking put to the occupant
+  "profile_id": "ravi"
+}
+
+// ProfileContext -- what is known about one person (section 5.8.3)
+{
+  "ts": 1756032003.4,
+  "profile_id": "ravi",
+  "display_name": "Ravi",
+  "preferences": { "comfort_c": "23" },
+  "facts": ["prefers meetings after ten"],
+  "recent": [
+    { "ts": 1756032003.2, "said": "put the design review in my calendar at three",
+      "replied": "Added design review at 15:00 on 4 September." }
+  ]
 }
 
 // ReasoningRecord

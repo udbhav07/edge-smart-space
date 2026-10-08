@@ -167,6 +167,35 @@ a spoken one. It prints what the system said back on `space/context/reply`,
 and when a booking needs confirming it plays the console's part. Needs the
 `assistance` and `reasoning` services and the inference server running.
 
+### Who is speaking, and what the room remembers
+
+The room can tell household members apart by voice and remember things each
+of them asks it to — which only ever personalises its replies. Recognising a
+voice unlocks nothing: a booking still waits for confirmation, every setpoint
+still passes the gate, and the first reply of a conversation says so (FR-52).
+
+```bash
+python -m tools.enroll ravi --name Ravi one.wav two.wav three.wav   # or --record 3
+python -m tools.say --as ravi "remember that I prefer meetings after ten"
+python -m tools.say --as ravi "when should we put the review?"
+python -m tools.profiles list
+python -m tools.profiles show ravi
+python -m tools.profiles delete ravi        # memory, conversation and voiceprint
+```
+
+Three things are kept per person, each in a file you can open:
+
+| What | Where | Lasts |
+|---|---|---|
+| Long-term memory | `state/profiles/<id>.md` — plain Markdown; edit it by hand | until forgotten |
+| Short-term context | `state/context/<id>.json` — the conversation so far | 30 minutes |
+| Voiceprint | `state/voiceprints.json` — numbers only, never audio | until deleted |
+
+A voice nobody enrolled is a *guest*: it gets the room's short-term context and
+no long-term memory. The recogniser is deliberately simple (numpy only) and
+has been measured on synthetic voices, not yet on real ones; DESIGN.md section
+5.8.3 has the numbers.
+
 ### Watching what happens
 
 Every decision in the system is on the blackboard. Nothing is hidden in
@@ -386,7 +415,8 @@ Honest about the gaps, so nobody hunts for something that isn't there:
   placeholders until the nodes are flashed
 - the local console (FR-56 to FR-58) — Week 8; `tools.say` and
   `tools.confirm` stand in for it meanwhile
-- speaker profiles (FR-52) — the speech pipeline is deliberately untouched
+- speaker recognition on real voices: it is built and measured on synthetic
+  ones only (FR-52)
 - experiment E7 (latency and memory on the Jetson) — it needs the board
 - drift slower than about 0.3 C/min is not separable from a weak unit with
   one indoor sensor, and at 0.6 C/min D5 names the unit first in 2 of 10
