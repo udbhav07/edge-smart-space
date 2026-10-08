@@ -192,3 +192,66 @@ class TestImmutability:
     def test_configuration_cannot_be_changed_at_runtime(self, default_config):
         with pytest.raises(ValueError):
             default_config.controller.deadband_c = 1.0
+
+
+class TestOverlays:
+    """R-04: a calibration is a small file over the default, not an edit of it."""
+
+    def _overlay(self, tmp_path, body: str) -> Path:
+        path = tmp_path / "site.yaml"
+        base = DEFAULT_CONFIG_PATH.resolve().as_posix()
+        path.write_text(f"extends: {base}\n" + textwrap.dedent(body), encoding="utf-8")
+        return path
+
+    def test_an_overlay_changes_only_what_it_names(self, tmp_path, default_config):
+        config = load_config(
+            self._overlay(
+                tmp_path,
+                """
+                detectors:
+                  drift:
+                    threshold_sigma: 9.5
+                """,
+            )
+        )
+        assert config.detectors.drift.threshold_sigma == 9.5
+        assert config.detectors.drift.slack_sigma == default_config.detectors.drift.slack_sigma
+        assert config.controller == default_config.controller
+
+    def test_a_list_is_replaced_whole_not_merged(self, tmp_path):
+        body = """
+        sensors:
+          adapters:
+            - {sensor_id: temp_01, unit: C, limits: {low: -10.0, high: 60.0}}
+        """
+        config = load_config(self._overlay(tmp_path, body))
+        assert [sensor.sensor_id for sensor in config.sensors.adapters] == ["temp_01"]
+
+    def test_an_overlay_is_validated_like_any_config(self, tmp_path):
+        body = """
+        detectors:
+          drift:
+            threshold_sigma: -1
+        """
+        with pytest.raises(ConfigError):
+            load_config(self._overlay(tmp_path, body))
+
+    def test_a_relative_base_is_found_beside_the_overlay(self, tmp_path):
+        (tmp_path / "base.yaml").write_text(
+            DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        site = tmp_path / "site.yaml"
+        site.write_text("extends: base.yaml\nsite: {utc_offset_h: 1.0}\n", encoding="utf-8")
+        assert load_config(site).site.utc_offset_h == 1.0
+
+    def test_a_cycle_is_refused(self, tmp_path):
+        (tmp_path / "a.yaml").write_text("extends: b.yaml\n", encoding="utf-8")
+        (tmp_path / "b.yaml").write_text("extends: a.yaml\n", encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_config(tmp_path / "a.yaml")
+
+    def test_a_missing_base_is_reported(self, tmp_path):
+        site = tmp_path / "site.yaml"
+        site.write_text("extends: absent.yaml\n", encoding="utf-8")
+        with pytest.raises(ConfigError):
+            load_config(site)

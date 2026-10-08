@@ -891,12 +891,46 @@ class Config(_Section):
         return self
 
 
-def load_config(path: Path) -> Config:
-    """Read and validate a configuration file.
+#: A config file may name another it overrides. Lets a site keep only what it
+#: changed -- a calibration re-derived from measured noise (R-04) -- in a file
+#: of its own, so the change is reviewable and the default stays the
+#: documented reference.
+EXTENDS_KEY = "extends"
 
-    :raises ConfigError: if the file is missing, is not a YAML mapping, or
-        fails validation.
+
+def load_config(path: Path) -> Config:
+    """Read and validate a configuration file, and any it extends.
+
+    A file with an ``extends`` key names the file it overrides, relative to
+    itself. Mappings merge key by key; anything else, a list included, is
+    replaced whole, so an override never half-edits a list of sensors.
+
+    :raises ConfigError: if a file is missing, is not a YAML mapping, extends
+        itself in a cycle, or the merged result fails validation.
     """
+    raw = _read_layered(path, seen=())
+    try:
+        return Config.model_validate(raw)
+    except ValueError as exc:
+        raise ConfigError(f"config at {path} is invalid: {exc}") from exc
+
+
+def _read_layered(path: Path, seen: tuple[Path, ...]) -> dict:
+    resolved = path.resolve()
+    if resolved in seen:
+        chain = " -> ".join(str(item) for item in (*seen, resolved))
+        raise ConfigError(f"config files extend each other in a cycle: {chain}")
+    raw = _read_mapping(path)
+    base_name = raw.pop(EXTENDS_KEY, None)
+    if base_name is None:
+        return raw
+    if not isinstance(base_name, str) or not base_name:
+        raise ConfigError(f"{EXTENDS_KEY!r} in {path} must name a file")
+    base = _read_layered(path.parent / base_name, seen=(*seen, resolved))
+    return _merged(base, raw)
+
+
+def _read_mapping(path: Path) -> dict:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -909,8 +943,15 @@ def load_config(path: Path) -> Config:
 
     if not isinstance(raw, dict):
         raise ConfigError(f"config at {path} must be a mapping, got {type(raw).__name__}")
+    return raw
 
-    try:
-        return Config.model_validate(raw)
-    except ValueError as exc:
-        raise ConfigError(f"config at {path} is invalid: {exc}") from exc
+
+def _merged(base: dict, override: dict) -> dict:
+    """``override`` laid over ``base``: mappings recursively, the rest whole."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merged(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
