@@ -29,6 +29,11 @@ runs/
 *.csv
 *.log
 
+# A node's own configuration layers (deploy/provision.sh). The repository
+# carries config/default.yaml; what one room decided stays on that room.
+config/site.yaml
+config/calibration.yaml
+
 # Persisted estimator state (FR-07)
 state/
 *.npz

@@ -25,9 +25,31 @@ sudo systemctl enable --now smart-space.target
 
 The target names no Layer 1; the one you enable is the one that runs.
 
+Every unit reads `config/site.yaml`, the top of three layers, each with one
+owner. Provisioning writes the two node-local ones once and never edits the
+reference:
+
+| File | Owner | Holds |
+|---|---|---|
+| `config/default.yaml` | the repository | every tunable, documented |
+| `config/calibration.yaml` | `tools.calibrate` | thresholds re-derived from measured noise (R-04) |
+| `config/site.yaml` | this node | `devices.source`, node topics |
+
+Week 7's re-derivation, once the real room has run healthy for a while:
+
+```bash
+python -m tools.record runs/healthy.jsonl --seconds 7200
+python -m tools.calibrate runs/healthy.jsonl --config config/site.yaml \
+    --base config/default.yaml --out config/calibration.yaml
+sudo systemctl restart smart-space.target
+```
+
+The overlay states, beside every value, what it was measured from and what
+it replaced.
+
 Layer 1 is the simulator or the real devices, chosen by `devices.source` in
-the configuration. On hardware, set `devices.source: esphome`, fill in the
-nodes' topics, and swap the simulator for the bridge:
+the configuration. On hardware, set `devices.source: esphome` in `site.yaml`, fill in the
+nodes' topics there, and swap the simulator for the bridge:
 
 ```bash
 sudo systemctl disable --now smart-space-simulator.service

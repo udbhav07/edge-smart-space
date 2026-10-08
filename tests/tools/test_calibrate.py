@@ -117,6 +117,27 @@ class TestFromARealRecording:
         assert load_config(out).calibration.min_hours == 0.1
         assert len(load(source)) == len(recording)
 
+    def test_the_overlay_can_extend_a_different_base(self, recording, tmp_path):
+        """On the node it is the middle layer: measured under site.yaml,
+        extending default.yaml, so the node's own settings stay on top."""
+        source = tmp_path / "healthy.jsonl"
+        source.write_text(
+            "\n".join(json.dumps({"t": e.t, "topic": e.topic, "payload": e.payload}) for e in recording),
+            encoding="utf-8",
+        )
+        base = tmp_path / "default.yaml"
+        base.write_text(
+            DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
+                "min_hours: 1.0", "min_hours: 0.1"
+            ),
+            encoding="utf-8",
+        )
+        site = tmp_path / "site.yaml"
+        site.write_text("extends: default.yaml\nsite: {utc_offset_h: 2.0}\n", encoding="utf-8")
+        out = tmp_path / "calibration.yaml"
+        assert main([str(source), "--config", str(site), "--base", str(base), "--out", str(out)]) == 0
+        assert "extends: default.yaml" in out.read_text(encoding="utf-8")
+
 
 class TestDerivation:
     def test_the_timeout_clears_the_longest_healthy_gap(self, config):

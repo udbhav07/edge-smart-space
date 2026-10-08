@@ -1,8 +1,14 @@
 """Re-derive the detector thresholds from a recorded healthy run (R-04, Week 7).
 
     python -m tools.record runs/healthy.jsonl --seconds 7200
-    python -m tools.calibrate runs/healthy.jsonl --out config/site.yaml
-    python start.py --config config/site.yaml
+    python -m tools.calibrate runs/healthy.jsonl --out config/calibration.yaml
+    python start.py --config config/calibration.yaml
+
+On the Orin the overlay is the middle of three layers, so the node's own
+settings stay on top (deploy/provision.sh):
+
+    python -m tools.calibrate runs/healthy.jsonl --config config/site.yaml \\
+        --base config/default.yaml --out config/calibration.yaml
 
 Every detector threshold in ``config/default.yaml`` was set against the
 simulator's noise. R-04 requires them re-derived from the room's own: what a
@@ -387,7 +393,14 @@ def _relative(base: Path, out: Path) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.calibrate", description=__doc__.splitlines()[0])
     parser.add_argument("recording", type=Path, help="A tools.record recording of a healthy room")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="The configuration to extend")
+    parser.add_argument(
+        "--config", type=Path, default=DEFAULT_CONFIG_PATH,
+        help="The configuration the recording was made under, which is measured against",
+    )
+    parser.add_argument(
+        "--base", type=Path, default=None,
+        help="The file the overlay extends; defaults to --config",
+    )
     parser.add_argument("--out", type=Path, default=None, help="Where to write the overlay; omit to only report")
     arguments = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -401,7 +414,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(report(calibration))
     if arguments.out is not None:
-        text = render(calibration, arguments.config, arguments.out)
+        base = arguments.base if arguments.base is not None else arguments.config
+        text = render(calibration, base, arguments.out)
         arguments.out.parent.mkdir(parents=True, exist_ok=True)
         arguments.out.write_text(text, encoding="utf-8")
         try:
