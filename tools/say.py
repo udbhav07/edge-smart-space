@@ -3,6 +3,7 @@
     python -m tools.say "make it 22 degrees"
     python -m tools.say "put a meeting with Ravi on Thursday at 3" --yes
     python -m tools.say                      # interactive: type, read, repeat
+    python -m tools.say --as ravi "remember that I am vegetarian"
 
 A stand-in for a voice, not a change to one. The speech pipeline is
 microphone -> wake word -> Whisper -> Personal Context -> a hint on
@@ -55,8 +56,14 @@ class Conversation:
         clock: Clock,
         blackboard: Blackboard,
         personal_context: PersonalContext,
+        speaker: str = "",
     ) -> None:
+        """
+        :param speaker: the profile to speak as, standing in for a recognised
+            voice (FR-52); empty speaks as a guest.
+        """
         self._config = config
+        self._speaker = speaker
         self._clock = clock
         self._blackboard = blackboard
         self._personal_context = personal_context
@@ -88,6 +95,8 @@ class Conversation:
         """What the speech pipeline does after Whisper: extract, then publish."""
         hint = self._personal_context.extract(utterance)
         if hint is not None:
+            if self._speaker:
+                hint = hint.model_copy(update={"profile_id": self._speaker})
             self._blackboard.publish(topics.CONTEXT_PREFERENCE, hint)
         return hint
 
@@ -157,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("utterance", nargs="*", help="What to say; omit to converse")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument(
+        "--as",
+        dest="speaker",
+        default="",
+        help="Speak as this enrolled profile, as if the voice were recognised",
+    )
     confirmation = parser.add_mutually_exclusive_group()
     confirmation.add_argument("--yes", action="store_true", help="Confirm any booking")
     confirmation.add_argument("--no", action="store_true", help="Decline any booking")
@@ -174,7 +189,9 @@ def main(argv: list[str] | None = None) -> int:
     transport = build_transport(config.mqtt, CLIENT_ID, holder)
     blackboard = Blackboard(config.mqtt, transport)
     holder.append(blackboard)
-    conversation = Conversation(config, clock, blackboard, PersonalContext(config.reasoning, clock))
+    conversation = Conversation(
+        config, clock, blackboard, PersonalContext(config.reasoning, clock), speaker=arguments.speaker
+    )
     conversation.subscribe()
     blackboard.start()
     answer_yes = True if arguments.yes else False if arguments.no else None
