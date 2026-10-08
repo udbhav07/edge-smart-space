@@ -108,7 +108,9 @@ validator:
   min_command_interval_s: 30.0
   goal_max_age_s: 600.0
 
-# Section 5.5. Latency targets: D1 under 20 s, D2 under 60 s, D3 under 10 s.
+# Section 5.5. Latency targets: D1 under 20 s, D2 under 310 s (a full window
+# of 60 samples must first fill), D3 under 10 s. Re-derived from a recorded
+# healthy run by tools/calibrate.py (R-04).
 detectors:
   dropout:
     timeout_periods: 3.0

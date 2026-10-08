@@ -18,11 +18,11 @@ Two properties hold whatever tools are attached:
   and nothing is published, which is the specified behaviour rather than a
   fallback.
 
-**Not yet wired:** section 5.7.6's tool surface exists in
-``src/common/tools.py``, and this module does not yet call it. The extraction
-below is the v1.4 behaviour -- a transcript in, a PreferenceHint out -- and a
-SERVICE intent is still only reported. Stated here rather than left to be
-discovered, because FR-42 now permits more than this does.
+This module is the extraction only -- a transcript in, a PreferenceHint out
+-- and holds no tools. Acting on a SERVICE intent is the assistant's job
+(``src/reasoning/assistant.py``): it takes the published hint and makes the
+one bounded round of tool calls FR-42 allows, through the executor (section
+5.7.6). The speech pipeline depends on this module exactly as it is.
 """
 
 from __future__ import annotations
@@ -118,8 +118,7 @@ class PersonalContext:
     would make one call's output depend on an earlier one, which an
     extraction is not.
 
-    Holds no tool registry yet; see the module docstring for what that
-    changes when it does.
+    Holds no tool registry: the assistant acts on what this extracts.
     """
 
     def __init__(

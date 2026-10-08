@@ -75,8 +75,9 @@ _FREEZING_MODES = frozenset(
     {Mode.DEGRADED_SENSOR, Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD}
 )
 
-#: Confidence attached to a divergence finding. It is not a measurement:
-#: three consecutive rejections is a rule, not a probability.
+#: Confidence attached to a divergence finding. It is not a measurement: a
+#: sustained rejection rate, or a stalled estimate, is a rule, not a
+#: probability (section 5.2.3).
 _DIVERGENCE_CONFIDENCE = 1.0
 
 
@@ -536,7 +537,7 @@ class ThermalEstimatorService:
             }
         )
         LOGGER.error(
-            "model divergence after %d consecutive rejections",
+            "model divergence: a sustained rate of rejections (%d in a row now)",
             result.consecutive_rejections,
         )
         self._blackboard.publish(topics.FAULT, event, fault_id=fault_id)
