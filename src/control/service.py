@@ -125,10 +125,11 @@ class ControlService:
         bound, so a peak can never carry the room past a limit the validator
         would have refused.
         """
-        if self._tariff.band_at(self._clock.now()) is not TariffBand.PEAK:
-            return self.setpoint_c
-        shifted = self.setpoint_c + self._tariff.peak_offset_c
-        return min(shifted, self._config.validator.setpoint_bounds_c.high)
+        return self._tariff.tracked_setpoint_c(
+            self.setpoint_c,
+            self._clock.now(),
+            self._config.validator.setpoint_bounds_c.high,
+        )
 
     @property
     def mode(self) -> Mode:

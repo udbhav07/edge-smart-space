@@ -37,6 +37,18 @@ class TariffSchedule:
             return TariffBand.PEAK
         return TariffBand.NORMAL
 
+    def tracked_setpoint_c(self, setpoint_c: float, ts: float, ceiling_c: float) -> float:
+        """What a loop tracks at ``ts``: the setpoint, shifted while peak (FR-16).
+
+        Clamped to ``ceiling_c`` -- V-1's upper bound -- so a peak can never
+        carry the room past a limit the validator would have refused. One
+        definition, so the real loop and the baseline it is compared against
+        follow the same schedule (section 8.2).
+        """
+        if self.band_at(ts) is not TariffBand.PEAK:
+            return setpoint_c
+        return min(setpoint_c + self._config.peak_offset_c, ceiling_c)
+
     def next_transition_ts(self, ts: float) -> float:
         """Epoch seconds at which the band next changes."""
         moment = local_time(ts, self._utc_offset_h)

@@ -31,6 +31,7 @@ from src.common.clock import Clock, SimClock
 from src.common.config import Config
 from src.common.injection import InjectedFault
 from src.common.mqtt_client import Blackboard
+from src.common.tariff import TariffSchedule
 from src.common.schemas import (
     CommandKind,
     FaultEvent,
@@ -148,7 +149,10 @@ class FullSystem:
                 Sample(
                     ts=self.clock.now(),
                     true_c=self.simulator.room_temperature_c,
-                    setpoint_c=self.control.setpoint_c,
+                    # What the loop is tracking, peak shift included: scoring
+                    # it against the unshifted setpoint counted every peak
+                    # sample as a violation of a target it was never given.
+                    setpoint_c=self.control.effective_setpoint_c,
                     mode=self._mode,
                     command=self._last_command,
                 )
@@ -186,6 +190,7 @@ class BaselineSystem:
             limits=config.detectors.out_of_range.temperature_c,
         )
 
+        self._tariff = TariffSchedule(config.tariff, config.site.utc_offset_h)
         self._controller_board = controller_board
         controller_board.subscribe(
             topics.SENSOR_STATE, SensorReading, self._on_reading
@@ -204,6 +209,12 @@ class BaselineSystem:
         elapsed = 0.0
         while elapsed < seconds:
             self.simulator.step()
+            # The same setpoint schedule as the real system (section 8.2).
+            self.thermostat.setpoint_c = self._tariff.tracked_setpoint_c(
+                self.config.controller.default_setpoint_c,
+                self.clock.now(),
+                self.config.validator.setpoint_bounds_c.high,
+            )
             command = self.thermostat.tick()
             if command is not None:
                 # Published for the plant to act on, exactly as the real

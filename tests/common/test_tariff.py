@@ -69,3 +69,16 @@ class TestSiteTime:
         ts = _at(19)
         assert TariffSchedule(PEAK, SITE_OFFSET_H).band_at(ts) is TariffBand.PEAK
         assert TariffSchedule(PEAK, 0.0).band_at(ts) is TariffBand.NORMAL
+
+
+class TestTrackedSetpoint:
+    CEILING_C = 30.0
+
+    def test_outside_peak_the_setpoint_is_tracked_as_set(self, schedule):
+        assert schedule.tracked_setpoint_c(24.0, _at(15), self.CEILING_C) == 24.0
+
+    def test_during_peak_the_offset_is_added(self, schedule):
+        assert schedule.tracked_setpoint_c(24.0, _at(19), self.CEILING_C) == 25.0
+
+    def test_the_shift_never_passes_the_ceiling(self, schedule):
+        assert schedule.tracked_setpoint_c(29.5, _at(19), self.CEILING_C) == self.CEILING_C
