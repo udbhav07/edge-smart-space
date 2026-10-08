@@ -501,3 +501,12 @@ class TestInjectionCommand:
             requester="operator",
         )
         assert command.requester == "operator"
+
+
+class TestReadingsAreFinite:
+    """A NaN slips past every comparison, D3's range test included."""
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_reading_is_rejected(self, value):
+        with pytest.raises(ValueError):
+            SensorReading(ts=1.0, sensor_id="temp_01", value=value, unit=Unit.CELSIUS)

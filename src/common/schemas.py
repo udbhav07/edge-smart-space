@@ -238,7 +238,11 @@ class SensorReading(TimestampedMessage):
     """
 
     sensor_id: str = Field(min_length=1)
-    value: float
+    #: Finite, always. NaN compares false with everything, so a NaN reading
+    #: would slip past D3's range test, poison the RLS update and the
+    #: residual window, and serialise as null. A sensor that could not
+    #: measure has no reading to publish, which is what D1 detects.
+    value: float = Field(allow_inf_nan=False)
     unit: Unit
     quality: Quality = Quality.OK
 

@@ -26,6 +26,7 @@ Three things are deliberate:
 from __future__ import annotations
 
 import logging
+import math
 
 from src.common import topics
 from src.common.clock import Clock
@@ -131,6 +132,12 @@ class DeviceBridge:
             value = float(text)
         except ValueError:
             LOGGER.warning("unreadable value %r from %s ignored", text, topic)
+            return
+        if not math.isfinite(value):
+            # ESPHome publishes "nan" when the sensor itself failed to read.
+            # That is a missing sample, not a value: it is left out, so the
+            # silence reaches D1 rather than a NaN reaching the estimator.
+            LOGGER.debug("non-finite value %r from %s: the sensor did not read", text, topic)
             return
         self._sources[sensor_id].accept(value)
         self._publish(sensor_id)

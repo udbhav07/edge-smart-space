@@ -100,6 +100,19 @@ class TestSensors:
         _device(board, config, "temp_01", "nan-ish")
         assert _readings(transport, "temp_01") == []
 
+    @pytest.mark.parametrize("text", ["nan", "NaN", "inf", "-inf"])
+    def test_a_failed_sensor_read_is_absence_not_a_value(self, wired, config, text):
+        """ESPHome publishes "nan" when the sensor itself failed to read."""
+        _, transport, board, _ = wired
+        _device(board, config, "temp_01", text)
+        assert _readings(transport, "temp_01") == []
+
+    def test_a_failed_read_does_not_hide_the_value_before_it(self, wired, config):
+        _, transport, board, _ = wired
+        _device(board, config, "temp_01", "27.4")
+        _device(board, config, "temp_01", "nan")
+        assert [reading.value for reading in _readings(transport, "temp_01")] == [27.4]
+
     def test_no_health_is_published_here(self, wired, config):
         """The detector bank owns health; two publishers would fight."""
         _, transport, board, _ = wired
