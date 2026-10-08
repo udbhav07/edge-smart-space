@@ -245,6 +245,7 @@ class SpeakerIdentifier:
 
     def matchable(self, profile_id: str) -> bool:
         """Whether a voice has enough enrolment to be recognised."""
+        self._reload_if_changed()
         print_ = self._voiceprints.get(profile_id)
         return print_ is not None and print_.utterances >= self._config.speaker_min_enrolment_utterances
 

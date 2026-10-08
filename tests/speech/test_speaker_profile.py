@@ -129,3 +129,11 @@ class TestEnrolment:
     def test_an_unreadable_file_makes_everyone_a_guest(self, config):
         Path(config.voiceprints_path).write_text("{broken", encoding="utf-8")
         assert SpeakerIdentifier(config).identify(utterance(*RAVI, seed=0)).profile_id == ""
+
+
+def test_a_fresh_identifier_knows_who_is_matchable(config):
+    """Loaded from disk on first question, not only after an identify."""
+    enrolling = SpeakerIdentifier(config)
+    for seed in range(config.speaker_min_enrolment_utterances):
+        enrolling.enroll("ravi", utterance(*RAVI, seed))
+    assert SpeakerIdentifier(config).matchable("ravi")
