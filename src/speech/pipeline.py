@@ -9,6 +9,10 @@ topic.
 The capture window opens only after wake-word detection and closes at end of
 utterance or a hard timeout (FR-50). Audio is transcribed on the node and
 the buffer is dropped as soon as transcription finishes (FR-51).
+
+Who was speaking is judged from the same buffer, in memory, before it is
+dropped (FR-52). It selects a personalisation profile and nothing else: the
+hint carries the profile id, and the hint is still only a supervisory input.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from enum import Enum
 from src.common.clock import Clock
 from src.common.config import SpeechConfig
 from src.common.schemas import PreferenceHint
+from src.speech.asr import to_float_audio
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +56,7 @@ class SpeechPipeline:
         utterance,
         transcriber,
         personal_context,
+        speaker=None,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -59,6 +65,8 @@ class SpeechPipeline:
         self._utterance = utterance
         self._transcriber = transcriber
         self._personal_context = personal_context
+        #: Optional: without it every speaker is a guest, as before FR-52.
+        self._speaker = speaker
         self._state = PipelineState.WAITING_FOR_WAKE_WORD
         self._buffer: list = []
 
@@ -119,11 +127,29 @@ class SpeechPipeline:
             return None
 
         LOGGER.info("heard: %s", transcript)
+        profile_id = self._speaker_of(frames)
         try:
-            return self._personal_context.extract(transcript)
+            hint = self._personal_context.extract(transcript)
         except Exception as exc:
             # Speech is the lowest-priority feature set and is cuttable
             # without affecting the main results. It degrades on its own
             # rather than taking the process with it.
             LOGGER.warning("preference extraction unavailable: %s", exc)
             return None
+        if hint is None or not profile_id:
+            return hint
+        return hint.model_copy(update={"profile_id": profile_id})
+
+    def _speaker_of(self, frames: list) -> str:
+        """Whose voice it was, or "" for a guest (FR-52).
+
+        Never fatal: recognition is a nicety, and a failure in it makes the
+        speaker a guest rather than losing what they said.
+        """
+        if self._speaker is None:
+            return ""
+        try:
+            return self._speaker.identify(to_float_audio(frames)).profile_id
+        except Exception as exc:
+            LOGGER.warning("speaker recognition failed; treating as a guest: %s", exc)
+            return ""

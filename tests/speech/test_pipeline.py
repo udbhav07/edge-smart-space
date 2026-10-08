@@ -299,3 +299,66 @@ class TestNoActuation:
         assert not any(
             word in name.lower() for name in vars(pipeline) for word in forbidden
         )
+
+
+#: Real audio frames, for the tests that judge a voice: the other tests feed
+#: an opaque placeholder, which recognition would (rightly) reject.
+AUDIO_FRAME = __import__("numpy").zeros(512, dtype=__import__("numpy").int16)
+
+
+class FakeSpeaker:
+    def __init__(self, profile_id: str = "", error: Exception | None = None) -> None:
+        from src.speech.speaker_profile import Identification
+
+        self.result = Identification(profile_id=profile_id, score=0.5, judged=True)
+        self.error = error
+
+    def identify(self, audio):
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class TestWhoIsSpeaking:
+    """FR-52: the hint names whose voice it was, and nothing else changes."""
+
+    def _woken(self, config, speaker, hint):
+        detector = FakeDetector(hears=True)
+        pipeline, _ = _pipeline(
+            config,
+            SimClock(),
+            detector=detector,
+            utterance=FakeUtterance(ends_after=1),
+            personal_context=FakePersonalContext(hint=hint),
+            speaker=speaker,
+        )
+        pipeline.accept(AUDIO_FRAME)
+        detector.hears = False
+        return pipeline
+
+    def test_a_recognised_voice_is_named_on_the_hint(self, config):
+        pipeline = self._woken(config, FakeSpeaker("ravi"), _hint(SimClock()))
+        assert pipeline.accept(AUDIO_FRAME).profile_id == "ravi"
+
+    def test_an_unrecognised_voice_is_a_guest(self, config):
+        pipeline = self._woken(config, FakeSpeaker(""), _hint(SimClock()))
+        assert pipeline.accept(AUDIO_FRAME).profile_id == ""
+
+    def test_the_rest_of_the_hint_is_untouched(self, config):
+        hint = _hint(SimClock())
+        pipeline = self._woken(config, FakeSpeaker("ravi"), hint)
+        assert pipeline.accept(AUDIO_FRAME).model_copy(update={"profile_id": ""}) == hint
+
+    def test_a_recognition_failure_costs_only_the_name(self, config):
+        pipeline = self._woken(config, FakeSpeaker(error=RuntimeError("boom")), _hint(SimClock()))
+        assert pipeline.accept(AUDIO_FRAME).profile_id == ""
+
+    def test_the_buffer_is_still_dropped(self, config):
+        """FR-51: judging the voice keeps no audio."""
+        pipeline = self._woken(config, FakeSpeaker("ravi"), _hint(SimClock()))
+        pipeline.accept(AUDIO_FRAME)
+        assert pipeline.buffered_frames == 0
+
+    def test_without_a_recogniser_everyone_is_a_guest(self, config):
+        pipeline = self._woken(config, None, _hint(SimClock()))
+        assert pipeline.accept(AUDIO_FRAME).profile_id == ""

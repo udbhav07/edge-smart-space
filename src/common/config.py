@@ -503,11 +503,18 @@ class SpeechConfig(_Section):
         description="Enrolled voiceprints: vectors only, never audio (FR-51)",
     )
     speaker_match_threshold: float = Field(
-        default=0.92,
+        default=0.15,
         gt=0.0,
         lt=1.0,
-        description="Cosine similarity a voice must reach to be recognised; "
-        "below it the speaker is a guest (FR-52)",
+        description="Score a voice must reach to be recognised, as exp(-mean "
+        "z^2 / 2) in the enrolled voice's own spread; below it the speaker is "
+        "a guest (FR-52)",
+    )
+    speaker_min_enrolment_utterances: int = Field(
+        default=3,
+        ge=2,
+        description="Utterances a voice needs before it can be matched: one "
+        "has no spread to measure distance in",
     )
     speaker_min_audio_s: float = Field(
         default=1.0,

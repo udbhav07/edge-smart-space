@@ -33,6 +33,7 @@ from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
 from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
 from src.speech.pipeline import SpeechPipeline
+from src.speech.speaker_profile import SpeakerIdentifier
 from src.speech.wakeword import WakeWordDetector
 
 LOGGER = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ def build_pipeline(
         utterance=UtteranceDetector(config.speech),
         transcriber=Transcriber(config.speech),
         personal_context=PersonalContext(config.reasoning, clock),
+        speaker=SpeakerIdentifier(config.speech),
     )
 
 
