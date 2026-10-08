@@ -330,7 +330,13 @@ sim:
   room:
     thermal_capacitance_j_per_k: 600000.0   # ~35 m3 room plus furnishings
     thermal_resistance_k_per_w: 0.0035
-    cooling_power_w: 2500.0
+    # A 1-ton split, the ordinary size for one room. Sized from measurement,
+    # not taste: the room's UA is 1/R = 286 W/K, so a 35 C afternoon is a
+    # 3.1 kW load before sun and occupant, and at 2500 W a perfectly healthy
+    # system sat outside the comfort band every afternoon -- which made E5's
+    # comparison meaningless, since nothing could hold the room. Fault-free
+    # 24 h: 2500 W 20.0 % out of band, 3000 W 4.6 %, 3500 W 0.0 %.
+    cooling_power_w: 3500.0
     occupant_gain_w: 100.0
     initial_temperature_c: 29.0
     solar_gain_amplitude_w: 300.0           # Estimator has no regressor for this
