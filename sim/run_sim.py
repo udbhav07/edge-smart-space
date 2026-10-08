@@ -30,6 +30,7 @@ from src.common.injection import (
     FaultInjection,
     InjectedFault,
 )
+from src.common.localtime import SECONDS_PER_HOUR
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -111,7 +112,6 @@ class RoomSimulator:
         self._occupancy = occupancy
         self._presence = presence
         self._occupied = True
-        self._started_ts = clock.now()
         self._last_outdoor_publish_ts: float | None = None
         self._last_ack = AckStatus.UNKNOWN
         self._last_kind = CommandKind.OFF
@@ -228,12 +228,19 @@ class RoomSimulator:
         }
 
     def outdoor_temperature_c(self) -> float:
-        """Ambient, as a daily cycle around the configured mean."""
-        elapsed_s = self._clock.now() - self._started_ts
-        phase = _FULL_CYCLE_RADIANS * elapsed_s / self._config.sim.outdoor_period_s
-        return self._config.sim.outdoor_mean_c + (
-            self._config.sim.outdoor_amplitude_c * math.sin(phase)
-        )
+        """Ambient, as a daily cycle around the configured mean.
+
+        Anchored to the site's local day, hottest at ``outdoor_peak_hour``.
+        It was once anchored to the start of the run, which put the hottest
+        hour six hours after whenever a simulation began -- so an experiment
+        started in the evening met a 35 C midnight, and the result depended
+        on the launch time rather than on the system.
+        """
+        sim = self._config.sim
+        local_s = self._clock.now() + self._config.site.utc_offset_h * SECONDS_PER_HOUR
+        since_peak_s = local_s - sim.outdoor_peak_hour * SECONDS_PER_HOUR
+        phase = _FULL_CYCLE_RADIANS * since_peak_s / sim.outdoor_period_s
+        return sim.outdoor_mean_c + sim.outdoor_amplitude_c * math.cos(phase)
 
     def step(self) -> None:
         """Advance the plant one sensor period and publish what came out."""

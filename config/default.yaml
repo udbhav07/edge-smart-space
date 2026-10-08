@@ -352,4 +352,5 @@ sim:
   outdoor_mean_c: 31.0
   outdoor_amplitude_c: 4.0
   outdoor_period_s: 86400.0
+  outdoor_peak_hour: 15.0                   # Local; hottest mid-afternoon
   random_seed: 20260825

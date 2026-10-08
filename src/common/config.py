@@ -727,6 +727,14 @@ class SimConfig(_Section):
     outdoor_mean_c: float
     outdoor_amplitude_c: float = Field(ge=0.0)
     outdoor_period_s: float = Field(gt=0.0)
+    outdoor_peak_hour: float = Field(
+        default=15.0,
+        ge=0.0,
+        lt=24.0,
+        description="Local hour of the hottest ambient. The cycle follows the "
+        "site's day, not the start of the run, so peak tariff and the hottest "
+        "hours relate as they do in a real room",
+    )
     random_seed: int = Field(
         ge=0, description="Fixed so a scenario replays identically (FR-62)"
     )

@@ -448,3 +448,46 @@ class TestInjectionAtLayerOne:
         self._inject(blackboard, OCCUPANCY_ID, InjectedFault.DROPOUT)
         simulator.step()
         assert transport.payloads_on(f"space/sensor/{OCCUPANCY_ID}/state") == []
+
+
+class TestAmbientFollowsTheLocalDay:
+    """FR-03: the hottest hour is a time of day, not an offset from launch."""
+
+    def _ambient_at(self, config, hour: float) -> float:
+        from datetime import datetime, timedelta
+
+        from src.common.localtime import epoch_of
+
+        local = datetime(2026, 10, 1) + timedelta(hours=hour)
+        clock = SimClock(start_epoch_s=epoch_of(local, config.site.utc_offset_h))
+        blackboard = Blackboard(config.mqtt, RecordingTransport())
+        return build_simulator(config, clock, blackboard).outdoor_temperature_c()
+
+    def test_the_peak_hour_is_the_hottest(self, config):
+        peak = config.sim.outdoor_peak_hour
+        assert self._ambient_at(config, peak) == pytest.approx(
+            config.sim.outdoor_mean_c + config.sim.outdoor_amplitude_c
+        )
+
+    def test_twelve_hours_later_is_the_coolest(self, config):
+        night = (config.sim.outdoor_peak_hour + 12.0) % 24.0
+        assert self._ambient_at(config, night) == pytest.approx(
+            config.sim.outdoor_mean_c - config.sim.outdoor_amplitude_c
+        )
+
+    def test_when_the_run_starts_does_not_move_the_day(self, config):
+        """A run launched at 20:00 meets the same 20:00 as one launched at 11:00."""
+        from datetime import datetime
+
+        from src.common.localtime import epoch_of
+
+        offset = config.site.utc_offset_h
+        evening = epoch_of(datetime(2026, 10, 1, 20, 0), offset)
+        late = SimClock(start_epoch_s=evening)
+        early = SimClock(start_epoch_s=epoch_of(datetime(2026, 10, 1, 11, 0), offset))
+        board = Blackboard(config.mqtt, RecordingTransport())
+        launched_early = build_simulator(config, early, board)
+        early.advance(evening - early.now())
+        assert launched_early.outdoor_temperature_c() == pytest.approx(
+            build_simulator(config, late, board).outdoor_temperature_c()
+        )
