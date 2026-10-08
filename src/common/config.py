@@ -820,6 +820,51 @@ class BringupConfig(_Section):
     )
 
 
+class CalibrationConfig(_Section):
+    """How ``tools/calibrate.py`` turns measured noise into thresholds (R-04).
+
+    Margins, not thresholds: each says how far a derived setting sits from
+    what a healthy recording actually produced, so the derivation can be
+    argued with rather than taken on trust.
+    """
+
+    timeout_margin: float = Field(
+        default=1.5,
+        gt=1.0,
+        description="D1's timeout as a multiple of the longest healthy gap",
+    )
+    variance_fraction: float = Field(
+        default=0.25,
+        gt=0.0,
+        lt=1.0,
+        description="D2's epsilon as a fraction of the quietest healthy "
+        "window's variance",
+    )
+    cusum_margin: float = Field(
+        default=1.3,
+        gt=1.0,
+        description="D4's threshold as a multiple of the healthy CUSUM peak",
+    )
+    min_hours: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Shortest recording calibrated from; a shorter one has "
+        "not seen enough of the room to say what healthy looks like",
+    )
+    cusum_min_samples: int = Field(
+        default=2,
+        ge=2,
+        description="D4 must need at least this many maximal samples to trip; "
+        "a threshold one capped sample can clear is a threshold alarm",
+    )
+    dropout_latency_budget_s: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="NFR-02: injection to mode transition for a dropout. A "
+        "derived D1 timeout that cannot meet it is reported, not hidden",
+    )
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -843,6 +888,7 @@ class Config(_Section):
     sim: SimConfig
     bringup: BringupConfig = BringupConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
+    calibration: CalibrationConfig = CalibrationConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

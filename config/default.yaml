@@ -334,6 +334,16 @@ bringup:
   actuation_window_s: 300.0     # Longer than the 180 s dwell
   min_power_rise_w: 200.0       # Used only once a power meter is configured
 
+# Week 7, R-04. How tools/calibrate.py re-derives detector thresholds from a
+# recorded healthy run. Margins over what was measured, not thresholds.
+calibration:
+  timeout_margin: 1.5       # D1 timeout = longest healthy gap x this
+  variance_fraction: 0.25   # D2 epsilon = quietest healthy window x this
+  cusum_margin: 1.3         # D4 threshold = healthy CUSUM peak x this
+  min_hours: 1.0            # Refuse a shorter recording
+  cusum_min_samples: 2      # D4 never trips on fewer maximal samples
+  dropout_latency_budget_s: 30.0   # NFR-02
+
 # The Environmental Supervisor (sections 5.7.1, 5.7.2; FR-40, FR-41).
 supervisor:
   period_s: 300.0           # FR-41's default cadence
