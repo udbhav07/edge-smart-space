@@ -75,7 +75,7 @@ FAULT_EVENT_PAYLOAD = {
     "class": "sensor",
     "confidence": 0.94,
     "detected_ts": 1756032300.0,
-    "evidence": {"window_s": 300, "variance": 0.0002},
+    "evidence": {"window_s": 300, "variance": 0.0002, "onset_ts": 1756032000.0},
     "mode_impact": "DEGRADED_SENSOR",
 }
 

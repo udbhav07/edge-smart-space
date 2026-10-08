@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.10 |
+| Version | 1.11 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.11 | Weeks 6–7 in software, and defects found by running the experiments rather than the tests. **Experiments made meaningful:** the simulated unit could not hold its own room (a healthy 24 h run was out of band 20 % of the day), so it is resized to 3500 W, a 1-ton split (§8.5); the ambient cycle follows the site's day rather than the launch time; local time is `site.utc_offset_h`, never the machine's zone, so a seed replays identically on any machine; and the harness scores both systems against the setpoint each was actually tracking, peak tariff included, with the baseline given the same schedule (§8.2). E5's criterion 4 is now met (§8.5). **Safety:** SAFE_HOLD stops the compressor instead of freezing it running, and V-5 always admits a stop (§5.3, §5.4); a re-asserted state is not a V-4 change. **FR-27:** a degraded prediction restarts from the last reading before the fault's reported *onset* and rolls back what the frozen window taught the estimator (§5.2.3); D2 and D4 publish that onset (§5.5). **Advisory faults:** a sensor fault on an instrument the loop does not control on — humidity, the power meter — is published but no longer degrades the mode; a dropped humidity sensor had driven a healthy system to SAFE_HOLD (§5.6). **Week 6–7 software:** the air conditioner's power meter (`pwr_01`) and an acknowledgement from its draw (R-02); non-finite device values are absence, not readings; `tools.calibrate` re-derives D1, D2 and D4 from a recorded healthy run (R-04, §9.4) into a configuration layer (`extends:`); the node reads `site.yaml` over `calibration.yaml` over the reference. The coil no longer dries a room below its dew point, which had faulted a healthy humidity sensor. |
 | 1.10 | Weeks 5 and 6, and the gaps of Weeks 1–6 closed. **Week 6:** the Environmental Supervisor (§5.7.2; FR-40, FR-41), the assistant that acts on what the speech pipeline heard (FR-42), the goal path from a spoken preference to a gated setpoint — pursued step by step when V-2 only part-grants it, and outranking the supervisor for `goals.preference_hold_s` with a new `PREFERENCE_HOLD` verdict (§5.4) — the assistance executor with a local calendar and a mock travel desk (§5.7.6; FR-54, FR-55, FR-58, FR-70 to FR-75), and Fault Diagnosis (§6.3; FR-25, FR-43). Every reasoning call is audited (FR-46, FR-63) on `space/audit/reasoning`, and replies go to a new `space/context/reply`. The day an occupant names is resolved from their words, not by the model, and a tool call on the wrong day is corrected (FR-44). **FR-16:** a peak-tariff schedule and a new `space/tariff/state`. **FR-23:** D4 now runs on a horizon residual accumulated once per non-overlapping horizon (§5.5), which exposed and forced a fix of the errors-in-variables bias in §5.2.1 — the ambient gap is measured from `T[k−1]` — with a2's edge crossings weighed by the heat flow they imply before they count toward divergence (§5.2.3); D5 no longer blames the unit for a reading that rose faster than a dead unit allows. A stalled estimate now counts as divergence. **Week 5 software:** `devices.source` selects the simulator or an ESPHome bridge (`python -m src.io`), `deploy/systemd` holds one unit per service, and `start.py` restarts a service that exits (NFR-08). The actuator fault is injectable (`tools.inject ac dead`; FR-31). **FR-62:** `tools.record` and `sim/replay.py`. **E3** and **E6** exist and pass (§8.3). |
 | 1.9 | Defects found by running the whole system live against a broker and a served model. **FR-27 was not what it claimed:** the prediction substituted in `DEGRADED_SENSOR` was one step ahead of the previous *reading*, so it restated the fault — a stuck value, something derived from 999 °C, or a value frozen through a dropout. The estimator now steps the model forward on its own output from the last trusted reading, once per sensor period (§5.2.3). Readings a sensor flags `suspect` are no longer fitted, and the simulated sensors now flag them as the real adapter does. §5.5 gains three more cases of one broken thing being blamed on another: D5 skips suspect readings, is suspended on every tick rather than on reading arrival, and a D5 fault raised within one window of D1–D3 confirming the indoor sensor is withdrawn; D4 is suspended while the actuator is faulted. §5.6: `DEGRADED_ACTUATOR` is released once no actuator fault holds it. §7.1's divergence response is now implemented — `MODEL_DIVERGENCE` reached nothing that decides the mode, and the coefficients were never reset — and a restarted detector bank withdraws faults retained by its predecessor. §8.4's E1 figures were one seed's; they are restated over nine, and `a3` misses its tolerance. Two more found in the final live run: `P0` falls from 100 to 0.01, because near-collinear regressors at startup let the first samples throw the estimate anywhere in the box (live, `a2` = 0.997 within 35 s); and D5 no longer faults a working unit at capacity, which every healthy two-hour run had done. The simulator's actuator state now reports the last state-changing command rather than echoing `MAINTAIN`. |
 | 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
@@ -643,6 +644,8 @@ These implement FR-06 and are the difference between "we ran RLS" and "we ran RL
 | Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). A reading its own sensor flags `suspect` is never fitted either. Never adapt to bad data. |
 | Prediction on a faulted sensor | While the indoor sensor is faulted, the one-step prediction would be built from the faulted reading and restate it. The model instead steps forward on its own output from the last trusted reading, once per sensor period and independently of readings, since a dropped sensor delivers none. This is what `DEGRADED_SENSOR` controls on (FR-27). |
 | A stalled estimate | Because a rejection reverts `P` as well as `θ`, an estimate that lands where every update breaks a bound cannot move again. A full `divergence_window_samples` of *consecutive* rejections, on any coefficient, is therefore divergence (v1.10). Healthy runs reach at most 11 in a row. |
+| Restarting at the onset (v1.11) | The last reading before a fault is *confirmed* is not the last good one: a stuck sensor is frozen for D2's whole window first, and a drifting one is wrong from D4's change point. The prediction therefore restarts from the last kept reading before the onset the detector reported (`onset_ts`, §5.5), stepped forward through the inputs applied since; with no onset, the last reading stands. `reanchor_history_samples` bounds what is kept and must exceed D2's window. Measured on a sensor stuck at the setpoint: the degraded-period error fell from about +0.5 °C to +0.03…+0.28 °C. |
+| Undoing the frozen window (v1.11) | FR-29 freezes adaptation on confirmation, but every frozen reading before it was fitted. A reading stuck 3 °C below the room taught the model a falling room. Each kept step carries the estimate as it stood, and restarting at the onset restores it. Error over the degraded period, stuck 3 °C low: −1.5…−2.0 °C before, −0.6…−1.0 °C after; what remains is the solar gain the model has no regressor for (R-04). |
 | Edge noise on `a2` | `a2` sits unbiased on its lower bound once §5.2.1's gap is taken from `T[k−1]`, and noise crosses it. An `a1`/`a2` rejection counts toward divergence only when the heat flow against the gradient it implies — the excursion times the gap — exceeds `edge_noise_c_per_step`: healthy runs never claim more than 0.083 °C per step, a room warming while cooled claims a median 0.13. `a3` rejections always count. |
 
 ##### Why divergence is a rate and not a run
@@ -684,6 +687,9 @@ inputs:   T_in (measured or substituted), T_sp (validated), mode, T_pred
 state:    compressor_state, last_transition_time
 
 on tick (every 5 s):
+    if mode == SAFE_HOLD and (compressor_state == ON or reassert due):
+        compressor_state = OFF
+        emit OFF; return                    # v1.11: stop, then hold
     if mode in {DEGRADED_ACTUATOR, SAFE_HOLD}:
         emit HOLD; return
 
@@ -710,6 +716,10 @@ on tick (every 5 s):
 
 The `DEGRADED_SENSOR` substitution is the concrete payoff of having a model: closed-loop control continues on a prediction rather than collapsing to open-loop. It is bounded — see §7.2.
 
+**SAFE_HOLD stops the unit (v1.11).** A hold once froze the compressor in whatever state it was in, and in SAFE_HOLD nothing is trusted to say when to stop cooling. Measured: a stuck sensor ridden past its budget entered SAFE_HOLD with the compressor on, and an hour later the room was 2.4 °C below setpoint and still falling. Off is the one state that is safe unsupervised — it cannot breach dwell, and its worst case is a room drifting toward ambient — so SAFE_HOLD stops the unit once and re-asserts the stop on the R-02 interval. `DEGRADED_ACTUATOR` still holds the unit as it is, so D5 can see a working unit cool and release the mode (§5.6).
+
+**Intent is re-asserted.** The controller re-sends COOL or OFF every `controller.reassert_interval_s` (60 s), because an IR command can be lost (R-02) and a controller that sent OFF once and then MAINTAIN forever has no way back from losing it.
+
 ### 5.4 Safety Validator
 
 The validator is the only component permitted to be paranoid. It has no knowledge of intent and applies rules unconditionally (FR-13, FR-14).
@@ -719,8 +729,8 @@ The validator is the only component permitted to be paranoid. It has no knowledg
 | V-1 Absolute bounds | `18.0 ≤ T_sp ≤ 30.0` | Clamp to nearest bound. Reason: `BOUND_CLAMP`. |
 | V-2 Rate limit | `\|T_sp − T_sp_prev\| ≤ 2.0 °C` per invocation | Clamp to max step. Reason: `RATE_LIMIT`. |
 | V-3 Compressor dwell | No ON command within `min_off_s` of last OFF | Downgrade to `MAINTAIN`. Reason: `DWELL`. |
-| V-4 Command rate | ≤ 1 actuator command per 30 s | Suppress. Reason: `CMD_RATE`. |
-| V-5 Mode consistency | No actuation command while mode is `DEGRADED_ACTUATOR` or `SAFE_HOLD` | Block. Reason: `MODE_BLOCK`. |
+| V-4 Command rate | ≤ 1 change of compressor state per 30 s. A re-assertion of the state in force is not a change (v1.11) | Suppress. Reason: `CMD_RATE`. |
+| V-5 Mode consistency | No COOL while mode is `DEGRADED_ACTUATOR` or `SAFE_HOLD`. A stop is always admitted and never throttled (v1.11): stopping is not driving the plant | Block. Reason: `MODE_BLOCK`. |
 | V-6 Staleness | Reject any goal whose source timestamp is older than 600 s | Retain previous goal. Reason: `STALE_GOAL`. |
 
 Every verdict is published to `space/audit/validation` with the proposal, the verdict, the reason code, and the applied value. A clamped supervisor proposal is a finding, not a failure — it is evidence the gate works, and the review deck should present it that way.
@@ -868,6 +878,10 @@ ambient the room must still cool. The change over a window is also now the
 slope of a least-squares line through every reading in it rather than the
 difference of the two ends, which carried the sensor noise twice.
 
+**When the readings went bad (v1.11).** D2 and D4 publish, under the evidence key `onset_ts`, the instant from which their own evidence says the readings were already wrong: D2 the oldest sample of the *first* window it found frozen (the confirming window has slid on by then, and its oldest sample is itself frozen), D4 the textbook CUSUM change point, the last time the tripping sum stood at zero. D1 needs none — silence has no bad readings — and D3's suspect readings are already flagged by the adapter. The estimator restarts its prediction from before that instant (§5.2.3).
+
+**D5 publishes what it judged against (v1.11).** Whether a warming room is blamed on the unit rests on the identified `a2`, the ambient and the passive-warming bound they imply, and all three now travel in the evidence. That is how a drift trial named the unit first was explained: thirty minutes after start `a2` was 0.004 against a truth of 0.0024, widening the bound to 6.13 °C, just past the 6.09 °C a 0.6 °C/min drift had reached (§8.5).
+
 **On D5's parameters:** the 600 s window is long because a room's thermal time constant is long. This is an honest limit — actuator faults are detected on the order of ten minutes, not seconds, and NFR-02 deliberately does not promise otherwise.
 
 ### 5.6 Mode State Machine
@@ -899,7 +913,7 @@ stateDiagram-v2
 | `NORMAL` | active | full closed loop | none |
 | `DEGRADED_SENSOR` | frozen (FR-29) | closed loop on prediction, time-boxed | banner |
 | `DEGRADED_ACTUATOR` | frozen | blocked, hold state | alert + reason |
-| `SAFE_HOLD` | frozen | blocked | alert, manual reset required |
+| `SAFE_HOLD` | frozen | stopped, then blocked (v1.11) | alert, manual reset required |
 
 **What counts as "multiple faults".** Distinct *subjects*, not distinct
 findings. A stuck temperature sensor raises D2, and its frozen reading then
@@ -907,6 +921,8 @@ grows the model residual until D4 raises as well: two faults, one broken
 sensor. Counting findings would send every single sensor failure to SAFE_HOLD
 with actuation blocked, and FR-27 — the whole reason for identifying a model —
 would never once be exercised.
+
+**Advisory faults (v1.11).** The transitions above are on the *temperature* sensor and the unit, and until v1.11 every sensor fault carried `DEGRADED_SENSOR` whatever the sensor. Measured: a dropped humidity sensor — or the power meter — switched a system with a healthy temperature sensor onto prediction, spent the 1800 s budget and ended in `SAFE_HOLD`. The aggregator now knows which subjects the loop controls on, the indoor sensor and the air conditioner. A sensor fault on any other is *advisory*: published with its evidence and `mode_impact: NORMAL`, listed in the mode's active faults, its health still `faulted` — so FR-29 still freezes adaptation if it feeds the regressor — but it changes no mode and counts toward no escalation. The mode's published reason follows the fault set, so `NORMAL` with an advisory fault says so rather than "no active faults".
 
 **Leaving `DEGRADED_ACTUATOR` as written is unreachable, found at v1.7.** The
 transition above is "actuator ack restored and response observed". On an
@@ -1426,7 +1442,9 @@ edge-smart-space/
 └── tests/
 ```
 
-As of v1.10 the following are specified above but **not yet implemented**: `speaker_profile.py` (FR-52) — the speech pipeline is left untouched until it is re-verified on the microphone — `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, and `deploy/esphome/` (node firmware is written at bring-up). They are named so the gap is explicit.
+As of v1.11 the following are specified above but **not yet implemented**: `speaker_profile.py` (FR-52) — the speech pipeline is left untouched until it is re-verified on the microphone — `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, `deploy/docker-compose.yml`, `sim/scenarios/`, and the local console (FR-56 to FR-58). They are named so the gap is explicit. `deploy/esphome/room-node.yaml` exists and is marked unverified: no node has been flashed.
+
+Added as of v1.11: `src/common/localtime.py` (the room's one conversion from epoch to wall time); `eval/baseline_thermostat.py`, `eval/harness.py`, `eval/metrics.py` and E2, E4, E5; `tools/calibrate.py` (R-04), `tools/bringup.py` and `tools/confirm.py`; `deploy/provision.sh`, `deploy/llama-server.service` and `deploy/mosquitto.conf`.
 
 Added beyond the v1.1 layout, as of v1.10: `src/reasoning/` holds `supervisor_agent.py`, `supervisor_tools.py`, `assistant.py` (acting on what the speech pipeline heard), `diagnosis.py` (§6.3), `chat.py` (one timed, counted completion) and `dates.py` (the day an occupant named); `src/control/goal_manager.py`; `src/assistance/` with `executor.py`, `providers/local_calendar.py` and `providers/mock_travel.py`; `src/io/devices.py` with `python -m src.io` (Week 5); `src/common/tariff.py`; `deploy/systemd/`; `sim/replay.py`; `tools/say.py` (a typed stand-in for a voice, publishing exactly what the speech pipeline does) and `tools/record.py`; and `eval/system.py` with E3 and E6.
 
@@ -1465,9 +1483,7 @@ startup, which NFR-06 forbids.
 | `space/actuator/ac/state` | pub | yes | 1 | `ActuatorState` |
 | `space/actuator/{sim_id}/state` | pub | yes | 1 | `ActuatorState` with `simulated: true` |
 | `space/system/reset` | pub | no | 1 | `ModeReset` |
-
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
-
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
 | `space/context/reply` | pub | no | 1 | `AssistantReply` |
 | `space/tariff/state` | pub | yes | 1 | `TariffState` |
@@ -1485,8 +1501,8 @@ startup, which NFR-06 forbids.
 {
   "sensor_id": "temp_01",
   "ts": 1756032000.123,          // unix epoch, monotonic-derived
-  "value": 27.4,
-  "unit": "C",
+  "value": 27.4,                 // finite, always (v1.11): a failed read is no reading
+  "unit": "C",                   // C | %RH | bool | W
   "quality": "ok"                // ok | suspect | faulted
 }
 
@@ -1518,8 +1534,8 @@ startup, which NFR-06 forbids.
   "class": "sensor",             // sensor | actuator | model
   "confidence": 0.94,
   "detected_ts": 1756032300.0,
-  "evidence": { "window_s": 300, "variance": 0.0002 },
-  "mode_impact": "DEGRADED_SENSOR"
+  "evidence": { "window_s": 300, "variance": 0.0002, "onset_ts": 1756032000.0 },
+  "mode_impact": "DEGRADED_SENSOR"  // NORMAL for an advisory fault (section 5.6)
 }
 
 // ModeReset -- an operator clearing SAFE_HOLD by hand (section 5.6)
@@ -1726,6 +1742,8 @@ Stating this budget explicitly — rather than claiming indefinite ride-through 
 
 The baseline is deliberately not a straw man: it gets the same deadband, the same dwell protection, and the same setpoint schedule. The only things it lacks are the two contributions.
 
+"The same setpoint schedule" includes the peak-tariff shift (FR-16), and both systems are scored against the setpoint each was actually tracking. Until v1.11 the harness scored the real system against the unshifted setpoint while it tracked the shifted one, and the baseline ignored the tariff, so every peak sample was a violation of a target nobody had been given.
+
 ### 8.3 Experiment Plan
 
 | Exp | Question | Method | Metric |
@@ -1759,6 +1777,24 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 4. The system maintains the comfort bound under injected sensor fault in at least one scenario where the baseline does not (E5).
 5. All latency budgets in NFR-01 through NFR-04 are met at MAXN, with measurements reported at all three power modes.
 
+### 8.5 Measured Results (v1.11, simulation)
+
+Every number here is from the simulator, with its adversarial defaults on, at the configuration in the repository. Nothing has run on the hardware; E7 has not run at all.
+
+**The plant had to be able to hold its own room.** Before E5 can ask whether the baseline fails where this system does not, a healthy system must hold the comfort band. At 2500 W it could not: fault-free over 24 h it was out of band 20.0 % of the time, every afternoon (12:00–17:00). At 3000 W, 4.6 %; at 3500 W — a 1-ton split, the ordinary size for one room — 0.0 %, which is the shipped plant. The room's UA is 1/R = 286 W/K, so a 35 °C afternoon is a 3.1 kW load before sun and occupant; 2500 W was a sizing error, not an adversarial default.
+
+| Exp | Result | Against |
+|---|---|---|
+| E1 | worst coefficient error 0.0046 (`a3`) over 24 h | §8.4 tolerances: all met on the default seed |
+| E2 | RMS error 0.284 °C adapting and frozen alike, 0 % out of band | expected: the deadband acts on the measurement while the sensor is healthy; adaptation pays off in E4 and E5 |
+| E3 | dropout, stuck-at, out-of-range, actuator 10/10 by the right detector; drift at 0.6 °C/min 8/10, two seeds naming the unit first (§5.5); 0 faults in 10 healthy hours | criterion 3: met |
+| E4 | stuck at 25.0 °C: prediction within half the band for 3540 s; the room left the band at 2470 s, after the budget had expired and SAFE_HOLD had stopped the unit | §7.2's 1800 s: about half of what the prediction sustains, so conservative |
+| E5 | dropout: ours 0.0 % of 1800 s out of band, baseline 69.4 %; stuck high (26 °C): 9.4 % against 69.4 %; stuck low (22 °C): 28.9 % against 83.1 % | criterion 4: met (dropout) |
+
+Under the calibrated overlay from §9.4 E3 is unchanged in rate — every class 10/10, drift included — with drift found sooner (median 462 s against 648 s) and dropout a little later (20 s against 15 s, within NFR-02), and still no fault in 10 healthy hours.
+
+Stuck high was 0.0 % out of band before the estimate was rolled back at the onset (§5.2.3), and 9.4 % after. That is recorded rather than reverted: the coefficients fitted to the frozen readings happened to offset the solar gain the model cannot represent, and keeping a corrupted estimate because it was lucky once is not a property worth claiming.
+
 ---
 
 ## 9. Deployment and Build
@@ -1788,6 +1824,20 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 ### 9.3 Process Supervision
 
 Each component runs as a separate `systemd` unit with `Restart=always`. Restart independence is a design requirement (FR-11, FR-47), not a convenience — the demonstration includes killing the reasoning process mid-run and showing the regulatory loop continue.
+
+### 9.4 Calibration and Configuration Layers (v1.11)
+
+R-04 requires every detector threshold re-derived from the room's measured noise. That is a configuration change with a reason attached, so it lives in a file of its own: a configuration may `extends:` another, mappings merge key by key, and lists are replaced whole. On the node there are three layers, each with one owner — `default.yaml` (the repository; never edited on the node), `calibration.yaml` (`tools.calibrate`) and `site.yaml` (the node: `devices.source`, topics) — and every unit reads `site.yaml`.
+
+`tools.calibrate` reads a `tools.record` recording of a healthy room and derives:
+
+| Setting | From | Margin |
+|---|---|---|
+| D1 `timeout_periods` | longest gap between arrivals, per sensor, in its own period | ×1.5 |
+| D2 `variance_epsilon` | quietest 60-sample window of any temperature or humidity sensor | ×0.25 |
+| D4 `threshold_sigma` | the D4 detector replayed over the recorded estimates: its healthy peak | ×1.3, never below two capped samples |
+
+It refuses a recording holding a fault — calibrating from it would set the thresholds to accept the fault — and reports, rather than accommodates, a link dropping past NFR-02. D3's bounds are the instruments' limits and D5's window the room's time constant; neither is noise, and neither is derived. From two healthy simulated hours: timeout 3 → 4.5 periods, epsilon 0.001 → 0.004, threshold 8 → 6 (a healthy peak of 1.77, where the persistence floor applies). One recording's peak is a weak estimate of the tail; a longer recording is the remedy, and the floor is what stops a short one from producing a threshold alarm.
 
 ---
 
