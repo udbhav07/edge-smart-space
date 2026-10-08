@@ -902,6 +902,9 @@ class ProfilesConfig(_Section):
     )
     max_facts: int = Field(default=50, gt=0, description="Long-term facts per person")
     max_fact_chars: int = Field(default=200, gt=0, description="Longest fact kept")
+    max_turn_chars: int = Field(
+        default=500, gt=0, description="Longest utterance or reply kept as context"
+    )
     max_profiles: int = Field(default=8, gt=0, description="People the room keeps memory for")
     publish_interval_s: float = Field(
         default=30.0,

@@ -19,13 +19,16 @@ import logging
 from pathlib import Path
 
 from src.assistance.executor import AssistanceExecutor
+from src.assistance.memory import ProfileStore
+from src.assistance.profiles import ProfileKeeper
 from src.assistance.providers.local_calendar import LocalCalendar
 from src.assistance.providers.mock_travel import MockTravel
+from src.assistance.providers.profile_memory import ProfileMemory
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
-from src.common.tools import BOOK_TRAVEL, GET_EVENTS, SCHEDULE_EVENT, ToolRegistry
+from src.common.tools import BOOK_TRAVEL, FORGET, GET_EVENTS, REMEMBER, SCHEDULE_EVENT, ToolRegistry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -45,7 +48,20 @@ def build_registry(config: Config, clock: Clock) -> ToolRegistry:
     registry.bind(SCHEDULE_EVENT.name, calendar)
     registry.bind(GET_EVENTS.name, calendar)
     registry.bind(BOOK_TRAVEL.name, MockTravel())
+    memory = ProfileMemory(build_store(config, clock))
+    registry.bind(REMEMBER.name, memory)
+    registry.bind(FORGET.name, memory)
     return registry
+
+
+def build_store(config: Config, clock: Clock) -> ProfileStore:
+    """The files that hold what the room remembers about each person (FR-52)."""
+    return ProfileStore(config.profiles, clock, config.site.utc_offset_h)
+
+
+def build_keeper(config: Config, clock: Clock, blackboard: Blackboard) -> ProfileKeeper:
+    """What publishes each person's context, beside the executor that writes it."""
+    return ProfileKeeper(config.profiles, clock, blackboard, build_store(config, clock))
 
 
 def build_service(
@@ -74,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
 
     service = build_service(config, clock, blackboard)
     service.subscribe()
+    keeper = build_keeper(config, clock, blackboard)
+    keeper.subscribe()
     blackboard.start()
     service.publish_catalogue()
     LOGGER.info(
@@ -83,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         while True:
+            keeper.tick()
             clock.sleep(_IDLE_INTERVAL_S)
     except KeyboardInterrupt:
         LOGGER.info("stopping")

@@ -351,6 +351,7 @@ profiles:
   short_term_max_turns: 10
   max_facts: 50
   max_fact_chars: 200
+  max_turn_chars: 500
   max_profiles: 8
   publish_interval_s: 30.0           # hand edits reach the blackboard this fast
 
