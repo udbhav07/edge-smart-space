@@ -78,6 +78,10 @@ class StuckAtDetector:
         #: The same arrivals as wall time, so the onset can be compared with
         #: other components' timestamps; spans still use monotonic time.
         self._arrival_epochs: deque[float] = deque(maxlen=config.window_samples)
+        #: Oldest sample of the first window in the current frozen run. The
+        #: confirming window has slid on by then, and its own oldest sample
+        #: is already one frozen reading too late.
+        self._frozen_since_ts: float | None = None
         self._consecutive_below = 0
 
     @property
@@ -119,8 +123,11 @@ class StuckAtDetector:
         variance = statistics.pvariance(self._values)
         if variance < self._config.variance_epsilon:
             self._consecutive_below += 1
+            if self._consecutive_below == 1:
+                self._frozen_since_ts = self._arrival_epochs[0]
         else:
             self._consecutive_below = 0
+            self._frozen_since_ts = None
 
         stuck = self._consecutive_below >= self._config.consecutive_windows
         return self._finding(
@@ -154,11 +161,11 @@ class StuckAtDetector:
                 "window_s": self._window_span_s(),
                 "window_samples": float(len(self._values)),
                 "consecutive_windows": float(self._consecutive_below),
-                # Every sample in a window found frozen is suspect, so the
-                # sensor was stuck since at least the oldest of them.
+                # Every sample of the first window found frozen is suspect, so
+                # the sensor was stuck since at least the oldest of them.
                 **(
-                    {ONSET_KEY: self._arrival_epochs[0]}
-                    if faulted and self._arrival_epochs
+                    {ONSET_KEY: self._frozen_since_ts}
+                    if faulted and self._frozen_since_ts is not None
                     else {}
                 ),
             },

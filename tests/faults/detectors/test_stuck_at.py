@@ -253,12 +253,29 @@ class TestOnset:
         assert finding.faulted
         assert finding.evidence[ONSET_KEY] == first_ts
 
-    def test_the_onset_slides_with_the_window(self, detector, clock):
+    def test_the_onset_is_the_first_frozen_window_not_the_confirming_one(
+        self, detector, clock
+    ):
+        """Evaluated every sample, the confirming window has slid on by one;
+        its oldest sample is already a frozen reading too late."""
         first_ts = clock.now()
-        _feed(detector, clock, [STUCK_VALUE] * (WINDOW + 3))
+        _feed(detector, clock, [STUCK_VALUE] * WINDOW)
+        detector.evaluate()
+        _feed(detector, clock, [STUCK_VALUE])
+        finding = detector.evaluate()
+        assert finding.faulted
+        assert finding.evidence[ONSET_KEY] == first_ts
+
+    def test_a_moving_sample_restarts_the_onset(self, detector, clock):
+        _feed(detector, clock, [STUCK_VALUE] * WINDOW)
+        detector.evaluate()
+        _feed(detector, clock, [STUCK_VALUE + 1.0])
+        detector.evaluate()
+        restart_ts = clock.now()
+        _feed(detector, clock, [STUCK_VALUE] * WINDOW)
         for _ in range(CONSECUTIVE):
             finding = detector.evaluate()
-        assert finding.evidence[ONSET_KEY] == first_ts + 3 * PERIOD_S
+        assert finding.evidence[ONSET_KEY] == restart_ts
 
     def test_a_clear_finding_dates_nothing(self, detector, clock):
         _feed(detector, clock, [20.0 + index for index in range(WINDOW)])

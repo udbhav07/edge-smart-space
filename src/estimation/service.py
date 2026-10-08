@@ -32,6 +32,9 @@ from __future__ import annotations
 import logging
 import statistics
 from collections import deque
+from dataclasses import dataclass
+
+import numpy as np
 
 from src.common import topics
 from src.common.clock import Clock
@@ -75,6 +78,17 @@ _FREEZING_MODES = frozenset(
 #: Confidence attached to a divergence finding. It is not a measurement:
 #: three consecutive rejections is a rule, not a probability.
 _DIVERGENCE_CONFIDENCE = 1.0
+
+
+@dataclass(frozen=True)
+class _Step:
+    """One trusted step: what was read, what drove it, and what was learned."""
+
+    arrival_ts: float
+    measured_c: float
+    inputs: Regressor
+    theta: np.ndarray
+    covariance: np.ndarray
 
 
 class ThermalEstimatorService:
@@ -122,10 +136,10 @@ class ThermalEstimatorService:
             maxlen=config.estimator.horizon_sigma_window_samples
         )
         self._horizon_residual = 0.0
-        #: Recent trusted steps, as (arrival, reading, inputs that produced
-        #: it), so a prediction can be restarted from before a fault began.
-        #: Bounded by config; emptied at any gap, like the horizon.
-        self._recent: deque[tuple[float, float, Regressor]] = deque(
+        #: Recent trusted steps, so a prediction -- and the estimate it runs
+        #: on -- can be restarted from before a fault began. Bounded by
+        #: config; emptied at any gap, like the horizon.
+        self._recent: deque[_Step] = deque(
             maxlen=config.estimator.reanchor_history_samples
         )
         #: Onset of the latest fault on the indoor sensor, if its detector
@@ -245,26 +259,47 @@ class ThermalEstimatorService:
         """
         if self._indoor_onset_ts is None or not self._recent:
             return self._indoor_c
-        before = [entry for entry in self._recent if entry[0] < self._indoor_onset_ts]
-        if not before:
+        steps = list(self._recent)
+        # Half a period of margin: the detector and this service timestamp
+        # the same arrival separately, and on hardware they differ slightly.
+        cutoff_ts = self._indoor_onset_ts - self._config.loop.sensor_period_s / 2.0
+        before = [step for step in steps if step.arrival_ts < cutoff_ts]
+        if before:
+            start = steps.index(before[-1])
+            self._roll_back_to(steps[start])
+        else:
             LOGGER.warning(
                 "fault onset precedes the %d steps kept; predicting from the "
-                "oldest of them", len(self._recent)
+                "oldest of them", len(steps)
             )
             start = 0
-        else:
-            start = self._recent.index(before[-1])
-        predicted_c = self._recent[start][1]
-        for _arrival, _measured, inputs in list(self._recent)[start + 1:]:
+        predicted_c = steps[start].measured_c
+        for step in steps[start + 1:]:
             predicted_c = self._estimator.predict(
                 Regressor(
                     indoor_c=predicted_c,
-                    outdoor_c=inputs.outdoor_c,
-                    command=inputs.command,
-                    occupancy=inputs.occupancy,
+                    outdoor_c=step.inputs.outdoor_c,
+                    command=step.inputs.command,
+                    occupancy=step.inputs.occupancy,
                 )
             )
         return predicted_c
+
+    def _roll_back_to(self, step: _Step) -> None:
+        """Undo what was learned from the faulted readings (FR-29).
+
+        Adaptation freezes when a fault is *confirmed*, but a stuck sensor was
+        fitted for D2's whole window before that: measured, a reading frozen
+        3 C below the room taught the model a room that was falling, and the
+        prediction restarted from the right reading still headed the wrong
+        way. The estimate goes back to where it stood at the anchor.
+        """
+        try:
+            self._estimator.restore(step.theta, step.covariance)
+        except ValueError as exc:
+            LOGGER.warning("could not roll the estimate back: %s", exc)
+            return
+        LOGGER.warning("coefficients rolled back to before the fault's onset")
 
     def _on_mode(self, _topic: str, state: ModeState) -> None:
         self._mode = state.mode
@@ -345,7 +380,15 @@ class ThermalEstimatorService:
         )
         result = self._estimator.update(regressor, reading.value)
         self._horizon.append(regressor)
-        self._recent.append((self._clock.now(), reading.value, regressor))
+        self._recent.append(
+            _Step(
+                arrival_ts=self._clock.now(),
+                measured_c=reading.value,
+                inputs=regressor,
+                theta=self._estimator.theta,
+                covariance=self._estimator.covariance,
+            )
+        )
         self._measure_horizon(reading.value)
         self._publish(result, reading.value)
         self._maybe_persist()

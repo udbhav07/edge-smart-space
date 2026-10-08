@@ -718,6 +718,7 @@ class TestReanchoringAtTheOnset:
     def _stuck_then_confirmed(self, config, subject=INDOOR, with_onset=True):
         service, _, clock, board, estimator, _ = _service(config)
         _feed(service, board, clock, self.GOOD_SAMPLES, config.loop.sensor_period_s)
+        self.theta_before_onset = estimator.theta
         onset_ts = clock.now()
         for _ in range(self.STUCK_SAMPLES):
             _indoor(board, clock, STUCK_C)
@@ -761,3 +762,14 @@ class TestReanchoringAtTheOnset:
         # Only stuck steps are kept: the oldest is the first stuck reading.
         start_c = self._stepped(estimator, STUCK_C, kept - 1)
         assert service.tick().t_pred == pytest.approx(self._stepped(estimator, start_c, 1))
+
+
+    def test_what_was_learned_from_the_stuck_readings_is_undone(self, config):
+        """Adaptation freezes on confirmation; the frozen window before it was
+        still fitted, and taught the model a room that was not there."""
+        service, estimator = self._stuck_then_confirmed(config)
+        assert estimator.theta == pytest.approx(self.theta_before_onset)
+
+    def test_without_an_onset_nothing_is_rolled_back(self, config):
+        service, estimator = self._stuck_then_confirmed(config, with_onset=False)
+        assert estimator.theta != pytest.approx(self.theta_before_onset)
