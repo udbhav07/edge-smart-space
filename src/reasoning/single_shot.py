@@ -53,6 +53,7 @@ PERSONAL_CONTEXT_PROMPT = (
     '"intent" (one of "environment" for a request about the space, '
     '"service" for anything about their calendar, schedule, reminders, '
     "meetings or bookings -- including a question about what is planned -- "
+    "and for asking you to remember or forget something about them, "
     'or "none" when nothing was asked), '
     '"subject" (a short noun for what it was about, such as "temperature", '
     '"lights" or "booking", or "" for none), '

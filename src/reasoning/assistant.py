@@ -19,6 +19,15 @@ Every completion is recorded on ``space/audit/reasoning`` with its inputs,
 raw output, verdict, latency and token counts (FR-46, FR-63), and every reply
 goes to ``space/context/reply``.
 
+**Who is speaking personalises, and permits nothing (FR-52).** A hint names
+the recognised voice, and the person's context -- what they asked to be
+remembered, and the conversation so far -- is read off
+``space/context/profile/{profile_id}``, never out of a file. The model is
+told it and may keep a new fact with ``remember``; whose memory that is, is
+filled in here from the voice and never by the model. A guest is offered no
+memory tools. Every tool, setpoint and booking is gated exactly as for
+anyone, and the first reply of a conversation says so.
+
 MQTT callbacks only queue work. Waiting for a tool result inside a callback
 would wait for a message the same thread has to deliver.
 """
@@ -35,10 +44,12 @@ from src.common.config import AssistanceConfig, Bounds
 from src.common.localtime import local_time
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    GUEST_PROFILE_ID,
     SETPOINT_KEY,
     SOURCE_KEY,
     THERMAL_SUBJECTS,
     AssistantReply,
+    ProfileContext,
     GoalSource,
     Intent,
     PreferenceHint,
@@ -50,6 +61,7 @@ from src.common.schemas import (
 )
 from src.common.tools import (
     ASSISTANCE_TOOLS,
+    PROFILE_TOOLS,
     ToolInvocation,
     ToolRequester,
     ToolResult,
@@ -74,6 +86,26 @@ _QUEUE_LENGTH = 16
 #: Results and verdicts kept while a caller waits for its own. Bounded.
 _MAILBOX_LENGTH = 64
 
+#: People whose context is held. Bounded; the store bounds them too.
+_PROFILES_KEPT = 32
+
+#: Said once per conversation to a recognised person (FR-52): that the voice
+#: was recognised, and that recognition unlocks nothing.
+_RECOGNITION_NOTE = (
+    "(I recognised your voice as {name}. That only personalises my replies; "
+    "it doesn't unlock anything.)"
+)
+
+#: How the model is told who it is speaking with.
+_PERSON_PROMPT = "You are speaking with {name}."
+_FACTS_PROMPT = "They asked you to remember:\n{facts}"
+_PREFERENCES_PROMPT = "Their stated preferences:\n{preferences}"
+_RECENT_PROMPT = "Earlier in this conversation:\n{turns}"
+_MEMORY_PROMPT = (
+    "If they ask you to remember something about them, or state a lasting "
+    "preference, keep it with remember; if they ask you to forget, use forget."
+)
+
 #: How often a wait re-checks its mailbox, in seconds.
 _POLL_S = 0.05
 
@@ -89,7 +121,9 @@ ASSISTANT_PROMPT = (
     "start, and for a question about a day use 00:00 to 23:59 of that day. "
     "Use a tool whenever the request needs one: "
     "schedule_event to add to their calendar, get_events to answer what is "
-    "planned, book_travel for a flight or hotel. Call each tool at most once. "
+    "planned, book_travel for a flight or hotel, and remember or forget when "
+    "they ask you to keep or drop something about them. Call each tool at "
+    "most once. "
     "If the request cannot be done with these tools, say so in one sentence "
     "without calling any."
 )
@@ -158,7 +192,8 @@ class Assistant:
         self._invocations = 0
         self._invocations_by_id: dict[str, ToolInvocation] = {}
         self._corrections: list[str] = []
-        self._tools = tuple(spec.as_schema() for spec in ASSISTANCE_TOOLS)
+        self._specs = {spec.name: spec for spec in ASSISTANCE_TOOLS}
+        self._profiles: dict[str, ProfileContext] = {}
 
     # --- wiring -------------------------------------------------------
 
@@ -170,6 +205,12 @@ class Assistant:
         self._blackboard.subscribe(
             topics.AUDIT_VALIDATION, ValidationVerdict, self._on_verdict
         )
+        self._blackboard.subscribe(topics.CONTEXT_PROFILE, ProfileContext, self._on_profile)
+
+    def _on_profile(self, _topic: str, context: ProfileContext) -> None:
+        if context.profile_id not in self._profiles and len(self._profiles) >= _PROFILES_KEPT:
+            self._profiles.pop(next(iter(self._profiles)))
+        self._profiles[context.profile_id] = context
 
     def _on_hint(self, _topic: str, hint: PreferenceHint) -> None:
         if len(self._pending) == self._pending.maxlen:
@@ -213,9 +254,76 @@ class Assistant:
             reply = self._report_setpoint(hint)
         else:
             return None
+        reply = self._personalised(reply, hint)
         self._blackboard.publish(topics.CONTEXT_REPLY, reply)
         LOGGER.info("replied: %s", reply.reply)
         return reply
+
+    # --- who is speaking (FR-52) -------------------------------------
+
+    def _context_of(self, hint: PreferenceHint) -> ProfileContext | None:
+        return self._profiles.get(hint.profile_id or GUEST_PROFILE_ID)
+
+    def _recognised(self, hint: PreferenceHint) -> ProfileContext | None:
+        """The speaker's context, if they are a recognised person."""
+        if not hint.profile_id:
+            return None
+        return self._profiles.get(hint.profile_id)
+
+    def _personalised(self, reply: AssistantReply, hint: PreferenceHint) -> AssistantReply:
+        """Name whose reply it is, and say once that recognition permits nothing."""
+        update: dict[str, object] = {"profile_id": hint.profile_id}
+        person = self._recognised(hint)
+        if person is not None and not person.recent:
+            note = _RECOGNITION_NOTE.format(name=person.display_name or person.profile_id)
+            update["reply"] = f"{reply.reply} {note}"
+        return reply.model_copy(update=update)
+
+    def _person_prompt(self, hint: PreferenceHint) -> str:
+        """What the model is told about the speaker, if anything is known."""
+        context = self._context_of(hint)
+        if context is None:
+            return ""
+        parts = []
+        person = self._recognised(hint)
+        if person is not None:
+            parts.append(_PERSON_PROMPT.format(name=person.display_name or person.profile_id))
+            if person.preferences:
+                listed = "\n".join(f"- {key}: {value}" for key, value in person.preferences.items())
+                parts.append(_PREFERENCES_PROMPT.format(preferences=listed))
+            if person.facts:
+                parts.append(_FACTS_PROMPT.format(facts="\n".join(f"- {fact}" for fact in person.facts)))
+            parts.append(_MEMORY_PROMPT)
+        if context.recent:
+            turns = "\n".join(
+                f"- They said: {turn.said} / You replied: {turn.replied}" for turn in context.recent
+            )
+            parts.append(_RECENT_PROMPT.format(turns=turns))
+        return "\n".join(parts)
+
+    def _tools_for(self, hint: PreferenceHint) -> tuple[dict[str, object], ...]:
+        """The surface this speaker is offered: memory tools for a person only."""
+        recognised = self._recognised(hint) is not None
+        return tuple(
+            spec.as_schema()
+            for name, spec in self._specs.items()
+            if recognised or name not in PROFILE_TOOLS
+        )
+
+    def _system_supplied(self, tool: str, arguments: dict, hint: PreferenceHint) -> dict:
+        """Fill what the model is never shown -- whose memory -- from the voice.
+
+        Overwrites anything the model wrote there: a model naming a profile
+        could otherwise put a fact into somebody else's file.
+        """
+        spec = self._specs.get(tool)
+        if spec is None:
+            return arguments
+        filled = dict(arguments)
+        for parameter in spec.parameters:
+            if parameter.supplied_by_system and parameter.name == "profile_id":
+                filled["profile_id"] = hint.profile_id or GUEST_PROFILE_ID
+        return filled
 
     # --- temperature --------------------------------------------------
 
@@ -256,7 +364,16 @@ class Assistant:
         messages: list[dict[str, object]] = [
             {
                 "role": "system",
-                "content": ASSISTANT_PROMPT.format(now=now, days=coming_days(self._clock, self._utc_offset_h)),
+                "content": "\n".join(
+                    part
+                    for part in (
+                        ASSISTANT_PROMPT.format(
+                            now=now, days=coming_days(self._clock, self._utc_offset_h)
+                        ),
+                        self._person_prompt(hint),
+                    )
+                    if part
+                ),
             },
             {
                 "role": "user",
@@ -267,13 +384,13 @@ class Assistant:
         results: list[ToolResult] = []
         try:
             for _ in range(self._config.max_tool_rounds):
-                turn = self._chat.complete(messages, self._tools)
+                turn = self._chat.complete(messages, self._tools_for(hint))
                 turns.append(turn)
                 if not turn.tool_calls:
                     break
                 messages.append(assistant_message(turn))
                 for call in turn.tool_calls:
-                    result = self._run(call, utterance)
+                    result = self._run(call, utterance, hint)
                     results.append(result)
                     messages.append(tool_message(call, _for_the_model(result)))
             confirmation = next(
@@ -356,7 +473,7 @@ class Assistant:
             f"is made. Nothing is booked yet. Shall I go ahead?"
         )
 
-    def _run(self, call: ToolCall, utterance: str) -> ToolResult:
+    def _run(self, call: ToolCall, utterance: str, hint: PreferenceHint) -> ToolResult:
         """Publish one invocation and wait for the executor's answer."""
         now = self._clock.now()
         invocation_id = f"inv_{int(now)}_{self._invocations}"
@@ -372,6 +489,7 @@ class Assistant:
                 message=f"the arguments were not readable: {call.malformed[:80]}",
             )
         arguments = {key: _flat(value) for key, value in call.arguments.items()}
+        arguments = self._system_supplied(call.name, arguments, hint)
         corrected = _onto_named_day(call.name, arguments, the_one_day(utterance, self._today()))
         if corrected != arguments:
             LOGGER.info("%s: dates moved to the day named: %s", call.name, corrected)
