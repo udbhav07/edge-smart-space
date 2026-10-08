@@ -262,6 +262,24 @@ class ActuatorResponseDetector:
         )
         return slope * (times[-1] - times[0])
 
+    def _conditions(self, elapsed_s: float) -> dict[str, float]:
+        """What the verdict was judged against, when it is known.
+
+        The passive-warming bound decides whether a warming room is blamed on
+        the unit or left to D4, and it rests on the identified coupling and
+        the ambient. A finding that omitted them could not show why a drifting
+        sensor was, or was not, called a failed air conditioner.
+        """
+        conditions: dict[str, float] = {}
+        if self._ambient_c is not None:
+            conditions["ambient_c"] = self._ambient_c
+        if self._coupling is not None:
+            conditions["coupling_a2"] = self._coupling
+        bound_c = self._passive_warming_bound_c(elapsed_s)
+        if bound_c is not None:
+            conditions["passive_warming_bound_c"] = bound_c
+        return conditions
+
     def _begin_cooling(self) -> None:
         if self._cooling:
             return
@@ -290,7 +308,7 @@ class ActuatorResponseDetector:
             subject=self._subject,
             judgment=judgment,
             confidence=1.0 if judgment is Judgment.FAULTED else 0.0,
-            evidence={
+            evidence={**self._conditions(elapsed_s),
                 "cooled_c": cooled_c,
                 "min_cooling_c": self._config.min_cooling_c,
                 "elapsed_s": elapsed_s,

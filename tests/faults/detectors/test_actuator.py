@@ -334,3 +334,19 @@ class TestADriftingSensorIsNotBlamedOnTheUnit:
         detector.observe_coupling(-0.1)
         _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
         assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_the_verdict_publishes_what_it_was_judged_against(self, detector, clock):
+        """Whether a warming room is blamed on the unit rests on the coupling,
+        the ambient and the bound they imply; all three travel with it."""
+        detector.observe_coupling(self.COUPLING)
+        _cool_through(detector, clock, _steps(29.0, 0.6), ambient_c=31.0)
+        evidence = detector.evaluate().evidence
+        assert evidence["coupling_a2"] == self.COUPLING
+        assert evidence["ambient_c"] == 31.0
+        assert evidence["passive_warming_bound_c"] > 0.0
+
+    def test_unknown_conditions_are_omitted_rather_than_invented(self, detector, clock):
+        _cool_through(detector, clock, _steps(29.0, 0.6))
+        evidence = detector.evaluate().evidence
+        assert "coupling_a2" not in evidence
+        assert "passive_warming_bound_c" not in evidence
