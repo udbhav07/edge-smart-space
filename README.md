@@ -231,7 +231,14 @@ detected as broken the mode becomes `DEGRADED_SENSOR` — and the commands
 the reading it no longer trusts. That substitution is the whole point of
 identifying a model, and it is the thing a thermostat cannot do. It is bounded:
 after 30 minutes the system stops rather than treat a stale prediction as a
-measurement, and the mode becomes `SAFE_HOLD`.
+measurement, and the mode becomes `SAFE_HOLD`. Entering it switches the
+compressor off — with nothing trusted to say when to stop cooling, off is the
+one safe state — and the room drifts toward ambient until someone looks.
+
+Only the indoor temperature sensor and the unit decide the mode. Break the
+humidity sensor or the power meter (`python -m tools.inject hum_01 dropout`)
+and the fault is published with its evidence as *advisory*: the mode stays
+`NORMAL`, because temperature control does not depend on it.
 
 `SAFE_HOLD` is the one state the system will not leave on its own:
 
@@ -275,7 +282,10 @@ policy value is written in code. Detector thresholds especially: they get
 re-derived from measured noise during hardware bring-up, and that has to be a
 config edit rather than a code hunt.
 
-Point any entry point at a different file with `--config`.
+Point any entry point at a different file with `--config`. A file may
+`extends:` another and override only what it names, which is how a
+calibration and a node's own settings stay out of the reference
+(DESIGN.md section 9.4).
 
 A few worth knowing:
 
@@ -285,6 +295,8 @@ A few worth knowing:
 | `validator.setpoint_bounds_c` | 18.0–30.0 | Hard limits nothing can propose past |
 | `controller.min_off_s` | 180 | Compressor protection, enforced twice on purpose |
 | `sim.*` | all imperfections **on** | Jitter, dropouts, noise, dead-time, command loss |
+| `site.utc_offset_h` | 5.5 | The room's local time. Never the machine's zone, so a run replays the same anywhere |
+| `sim.room.cooling_power_w` | 3500 | A 1-ton split. At 2500 W a healthy system could not hold its own room |
 
 The simulator defaults are adversarial deliberately. A kind simulator makes
 simulated success predict nothing about real hardware.
@@ -294,17 +306,21 @@ simulated success predict nothing about real hardware.
 ## Layout
 
 ```
-src/common/      clock, config, schemas, topics, MQTT blackboard, device
-src/control/     safety validator, regulatory loop    (python -m src.control)
-src/estimation/  RC model, RLS, persistence          (python -m src.estimation)
-src/faults/      detector bank, aggregator           (python -m src.faults)
-src/speech/      wake word, capture, ASR, pipeline  (python -m src.speech)
-src/reasoning/   single-shot LLM calls
-src/io/          actuator driver contracts
-sim/             ground-truth room model, sensors, actuator, runner
+src/common/      clock, local time, config, schemas, topics, blackboard, tools
+src/control/     safety validator, goal path, regulatory loop  (python -m src.control)
+src/estimation/  RC model, RLS, persistence                    (python -m src.estimation)
+src/faults/      detector bank, aggregator, mode manager       (python -m src.faults)
+src/speech/      wake word, capture, ASR, pipeline             (python -m src.speech)
+src/reasoning/   supervisor, assistant, fault diagnosis        (python -m src.reasoning)
+src/assistance/  tool executor, local calendar, mock travel    (python -m src.assistance)
+src/io/          the real devices: ESPHome bridge              (python -m src.io)
+sim/             ground-truth room model, sensors, actuator, power meter, replay
+eval/            baseline thermostat, harness, metrics, experiments E1-E6
+tools/           inject, reset, say, confirm, record, bringup, calibrate, demo
+deploy/          systemd units, provisioning, the ESPHome node definition
 tests/           unit tests, mirroring the source layout
-config/          default.yaml
-docs/            DESIGN.md, coding-guidelines.md
+config/          default.yaml, the documented reference
+docs/            DESIGN.md, ROADMAP.md, coding-guidelines.md
 ```
 
 `sim/room_model.py` must never import from `src/estimation/`. The simulated
@@ -328,9 +344,35 @@ or restrict it with `--only`: replayed onto a live system it feeds it the past.
 
 ```bash
 python -m eval.experiments.e1_convergence    # does identification converge?
+python -m eval.experiments.e2_adaptation     # adapting against a frozen model
 python -m eval.experiments.e3_detection      # every fault class, found by its own detector
+python -m eval.experiments.e4_degradation    # how long control on prediction stays viable
+python -m eval.experiments.e5_baseline       # the same faults, injected into a thermostat
 python -m eval.experiments.e6_tool_selection # the supervisor against the served model
 ```
+
+All but E6 run against the simulator in seconds to minutes, and every one
+takes `--config`. The results as of DESIGN.md v1.11 are in its section 8.5;
+the one to know is E5: with the indoor sensor dropped, this system keeps the
+room inside the comfort band for the whole half hour and the thermostat is
+outside it 69 % of the time.
+
+## Bringing up the hardware, and calibrating it
+
+```bash
+python -m tools.bringup                      # is every sensor publishing, at its rate?
+python -m tools.bringup --actuate            # does the unit draw power when asked to cool?
+python -m tools.record runs/healthy.jsonl --seconds 7200
+python -m tools.calibrate runs/healthy.jsonl --out config/calibration.yaml
+```
+
+`tools.calibrate` re-derives the D1, D2 and D4 thresholds from a recorded
+healthy run (R-04) and writes them as an overlay that states, beside every
+value, what it was measured from. On the Orin the overlay is the middle of
+three configuration layers; `deploy/README.md` has the commands.
+
+Until the local console exists, `python -m tools.confirm` answers the room's
+booking questions from a terminal.
 
 ---
 
@@ -342,12 +384,13 @@ Honest about the gaps, so nobody hunts for something that isn't there:
   bridge (`src/io/devices.py`) and the systemd units (`deploy/`) exist and are
   tested against simulated device messages; the node topics in config are
   placeholders until the nodes are flashed
-- the local console (FR-56 to FR-58) — Week 8; `tools.say` stands in for
-  confirming a booking meanwhile
+- the local console (FR-56 to FR-58) — Week 8; `tools.say` and
+  `tools.confirm` stand in for it meanwhile
 - speaker profiles (FR-52) — the speech pipeline is deliberately untouched
-- the baseline thermostat and experiments E2, E4, E5 and E7
+- experiment E7 (latency and memory on the Jetson) — it needs the board
 - drift slower than about 0.3 C/min is not separable from a weak unit with
-  one indoor sensor; DESIGN.md section 5.5 has the measurements
+  one indoor sensor, and at 0.6 C/min D5 names the unit first in 2 of 10
+  trials; DESIGN.md sections 5.5 and 8.5 have the measurements
 - scheduled excitation (R-01) — under ordinary closed-loop control the model
   is poor for its first hour, which limits how long control on prediction
   stays accurate early in a run
