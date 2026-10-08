@@ -199,6 +199,16 @@ class CommandValidator:
                 now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
             )
 
+        if self._is_reassertion(command.kind):
+            # The controller re-sends its intended state because an IR command
+            # can be lost (R-02). Re-sending changes nothing, so it is neither
+            # throttled nor counted: counting it reset the V-4 window, and a
+            # genuine OFF arriving within 30 s of a refresh was suppressed,
+            # leaving the compressor running for up to another interval.
+            return self._verdict(
+                now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
+            )
+
         if self._violates_dwell(command.kind, now):
             return self._verdict(
                 now, command, _SUPPRESSED_COMMAND, Verdict.CLAMPED, ReasonCode.DWELL
@@ -213,6 +223,10 @@ class CommandValidator:
         return self._verdict(
             now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
         )
+
+    def _is_reassertion(self, kind: CommandKind) -> bool:
+        """Whether a command asks for the state the compressor is already in."""
+        return (kind is CommandKind.COOL) is self._compressor_on
 
     def _violates_dwell(self, kind: CommandKind, now: float) -> bool:
         """V-3. No restart until the compressor has been off long enough."""

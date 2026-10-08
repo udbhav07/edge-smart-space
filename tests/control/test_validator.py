@@ -270,6 +270,35 @@ class TestRuleV4CommandRate:
         verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
         assert verdict.verdict is Verdict.ACCEPTED
 
+    def test_a_reassertion_is_admitted_inside_the_rate_window(self, commands, clock):
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        verdict = commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        assert verdict.verdict is Verdict.ACCEPTED
+        assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.COOL.value
+
+    def test_a_reassertion_does_not_reset_the_rate_window(
+        self, commands, clock, config
+    ):
+        """R-02 refreshes re-send the state in force; they are not changes.
+        Counting one would suppress a genuine OFF that follows it."""
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        clock.advance(config.min_command_interval_s + 1.0)
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        clock.advance(1.0)
+        verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
+        assert verdict.verdict is Verdict.ACCEPTED
+
+    def test_an_off_reasserted_while_off_is_admitted(self, commands, clock):
+        verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
+        assert verdict.verdict is Verdict.ACCEPTED
+
+    def test_a_reassertion_is_still_mode_blocked(self, commands, clock):
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        verdict = commands.validate(
+            _command(clock, CommandKind.COOL, 25.0), Mode.SAFE_HOLD
+        )
+        assert verdict.reason is ReasonCode.MODE_BLOCK
+
 
 class TestCompressorState:
     def test_tracks_the_compressor_across_admitted_commands(
