@@ -177,6 +177,12 @@ CONTEXT_PREFERENCE = TopicSpec(
 #: a reply is an answer to one question, not state.
 CONTEXT_REPLY = TopicSpec("space/context/reply", Qos.AT_LEAST_ONCE, retain=False)
 
+#: What is known about one person: long-term memory and recent conversation
+#: (FR-52). Retained, so a restarted assistant knows who it was talking to.
+CONTEXT_PROFILE = TopicSpec(
+    "space/context/profile/{profile_id}", Qos.AT_LEAST_ONCE, retain=True
+)
+
 # --- Assistance tools (FR-70 to FR-75) -------------------------------------
 
 #: Every tool call the reasoning layer makes, including the ones it is

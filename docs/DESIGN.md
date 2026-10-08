@@ -1486,6 +1486,7 @@ startup, which NFR-06 forbids.
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
 | `space/context/reply` | pub | no | 1 | `AssistantReply` |
+| `space/context/profile/{profile_id}` | pub | yes | 1 | `ProfileContext` |
 | `space/tariff/state` | pub | yes | 1 | `TariffState` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |

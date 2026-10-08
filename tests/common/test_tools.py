@@ -659,3 +659,32 @@ class TestNoAuthority:
         assert not any(
             name in parameters for name in ("setpoint_c", "temperature", "command")
         )
+
+
+class TestSystemSuppliedParameters:
+    """FR-52: whose memory a fact goes into is decided by who spoke."""
+
+    def test_the_model_is_never_shown_whose_memory_it_writes(self):
+        from src.common.tools import REMEMBER
+
+        properties = REMEMBER.as_schema()["function"]["parameters"]["properties"]
+        assert "profile_id" not in properties
+        assert "fact" in properties
+
+    def test_nor_is_it_listed_as_required_of_the_model(self):
+        from src.common.tools import REMEMBER
+
+        required = REMEMBER.as_schema()["function"]["parameters"]["required"]
+        assert required == ["fact"]
+
+    def test_the_executor_still_requires_it(self):
+        from src.common.tools import REMEMBER, ToolArgumentError
+
+        with pytest.raises(ToolArgumentError, match="profile_id"):
+            REMEMBER.validate_arguments({"fact": "likes it cool"})
+
+    def test_memory_tools_write_and_never_commit(self):
+        """Their own memory, removable again: no confirmation (FR-74)."""
+        from src.common.tools import FORGET, REMEMBER, ToolEffect
+
+        assert REMEMBER.effect is ToolEffect.WRITE and FORGET.effect is ToolEffect.WRITE

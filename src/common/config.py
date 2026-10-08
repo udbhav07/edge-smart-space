@@ -498,6 +498,22 @@ class SpeechConfig(_Section):
     command_timeout_s: float = Field(
         gt=0.0, description="Hard cap on one utterance (FR-50)"
     )
+    voiceprints_path: str = Field(
+        default="state/voiceprints.json",
+        description="Enrolled voiceprints: vectors only, never audio (FR-51)",
+    )
+    speaker_match_threshold: float = Field(
+        default=0.92,
+        gt=0.0,
+        lt=1.0,
+        description="Cosine similarity a voice must reach to be recognised; "
+        "below it the speaker is a guest (FR-52)",
+    )
+    speaker_min_audio_s: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Shortest utterance a speaker is judged from, in s",
+    )
     asr_model: str = Field(min_length=1, description="Whisper model size")
     asr_device: str = Field(
         min_length=1,
@@ -865,6 +881,36 @@ class CalibrationConfig(_Section):
     )
 
 
+class ProfilesConfig(_Section):
+    """Speaker profiles and their memory (FR-52).
+
+    Long-term memory is one Markdown file per person, readable and editable
+    by hand; short-term context is one JSON file per person and expires.
+    Every collection is bounded, because a misheard utterance repeated in a
+    loop must not fill the disk (NFR-05).
+    """
+
+    directory: str = Field(default="state/profiles", description="Long-term memory, one .md per person")
+    context_directory: str = Field(
+        default="state/context", description="Short-term context, one .json per person"
+    )
+    short_term_ttl_s: float = Field(
+        default=1800.0, gt=0.0, description="An exchange older than this is forgotten, in s"
+    )
+    short_term_max_turns: int = Field(
+        default=10, gt=0, description="Exchanges kept per person"
+    )
+    max_facts: int = Field(default=50, gt=0, description="Long-term facts per person")
+    max_fact_chars: int = Field(default=200, gt=0, description="Longest fact kept")
+    max_profiles: int = Field(default=8, gt=0, description="People the room keeps memory for")
+    publish_interval_s: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="How often every profile's context is republished, so an "
+        "edit made by hand reaches the blackboard, in s",
+    )
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -889,6 +935,7 @@ class Config(_Section):
     bringup: BringupConfig = BringupConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
     calibration: CalibrationConfig = CalibrationConfig()
+    profiles: ProfilesConfig = ProfilesConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

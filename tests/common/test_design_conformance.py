@@ -224,6 +224,7 @@ DOCUMENTED_TOPICS = frozenset(
         "space/actuator/{actuator_id}/state",
         "space/context/preference",
         "space/context/reply",
+        "space/context/profile/{profile_id}",
         "space/tariff/state",
         "space/assist/proposed",
         "space/assist/confirmed",

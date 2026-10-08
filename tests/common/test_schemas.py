@@ -510,3 +510,47 @@ class TestReadingsAreFinite:
     def test_a_non_finite_reading_is_rejected(self, value):
         with pytest.raises(ValueError):
             SensorReading(ts=1.0, sensor_id="temp_01", value=value, unit=Unit.CELSIUS)
+
+
+class TestProfiles:
+    """FR-52: a profile id is both a topic level and a file name."""
+
+    @pytest.mark.parametrize("profile_id", ["ravi", "a", "guest", "ravi_2"])
+    def test_a_safe_id_is_accepted(self, profile_id):
+        from src.common.schemas import ProfileContext
+
+        assert ProfileContext(ts=1.0, profile_id=profile_id).profile_id == profile_id
+
+    @pytest.mark.parametrize("profile_id", ["", "Ravi", "../etc", "a/b", "a+", "2ravi", "x" * 33])
+    def test_an_unsafe_id_is_refused(self, profile_id):
+        from src.common.schemas import ProfileContext
+
+        with pytest.raises(ValueError):
+            ProfileContext(ts=1.0, profile_id=profile_id)
+
+    def test_a_hint_from_a_guest_carries_no_profile(self):
+        from src.common.schemas import Comfort, Intent, PreferenceHint
+
+        hint = PreferenceHint(ts=1.0, intent=Intent.NONE, comfort=Comfort.UNCHANGED)
+        assert hint.profile_id == ""
+
+    def test_a_hint_cannot_name_a_path_as_its_speaker(self):
+        from src.common.schemas import Comfort, Intent, PreferenceHint
+
+        with pytest.raises(ValueError):
+            PreferenceHint(
+                ts=1.0, intent=Intent.NONE, comfort=Comfort.UNCHANGED, profile_id="../x"
+            )
+
+    def test_a_profile_context_round_trips_the_wire(self):
+        from src.common.schemas import ContextTurn, ProfileContext
+
+        context = ProfileContext(
+            ts=1.0,
+            profile_id="ravi",
+            display_name="Ravi",
+            preferences={"comfort_c": "23"},
+            facts=("prefers meetings after ten",),
+            recent=(ContextTurn(ts=1.0, said="hi", replied="hello"),),
+        )
+        assert ProfileContext.model_validate_json(context.model_dump_json()) == context

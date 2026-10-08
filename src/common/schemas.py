@@ -57,6 +57,15 @@ SETPOINT_KEY = "setpoint_c"
 #: Who proposed a goal, carried in a goal verdict's ``proposed`` mapping.
 SOURCE_KEY = "source"
 COMMAND_KIND_KEY = "kind"
+
+#: A profile id: short, lower-case, and safe as both a topic level and a file
+#: name, because it is both (``space/context/profile/{id}``, ``state/...``).
+PROFILE_ID_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+PROFILE_ID_PATTERN_OR_EMPTY = r"^([a-z][a-z0-9_]{0,31})?$"
+
+#: Whoever was not recognised. Has short-term context -- the room's own
+#: conversation -- and never long-term memory: there is nobody to keep it for.
+GUEST_PROFILE_ID = "guest"
 #: Inside a sensor FaultEvent's evidence: epoch seconds from which the
 #: detector's own evidence says the readings were already wrong. Present only
 #: where a detector can say -- D2's frozen window, D4's change point -- so the
@@ -559,6 +568,12 @@ class PreferenceHint(TimestampedMessage):
         "calendar entry needs the exact time said -- reads the words rather "
         "than a model's paraphrase of them",
     )
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Whose voice it was, if recognised; empty for a guest. "
+        "Selects a personalisation profile and grants nothing (FR-52)",
+    )
 
     @model_validator(mode="after")
     def _nothing_actionable_carries_no_request(self) -> PreferenceHint:
@@ -718,6 +733,42 @@ class AssistantReply(TimestampedMessage):
         description="Invocation id of a booking put to the occupant, if any "
         "(FR-54); empty when nothing is waiting",
     )
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Whose voice it was, if recognised; empty for a guest. "
+        "Selects a personalisation profile and grants nothing (FR-52)",
+    )
+
+
+class ContextTurn(BlackboardMessage):
+    """One exchange, kept as short-term context."""
+
+    ts: float = Field(gt=0.0)
+    said: str = Field(description="What the person said")
+    replied: str = Field(description="What the system said back")
+
+
+class ProfileContext(TimestampedMessage):
+    """What the system knows about one person, as the assistant is told it.
+
+    Published retained on ``space/context/profile/{profile_id}`` by whatever
+    keeps the memory. Long-term ``facts`` are what the person asked to be
+    remembered; ``recent`` is the conversation so far, which expires. Knowing
+    who is speaking personalises replies and grants nothing (FR-52).
+    """
+
+    profile_id: str = Field(pattern=PROFILE_ID_PATTERN)
+    display_name: str = Field(default="", description="How to address them; empty for a guest")
+    preferences: Mapping[str, str] = Field(
+        default_factory=dict, description="Named preferences, as written in the profile"
+    )
+    facts: tuple[str, ...] = Field(default=(), description="Long-term memory")
+    recent: tuple[ContextTurn, ...] = Field(default=(), description="Short-term context")
+
+    @field_serializer("preferences")
+    def _plain_preferences(self, preferences: Mapping[str, str]) -> dict[str, str]:
+        return dict(preferences)
 
 
 class TariffState(TimestampedMessage):

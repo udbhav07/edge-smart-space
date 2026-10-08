@@ -140,4 +140,4 @@ class TestCatalogue:
         topic, payload, _, retain = transport.published[-1]
         assert topic == topics.ASSIST_CATALOGUE.pattern and retain
         names = {spec.name for spec in ToolCatalogue.model_validate_json(payload).tools}
-        assert names == {"schedule_event", "get_events", "book_travel"}
+        assert names == {"schedule_event", "get_events", "book_travel", "remember", "forget"}

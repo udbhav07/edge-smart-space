@@ -225,6 +225,12 @@ class ToolParameter(BaseModel):
     choices: tuple[str, ...] = Field(
         default=(), description="Permitted values; empty means unrestricted"
     )
+    supplied_by_system: bool = Field(
+        default=False,
+        description="Filled in by the requester, never by the model, and so "
+        "never shown to it: whose memory a fact goes into is decided by who "
+        "was speaking, not by what a model wrote",
+    )
 
     @model_validator(mode="after")
     def _only_a_string_has_choices(self) -> ToolParameter:
@@ -353,9 +359,8 @@ class ToolSpec(BaseModel):
         provider, the transport, or the confirmation flow appears here,
         because none of it is the model's business (FR-70, FR-71).
         """
-        required = [
-            parameter.name for parameter in self.parameters if parameter.required
-        ]
+        shown = [parameter for parameter in self.parameters if not parameter.supplied_by_system]
+        required = [parameter.name for parameter in shown if parameter.required]
         return {
             "type": "function",
             "function": {
@@ -364,8 +369,7 @@ class ToolSpec(BaseModel):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        parameter.name: parameter.as_schema()
-                        for parameter in self.parameters
+                        parameter.name: parameter.as_schema() for parameter in shown
                     },
                     "required": required,
                     "additionalProperties": False,
@@ -670,9 +674,65 @@ BOOK_TRAVEL = ToolSpec(
     ),
 )
 
+#: Whose memory a fact belongs to. Filled in from the recognised speaker by
+#: the requester; a model choosing it could write into someone else's.
+_PROFILE_PARAMETER = ToolParameter(
+    name="profile_id",
+    type=ParameterType.STRING,
+    description="The recognised speaker's profile.",
+    supplied_by_system=True,
+)
+
+REMEMBER = ToolSpec(
+    name="remember",
+    purpose=(
+        "Keep a fact about the person you are speaking with, for later "
+        "conversations: a preference, a routine, something they asked you "
+        "to remember. Use it only when they ask you to remember something "
+        "or state a lasting preference. It is their own memory and they can "
+        "remove it again."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        _PROFILE_PARAMETER,
+        ToolParameter(
+            name="fact",
+            type=ParameterType.STRING,
+            description="The fact, as one short sentence about them.",
+        ),
+    ),
+)
+
+FORGET = ToolSpec(
+    name="forget",
+    purpose=(
+        "Remove what you remembered about the person you are speaking with, "
+        "when they ask you to forget something."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        _PROFILE_PARAMETER,
+        ToolParameter(
+            name="about",
+            type=ParameterType.STRING,
+            description="A word or phrase from what is to be forgotten.",
+        ),
+    ),
+)
+
 #: The declared assistance surface (section 5.7.6). Adding a tool is one
 #: entry here plus a provider binding, and touches nothing else (FR-72).
-ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (SCHEDULE_EVENT, GET_EVENTS, BOOK_TRAVEL)
+ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
+    SCHEDULE_EVENT,
+    GET_EVENTS,
+    BOOK_TRAVEL,
+    REMEMBER,
+    FORGET,
+)
+
+#: Tools that only make sense for a recognised person. A guest has no
+#: long-term memory to keep anything in.
+PROFILE_TOOLS = frozenset({REMEMBER.name, FORGET.name})
 
 
 # --- Registry --------------------------------------------------------------

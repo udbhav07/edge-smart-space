@@ -232,6 +232,11 @@ speech:
   vad_silence_ms: 1000
   no_speech_timeout_s: 3.0
   command_timeout_s: 15.0
+  # FR-52. Who is speaking selects a personalisation profile and grants
+  # nothing. Only the enrolled vectors are stored, never audio (FR-51).
+  voiceprints_path: state/voiceprints.json
+  speaker_match_threshold: 0.92   # cosine similarity; below it, a guest
+  speaker_min_audio_s: 1.0        # shorter utterances are judged as a guest
   asr_model: base.en
   # GPU first. 'auto' prefers CUDA and falls back to CPU so a laptop still
   # runs (NFR-09); 'cuda' demands it and fails loudly if absent, which is what
@@ -335,6 +340,19 @@ bringup:
   actuation_drop_c: 2.0         # Ask for this far below the room
   actuation_window_s: 300.0     # Longer than the 180 s dwell
   min_power_rise_w: 200.0       # Used only once a power meter is configured
+
+# FR-52. What the room remembers about each person. Long-term memory is one
+# Markdown file per person -- read it, edit it, delete it -- and short-term
+# context is one JSON file per person that expires. Everything is bounded.
+profiles:
+  directory: state/profiles          # long-term, <profile_id>.md
+  context_directory: state/context   # short-term, <profile_id>.json
+  short_term_ttl_s: 1800.0           # a conversation is forgotten after 30 min
+  short_term_max_turns: 10
+  max_facts: 50
+  max_fact_chars: 200
+  max_profiles: 8
+  publish_interval_s: 30.0           # hand edits reach the blackboard this fast
 
 # Week 7, R-04. How tools/calibrate.py re-derives detector thresholds from a
 # recorded healthy run. Margins over what was measured, not thresholds.
