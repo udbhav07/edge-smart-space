@@ -28,7 +28,16 @@ from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
-from src.common.tools import BOOK_TRAVEL, FORGET, GET_EVENTS, REMEMBER, SCHEDULE_EVENT, ToolRegistry
+from src.common.tools import (
+    BOOK_TRAVEL,
+    CANCEL_EVENT,
+    FORGET,
+    GET_EVENTS,
+    MOVE_EVENT,
+    REMEMBER,
+    SCHEDULE_EVENT,
+    ToolRegistry,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +56,8 @@ def build_registry(config: Config, clock: Clock) -> ToolRegistry:
     )
     registry.bind(SCHEDULE_EVENT.name, calendar)
     registry.bind(GET_EVENTS.name, calendar)
+    registry.bind(CANCEL_EVENT.name, calendar)
+    registry.bind(MOVE_EVENT.name, calendar)
     registry.bind(BOOK_TRAVEL.name, MockTravel())
     memory = ProfileMemory(build_store(config, clock))
     registry.bind(REMEMBER.name, memory)

@@ -633,6 +633,50 @@ GET_EVENTS = ToolSpec(
     ),
 )
 
+CANCEL_EVENT = ToolSpec(
+    name="cancel_event",
+    purpose=(
+        "Remove an entry from the occupant's calendar, when they ask to "
+        "cancel, delete or drop one. Never add an entry for a cancellation."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="Words from the entry's title, such as 'meeting with Ravi'.",
+        ),
+        ToolParameter(
+            name="on",
+            type=ParameterType.TIMESTAMP,
+            description="When the entry is, if they said; omit otherwise.",
+            required=False,
+        ),
+    ),
+)
+
+MOVE_EVENT = ToolSpec(
+    name="move_event",
+    purpose=(
+        "Move an entry in the occupant's calendar to a new time, when they "
+        "ask to move, reschedule or change one -- including a follow-up such "
+        "as 'move it to 4' about an entry just discussed."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="Words from the entry's title, such as 'meeting with Ravi'.",
+        ),
+        ToolParameter(
+            name="starts_at",
+            type=ParameterType.TIMESTAMP,
+            description="The new start, as an ISO-8601 local date and time.",
+        ),
+    ),
+)
+
 BOOK_TRAVEL = ToolSpec(
     name="book_travel",
     purpose=(
@@ -725,6 +769,8 @@ FORGET = ToolSpec(
 ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
     SCHEDULE_EVENT,
     GET_EVENTS,
+    CANCEL_EVENT,
+    MOVE_EVENT,
     BOOK_TRAVEL,
     REMEMBER,
     FORGET,
@@ -736,6 +782,9 @@ PROFILE_TOOLS = frozenset({REMEMBER.name, FORGET.name})
 
 
 # --- Registry --------------------------------------------------------------
+
+#: What an occupant hears when a provider failed for a reason of its own.
+_INTERNAL_FAILURE = "Sorry, I couldn't do that just now."
 
 
 class ToolRegistry:
@@ -861,7 +910,12 @@ class ToolRegistry:
             LOGGER.warning(
                 "provider %s failed on %s: %s", provider.name, invocation.tool, exc
             )
-            raise ToolFailedError(f"{provider.name} could not do it: {exc}") from exc
+            # The message reaches the occupant (U-19). A provider raising
+            # ValueError has written a sentence for them -- "nothing in your
+            # calendar matches that" -- and it is passed on; anything else is
+            # an internal failure, apologised for, with the detail in the log.
+            spoken = str(exc) if isinstance(exc, ValueError) else _INTERNAL_FAILURE
+            raise ToolFailedError(spoken) from exc
 
         return ToolResult(
             ts=self._clock.now(),

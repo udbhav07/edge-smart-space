@@ -23,8 +23,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.common.tools import (
+    CANCEL_EVENT,
     DEFAULT_EVENT_DURATION_MIN,
     GET_EVENTS,
+    MOVE_EVENT,
     SCHEDULE_EVENT,
     ArgumentValue,
     ProviderOutcome,
@@ -45,6 +47,13 @@ _ENTRIES_NAMED_IN_A_REPLY = 5
 
 class CalendarFullError(RuntimeError):
     """The configured bound on entries has been reached."""
+
+
+class NoSuchEntryError(ValueError):
+    """Nothing, or more than one thing, matches the entry asked about.
+
+    The message is said to the occupant, so it is written for them.
+    """
 
 
 def describe_time(moment: datetime) -> str:
@@ -99,6 +108,10 @@ class LocalCalendar:
             return self._schedule(arguments)
         if tool == GET_EVENTS.name:
             return self._list(arguments)
+        if tool == CANCEL_EVENT.name:
+            return self._cancel(arguments)
+        if tool == MOVE_EVENT.name:
+            return self._move(arguments)
         raise ValueError(f"{PROVIDER_NAME} does not serve {tool!r}")
 
     # --- entries ------------------------------------------------------
@@ -137,12 +150,18 @@ class LocalCalendar:
             ),
             "duration_min": duration_min,
         }
+        clashes = self._overlapping(starts, starts + timedelta(minutes=duration_min))
         self._events.append(event)
         self._next_id += 1
         self._save()
         LOGGER.info("added %s: %s at %s", event["event_id"], subject, event["starts_at"])
+        clash = (
+            f" Note that you already have {clashes[0]['subject']} then."
+            if clashes
+            else ""
+        )
         return ProviderOutcome(
-            message=f"Added {subject} at {describe_time(starts)}.",
+            message=f"Added {subject} at {describe_time(starts)}.{clash}",
             detail={
                 "event_id": event["event_id"],
                 "starts_at": event["starts_at"],
@@ -165,6 +184,59 @@ class LocalCalendar:
             message=_summarise(found),
             detail={"count": len(found), "entries": _listing(found)},
         )
+
+    def _cancel(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
+        event = self._one_matching(str(arguments["subject"]), arguments.get("on"))
+        self.remove(str(event["event_id"]))
+        LOGGER.info("cancelled %s: %s", event["event_id"], event["subject"])
+        return ProviderOutcome(
+            message=f"Cancelled {event['subject']} at {describe_time(_parse(event['starts_at']))}.",
+            detail={"event_id": event["event_id"]},
+        )
+
+    def _move(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
+        event = self._one_matching(str(arguments["subject"]), None)
+        starts = _parse(arguments["starts_at"])
+        duration_min = int(event.get("duration_min") or DEFAULT_EVENT_DURATION_MIN)
+        event["starts_at"] = starts.isoformat(timespec="minutes")
+        event["ends_at"] = (starts + timedelta(minutes=duration_min)).isoformat(timespec="minutes")
+        self._save()
+        LOGGER.info("moved %s to %s", event["event_id"], event["starts_at"])
+        return ProviderOutcome(
+            message=f"Moved {event['subject']} to {describe_time(starts)}.",
+            detail={"event_id": event["event_id"], "starts_at": event["starts_at"]},
+        )
+
+    def _one_matching(self, words: str, on: ArgumentValue | None) -> dict[str, str | int]:
+        """The single entry the occupant meant, or a question back.
+
+        :raises NoSuchEntryError: when nothing matches, or several do and
+            nothing said tells them apart.
+        """
+        wanted = [word for word in words.lower().split() if len(word) > 2]
+        found = [
+            event
+            for event in self._sorted()
+            if wanted and all(word in str(event["subject"]).lower() for word in wanted)
+        ]
+        if on is not None and len(found) > 1:
+            day = _parse(on).date()
+            found = [event for event in found if _parse(event["starts_at"]).date() == day] or found
+        if not found:
+            raise NoSuchEntryError(f"Nothing in your calendar matches {words!r}.")
+        if len(found) > 1:
+            listed = "; ".join(
+                f"{event['subject']} at {describe_time(_parse(event['starts_at']))}" for event in found[:3]
+            )
+            raise NoSuchEntryError(f"More than one entry matches: {listed}. Which one?")
+        return found[0]
+
+    def _overlapping(self, starts: datetime, ends: datetime) -> list[dict[str, str | int]]:
+        return [
+            event
+            for event in self._sorted()
+            if _parse(event["starts_at"]) < ends and _parse(event["ends_at"]) > starts
+        ]
 
     def _sorted(self) -> list[dict[str, str | int]]:
         return sorted(self._events, key=lambda event: str(event["starts_at"]))

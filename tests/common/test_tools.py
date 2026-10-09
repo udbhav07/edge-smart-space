@@ -417,10 +417,21 @@ class TestInvocationOutcomes:
         result = registry.invoke(_invocation(clock), confirmed=True)
         assert result.status is ToolStatus.FAILED
 
-    def test_a_failure_says_what_went_wrong(self, registry, clock):
+    def test_an_internal_failure_is_apologised_for_not_recited(self, registry, clock):
+        """U-19: 'profile_memory could not do it: ...' was read out to a person."""
         registry.bind("schedule_event", BrokenProvider())
         result = registry.invoke(_invocation(clock), confirmed=True)
-        assert "unreachable" in result.message
+        assert result.message == "Sorry, I couldn't do that just now."
+        assert "broken_calendar" not in result.message
+
+    def test_a_providers_own_sentence_reaches_the_occupant(self, registry, clock):
+        class Refusing(BrokenProvider):
+            def invoke(self, tool, arguments):
+                raise ValueError("Nothing in your calendar matches that.")
+
+        registry.bind("schedule_event", Refusing())
+        result = registry.invoke(_invocation(clock), confirmed=True)
+        assert result.message == "Nothing in your calendar matches that."
 
     def test_a_refusal_names_no_provider(self, registry, clock):
         result = registry.invoke(_invocation(clock), confirmed=False)

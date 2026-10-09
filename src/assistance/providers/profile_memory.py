@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from src.assistance.memory import ProfileStore
+from src.assistance.memory import ProfileNotFoundError, ProfileStore
 from src.common.schemas import GUEST_PROFILE_ID
 from src.common.tools import FORGET, REMEMBER, ArgumentValue, ProviderOutcome
 
@@ -53,10 +53,17 @@ class ProfileMemory:
                 "I don't recognise your voice, so there is nowhere to keep that. "
                 "Someone can enrol you first."
             )
-        if tool == REMEMBER.name:
-            return self._remember(profile_id, str(arguments["fact"]))
-        if tool == FORGET.name:
-            return self._forget(profile_id, str(arguments["about"]))
+        try:
+            if tool == REMEMBER.name:
+                return self._remember(profile_id, str(arguments["fact"]))
+            if tool == FORGET.name:
+                return self._forget(profile_id, str(arguments["about"]))
+        except ProfileNotFoundError as exc:
+            # Said to the occupant, so in their terms (U-19).
+            raise ValueError(
+                "I don't have a profile for you any more, so I can't keep or "
+                "remove anything. Someone can enrol you again."
+            ) from exc
         raise ValueError(f"{PROVIDER_NAME} does not serve {tool!r}")
 
     def _remember(self, profile_id: str, fact: str) -> ProviderOutcome:

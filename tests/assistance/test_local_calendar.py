@@ -152,3 +152,42 @@ class TestContract:
 
     def test_times_are_described_as_a_person_says_them(self):
         assert describe_time(datetime(2026, 10, 1, 9, 5)) == "09:05 on Thursday 1 October"
+
+
+class TestCancellingAndMoving:
+    """U-02: 'cancel the meeting' once *created* an entry; FR-58 says removable."""
+
+    def test_an_entry_is_cancelled_by_words_from_its_title(self, calendar):
+        _schedule(calendar, subject="Meeting with Ravi")
+        outcome = calendar.invoke("cancel_event", {"subject": "meeting with Ravi"})
+        assert "Cancelled Meeting with Ravi" in outcome.message
+        assert calendar.events == ()
+
+    def test_cancelling_what_is_not_there_says_so(self, calendar):
+        with pytest.raises(ValueError, match="Nothing in your calendar matches"):
+            calendar.invoke("cancel_event", {"subject": "dentist"})
+
+    def test_two_matches_ask_which_one(self, calendar):
+        _schedule(calendar, starts_at="2026-10-01T15:00:00", subject="Meeting with Ravi")
+        _schedule(calendar, starts_at="2026-10-02T15:00:00", subject="Meeting with Ravi")
+        with pytest.raises(ValueError, match="Which one"):
+            calendar.invoke("cancel_event", {"subject": "meeting with Ravi"})
+        assert len(calendar.events) == 2
+
+    def test_a_date_tells_two_matches_apart(self, calendar):
+        _schedule(calendar, starts_at="2026-10-01T15:00:00", subject="Meeting with Ravi")
+        _schedule(calendar, starts_at="2026-10-02T15:00:00", subject="Meeting with Ravi")
+        calendar.invoke("cancel_event", {"subject": "meeting with Ravi", "on": "2026-10-02T00:00:00"})
+        assert [event["starts_at"] for event in calendar.events] == ["2026-10-01T15:00"]
+
+    def test_an_entry_is_moved_keeping_its_length(self, calendar):
+        _schedule(calendar, subject="Meeting with Ravi", duration_min=30)
+        outcome = calendar.invoke("move_event", {"subject": "Ravi", "starts_at": "2026-10-01T16:00:00"})
+        assert "Moved Meeting with Ravi to 16:00" in outcome.message
+        event = calendar.events[0]
+        assert (event["starts_at"], event["ends_at"]) == ("2026-10-01T16:00", "2026-10-01T16:30")
+
+    def test_a_clash_is_mentioned(self, calendar):
+        _schedule(calendar, subject="Meeting with Ravi")
+        message = _schedule(calendar, subject="Dentist").message
+        assert "you already have Meeting with Ravi then" in message
