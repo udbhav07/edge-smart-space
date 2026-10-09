@@ -394,3 +394,67 @@ class TestQuestionsAreAnswered:
     def test_a_greeting_gets_a_reply(self, config):
         room = Room(config, ScriptedChat(saying("Hello! How can I help?")))
         assert self._question(room, "hello").reply == "Hello! How can I help?"
+
+
+
+class TestCalendarCallsAreChecked:
+    """U-02, U-17: what the model wrote is checked against the clock and the words.
+
+    The room's clock here reads Saturday 26 September 2026, 15:00.
+    """
+
+    def test_an_entry_titled_as_a_cancellation_cancels_instead(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="Cancel review")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        reply = room.say("cancel the review")
+        assert room.calendar() == []
+        assert "Cancelled review" in reply.reply
+
+    def test_a_time_already_past_is_refused_with_a_question(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-09-25T17:00:00", subject="dentist"))
+        )
+        room = Room(config, chat)
+        reply = room.say("schedule the dentist yesterday at 5pm")
+        assert room.calendar() == []
+        assert "already passed" in reply.reply and "Which day" in reply.reply
+
+    def test_todays_weekday_after_its_time_means_next_week(self, config):
+        """'Saturday at 10', said on Saturday afternoon, is next Saturday."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-09-26T10:00:00", subject="yoga"))
+        )
+        room = Room(config, chat)
+        room.say("put yoga on Saturday at 10")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-03T10:00"]
+
+    def test_a_reminder_says_it_will_not_alert(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-09-26T15:10:00", subject="call mom"))
+        )
+        room = Room(config, chat)
+        reply = room.say("remind me to call mom in 10 minutes")
+        assert "won't remind you" in reply.reply
+
+    def test_an_ordinary_entry_says_nothing_about_alerts(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review"))
+        )
+        room = Room(config, chat)
+        assert "remind" not in room.say("put the review on Thursday at 3").reply
+
+    def test_a_follow_up_moves_the_entry(self, config):
+        """U-01's other half: 'move it to 4' now has somewhere to go."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("move_event", subject="review", starts_at="2026-10-01T16:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        reply = room.say("move it to 4")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-01T16:00"]
+        assert "Moved review" in reply.reply

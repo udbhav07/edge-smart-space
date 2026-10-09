@@ -35,6 +35,7 @@ would wait for a message the same thread has to deliver.
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -74,7 +75,7 @@ from src.reasoning.chat import (
     assistant_message,
     tool_message,
 )
-from src.reasoning.dates import annotation, on_day, the_one_day
+from src.reasoning.dates import annotation, named_days, on_day, the_one_day
 from src.reasoning.room_state import RoomState
 from src.reasoning.single_shot import ReasoningUnavailableError
 
@@ -122,7 +123,9 @@ ASSISTANT_PROMPT = (
     "start, and for a question about a day use 00:00 to 23:59 of that day. "
     "Use a tool whenever the request needs one: "
     "schedule_event to add to their calendar, get_events to answer what is "
-    "planned, book_travel for a flight or hotel, and remember or forget when "
+    "planned, cancel_event or move_event to cancel or move an entry -- never "
+    "schedule an entry to record a cancellation -- book_travel for a flight "
+    "or hotel, and remember or forget when "
     "they ask you to keep or drop something about them. Call each tool at "
     "most once. "
     "If the request cannot be done with these tools, say so in one sentence "
@@ -428,6 +431,11 @@ class Assistant:
             LOGGER.warning("assistant unavailable: %s", exc)
             reply_text = _fallback(results) if results else hint.spoken_reply
         reply_text = reply_text or _fallback(results) or _NO_TOOL_REPLY
+        if _REMINDER.search(utterance.lower()) and any(
+            result.status is ToolStatus.OK and result.tool == "schedule_event" for result in results
+        ):
+            # An entry is not an alarm; saying "added" alone promised one (U-17).
+            reply_text = f"{reply_text} {_REMINDER_NOTE}"
 
         awaiting = next(
             (
@@ -506,10 +514,23 @@ class Assistant:
         if corrected != arguments:
             LOGGER.info("%s: dates moved to the day named: %s", call.name, corrected)
             self._corrections.append(f"{call.name} date corrected to the day named")
+        tool, corrected = _as_cancellation(call.name, corrected)
+        if tool != call.name:
+            LOGGER.info("%s for a cancellation became %s", call.name, tool)
+            self._corrections.append(f"{call.name} of a cancellation became {tool}")
+        corrected, refusal = self._not_in_the_past(tool, corrected, utterance)
+        if refusal:
+            return ToolResult(
+                ts=now,
+                invocation_id=invocation_id,
+                tool=tool,
+                status=ToolStatus.BAD_ARGUMENTS,
+                message=refusal,
+            )
         invocation = ToolInvocation(
             ts=now,
             invocation_id=invocation_id,
-            tool=call.name,
+            tool=tool,
             arguments=corrected,
             requester=ToolRequester.PERSONAL_CONTEXT,
             rationale=utterance,
@@ -518,6 +539,38 @@ class Assistant:
         self._invocations_by_id[invocation_id] = invocation
         self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
         return self._await_result(invocation)
+
+    def _not_in_the_past(self, tool: str, arguments: dict, utterance: str) -> tuple[dict, str]:
+        """FR-44 against the clock: an entry or booking must not start in the past.
+
+        "Thursday at 3", said on Thursday evening, means next Thursday, and
+        is moved there. Anything else already past is refused with a
+        question, rather than written silently as it once was (U-17).
+
+        :returns: the arguments, possibly moved a week on, and a refusal to
+            say back instead, or "" when the call may go ahead.
+        """
+        name = _MOMENT_OF.get(tool)
+        value = arguments.get(name) if name else None
+        if not isinstance(value, str):
+            return arguments, ""
+        try:
+            moment = datetime.fromisoformat(value).replace(tzinfo=None)
+        except ValueError:
+            return arguments, ""
+        now = local_time(self._clock.now(), self._utc_offset_h)
+        if moment >= now:
+            return arguments, ""
+        today = now.strftime("%A")
+        if today in named_days(utterance, now.date()) and moment.date() == now.date():
+            moved = dict(arguments)
+            moved[name] = (moment + timedelta(days=7)).isoformat(timespec="seconds")
+            self._corrections.append(f"{tool} moved to next {today}: today's time had passed")
+            return moved, ""
+        return arguments, (
+            f"That would be {moment:%A} {moment.day} {moment:%B} at {moment:%H:%M}, "
+            f"which has already passed, so I haven't done it. Which day did you mean?"
+        )
 
     def _await_result(self, invocation: ToolInvocation) -> ToolResult:
         deadline = self._clock.monotonic() + self._config.result_timeout_s
@@ -603,6 +656,30 @@ def _flat(value: object) -> bool | int | float | str | None:
 def _for_the_model(result: ToolResult) -> str:
     mock = " (mock endpoint, no real reservation)" if result.simulated else ""
     return f"{result.tool}: {result.status.value}{mock}. {result.message}"
+
+
+#: The argument holding when each tool's effect happens, checked against now.
+_MOMENT_OF = {"schedule_event": "starts_at", "move_event": "starts_at", "book_travel": "depart_on"}
+
+#: A subject that is itself a request to cancel, which no entry should carry.
+_CANCELLATION = re.compile(r"^\s*(cancel|delete|remove|drop|unschedule|call\s+off)\b[\s:-]*", re.IGNORECASE)
+
+_REMINDER = re.compile(r"\bremind(er)?\b")
+_REMINDER_NOTE = "It's in your calendar, but I can't alert you yet, so I won't remind you by myself."
+
+
+def _as_cancellation(tool: str, arguments: dict) -> tuple[str, dict]:
+    """An entry titled "Cancel ..." is a cancellation the model filed as an entry (U-02)."""
+    if tool != "schedule_event":
+        return tool, arguments
+    subject = str(arguments.get("subject", ""))
+    match = _CANCELLATION.match(subject)
+    if match is None or not subject[match.end():].strip():
+        return tool, arguments
+    cancel = {"subject": subject[match.end():].strip()}
+    if isinstance(arguments.get("starts_at"), str):
+        cancel["on"] = arguments["starts_at"]
+    return "cancel_event", cancel
 
 
 #: Timestamp arguments that name a single moment on the day asked about.
