@@ -1511,6 +1511,7 @@ startup, which NFR-06 forbids.
 | `space/context/reply` | pub | no | 1 | `AssistantReply` |
 | `space/context/profile/{profile_id}` | pub | yes | 1 | `ProfileContext` |
 | `space/tariff/state` | pub | yes | 1 | `TariffState` |
+| `space/control/tracking` | pub | yes | 1 | `TrackingState` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/result` | pub | no | 1 | `ToolResult` |

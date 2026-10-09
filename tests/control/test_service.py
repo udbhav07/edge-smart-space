@@ -431,6 +431,45 @@ class TestPeakTariff:
         assert len(tariff) == 1 and tariff[0][1] is True
         assert b'"peak"' in tariff[0][0]
 
+    def _tracking(self, transport):
+        from src.common.schemas import TrackingState
+
+        return [
+            (TrackingState.model_validate_json(payload), retain)
+            for topic, payload, _, retain in transport.published
+            if topic == "space/control/tracking"
+        ]
+
+    def test_what_the_room_is_held_to_is_published_retained(self, config):
+        """U-04: told 22 while held at 23, with nothing to show the difference."""
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        state, retained = self._tracking(transport)[-1]
+        assert retained
+        assert state.tracked_c == state.setpoint_c + config.tariff.peak_offset_c
+
+    def test_the_difference_is_explained(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        reason = self._tracking(transport)[-1][0].reason
+        assert "peak tariff" in reason and "22:00" in reason
+
+    def test_outside_peak_there_is_nothing_to_explain(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 12)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        state = self._tracking(transport)[-1][0]
+        assert state.tracked_c == state.setpoint_c and state.reason == ""
+
+    def test_tracking_is_republished_only_on_change(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        service.tick()
+        assert len(self._tracking(transport)) == 1
+
     def test_an_unchanged_band_is_not_republished(self, config):
         service, transport, blackboard, clock = self._wired_at(config, 19)
         _send_reading(blackboard, clock, 27.0)

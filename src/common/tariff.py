@@ -49,6 +49,10 @@ class TariffSchedule:
             return setpoint_c
         return min(setpoint_c + self._config.peak_offset_c, ceiling_c)
 
+    def local_hour_text(self, ts: float) -> str:
+        """A moment as the room's wall clock shows it, such as ``22:00``."""
+        return f"{local_time(ts, self._utc_offset_h):%H:%M}"
+
     def next_transition_ts(self, ts: float) -> float:
         """Epoch seconds at which the band next changes."""
         moment = local_time(ts, self._utc_offset_h)

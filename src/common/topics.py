@@ -161,6 +161,11 @@ ACTUATOR_STATE = TopicSpec(
 #: the same topics under their own id and carry ``simulated: true``.
 AIR_CONDITIONER_ID = "ac"
 
+#: What the loop is holding the room to: the setpoint in force, and the
+#: temperature actually tracked, which differs during peak (FR-16). Retained:
+#: it is state an occupant, the assistant and the viewer all need.
+CONTROL_TRACKING = TopicSpec("space/control/tracking", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Tariff (FR-16) ---------------------------------------------------------
 
 #: The pricing band in force. Retained: it is state, and the supervisor reads

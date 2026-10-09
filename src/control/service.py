@@ -51,6 +51,7 @@ from src.common.schemas import (
     PreferenceHint,
     ReasonCode,
     TariffBand,
+    TrackingState,
     SensorReading,
     ThermalEstimate,
     ValidationVerdict,
@@ -90,6 +91,7 @@ class ControlService:
         self._goal_manager = goal_manager
         self._tariff = tariff
         self._published_band: TariffBand | None = None
+        self._published_tracking: tuple[float, float, TariffBand] | None = None
 
         self._measured_c: float | None = None
         self._predicted_c: float | None = None
@@ -203,6 +205,31 @@ class ControlService:
             "tariff is %s; tracking %.2f C", state.band.value, self.effective_setpoint_c
         )
 
+    def tracking(self) -> TrackingState:
+        """The setpoint in force, what the loop is actually holding, and why."""
+        now = self._clock.now()
+        band = self._tariff.band_at(now)
+        tracked = self.effective_setpoint_c
+        reason = ""
+        if tracked != self.setpoint_c:
+            until = self._tariff.state(now).next_transition_ts
+            reason = (
+                f"peak tariff: held {tracked - self.setpoint_c:+g} C until "
+                f"{self._tariff.local_hour_text(until)}"
+            )
+        return TrackingState(
+            ts=now, setpoint_c=self.setpoint_c, tracked_c=tracked, band=band, reason=reason
+        )
+
+    def _publish_tracking_if_changed(self) -> None:
+        """Retain what the room is held to whenever it changes (FR-61, U-04)."""
+        state = self.tracking()
+        key = (state.setpoint_c, state.tracked_c, state.band)
+        if key == self._published_tracking:
+            return
+        self._published_tracking = key
+        self._blackboard.publish(topics.CONTROL_TRACKING, state)
+
     def _publish_active_goal(self, goal: Goal) -> None:
         """Retain what is actually in force, which is not what was proposed."""
         self._blackboard.publish(
@@ -237,6 +264,7 @@ class ControlService:
             return None
 
         self._publish_tariff_if_changed()
+        self._publish_tracking_if_changed()
         pursuit = self._goal_manager.next_pursuit(self._mode)
         if pursuit is not None:
             self._adopt(pursuit)

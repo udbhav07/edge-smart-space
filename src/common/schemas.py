@@ -783,6 +783,21 @@ class ProfileContext(TimestampedMessage):
         return dict(preferences)
 
 
+class TrackingState(TimestampedMessage):
+    """What the regulatory loop is holding the room to, and why (FR-16, FR-61).
+
+    ``setpoint_c`` is what was asked for and admitted; ``tracked_c`` is what
+    the loop is actually holding, which differs during peak tariff. Without
+    this, an occupant told "set to 22" had no way to learn the room was being
+    held at 23 (U-04).
+    """
+
+    setpoint_c: float
+    tracked_c: float
+    band: TariffBand
+    reason: str = Field(default="", description="Why the two differ; empty when they do not")
+
+
 class TariffState(TimestampedMessage):
     """The electricity pricing band in force, retained (FR-16)."""
 
