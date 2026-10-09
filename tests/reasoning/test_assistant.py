@@ -292,3 +292,105 @@ class TestTemperatureReplies:
         self._verdict(room, 23.0, 23.0, Verdict.ACCEPTED, ReasonCode.NONE)
         room.assistant.answer(hint)
         assert chat.requests == []
+
+
+
+class TestRepliesTellTheTruthAboutTheRoom:
+    """U-03, U-04, U-06: a reply must not claim what the room is not doing."""
+
+    def _mode(self, room, mode, fault_ids=()):
+        from src.common.schemas import ModeState
+
+        room.caller.publish(
+            topics.SYSTEM_MODE,
+            ModeState(ts=room.clock.now(), mode=mode, since_ts=room.clock.now(), active_fault_ids=fault_ids),
+        )
+
+    def _accepted(self, room, target):
+        replies = TestTemperatureReplies()
+        hint = replies._ask(room, target)
+        replies._verdict(room, target, target, Verdict.ACCEPTED, ReasonCode.NONE)
+        return room.assistant.answer(hint).reply
+
+    def test_with_the_unit_on_hold_it_does_not_say_done(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat())
+        self._mode(room, Mode.DEGRADED_ACTUATOR, ("f_ac_noresponse_1",))
+        reply = self._accepted(room, 20.0)
+        assert not reply.startswith("Done")
+        assert "on hold" in reply and "will not be cooled" in reply
+
+    def test_with_the_sensor_out_it_says_it_is_running_on_an_estimate(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat())
+        self._mode(room, Mode.DEGRADED_SENSOR, ("f_temp01_stuck_1",))
+        assert "estimate" in self._accepted(room, 22.0)
+
+    def test_during_peak_it_says_what_the_room_is_held_at(self, config):
+        from src.common.schemas import TariffBand, TrackingState
+
+        room = Room(config, ScriptedChat())
+        room.caller.publish(
+            topics.CONTROL_TRACKING,
+            TrackingState(
+                ts=room.clock.now(), setpoint_c=24.0, tracked_c=25.0, band=TariffBand.PEAK,
+                reason="peak tariff: held +1 C until 22:00",
+            ),
+        )
+        reply = self._accepted(room, 22.0)
+        assert "held at 23 degrees" in reply and "22:00" in reply
+
+    def test_in_a_healthy_room_the_reply_is_unchanged(self, config):
+        room = Room(config, ScriptedChat())
+        assert self._accepted(room, 23.0) == "Done. The room is now set to 23 degrees."
+
+
+class TestQuestionsAreAnswered:
+    """U-06, U-25: a question or a greeting gets an answer, from the facts."""
+
+    def _question(self, room, transcript):
+        hint = PreferenceHint(
+            ts=room.clock.now(), intent=Intent.QUESTION, comfort=Comfort.UNCHANGED,
+            subject="room", transcript=transcript,
+        )
+        return room.assistant.answer(hint)
+
+    def test_a_question_is_answered(self, config):
+        room = Room(config, ScriptedChat(saying("It is 26.5 degrees.")))
+        assert self._question(room, "what's the temperature in here").reply == "It is 26.5 degrees."
+
+    def test_the_model_is_told_the_room_as_it_is(self, config):
+        from src.common.schemas import FaultDiagnosis, Hypothesis, DiagnosisConfidence, Mode, ModeState, ThermalEstimate, AdaptationState
+
+        chat = ScriptedChat(saying("The sensor is out."))
+        room = Room(config, chat)
+        room.caller.publish(
+            topics.SYSTEM_MODE,
+            ModeState(ts=room.clock.now(), mode=Mode.DEGRADED_SENSOR, since_ts=room.clock.now(),
+                      active_fault_ids=("f_temp01_stuck_1",)),
+        )
+        room.caller.publish(
+            topics.DIAGNOSIS,
+            FaultDiagnosis(
+                ts=room.clock.now(), fault_id="f_temp01_stuck_1",
+                primary_hypothesis=Hypothesis.SENSOR_STUCK, confidence=DiagnosisConfidence.HIGH,
+                recommended_mode=Mode.DEGRADED_SENSOR, user_message="The temperature sensor appears stuck.",
+                recommendation_legal=True,
+            ),
+            fault_id="f_temp01_stuck_1",
+        )
+        room.caller.publish(
+            topics.ESTIMATE_THERMAL,
+            ThermalEstimate(ts=room.clock.now(), t_in=27.0, t_pred=26.4, residual=0.6,
+                            residual_sigma=0.2, model_confidence=0.9, adaptation=AdaptationState.FROZEN),
+        )
+        self._question(room, "is everything working ok")
+        prompt = chat.requests[0][0][0]["content"]
+        assert "The temperature sensor appears stuck." in prompt
+        assert "26.4 C (an estimate" in prompt
+
+    def test_a_greeting_gets_a_reply(self, config):
+        room = Room(config, ScriptedChat(saying("Hello! How can I help?")))
+        assert self._question(room, "hello").reply == "Hello! How can I help?"

@@ -75,6 +75,7 @@ from src.reasoning.chat import (
     tool_message,
 )
 from src.reasoning.dates import annotation, on_day, the_one_day
+from src.reasoning.room_state import RoomState
 from src.reasoning.single_shot import ReasoningUnavailableError
 
 LOGGER = logging.getLogger(__name__)
@@ -125,7 +126,9 @@ ASSISTANT_PROMPT = (
     "they ask you to keep or drop something about them. Call each tool at "
     "most once. "
     "If the request cannot be done with these tools, say so in one sentence "
-    "without calling any."
+    "without calling any. Answer a question about the room, its temperature "
+    "or the system from 'The room now' below and nothing else, and reply to "
+    "a greeting in one friendly sentence."
 )
 
 ANSWER_PROMPT = (
@@ -193,6 +196,8 @@ class Assistant:
         self._invocations_by_id: dict[str, ToolInvocation] = {}
         self._corrections: list[str] = []
         self._specs = {spec.name: spec for spec in ASSISTANCE_TOOLS}
+        #: What is true of the room, so a reply never claims otherwise.
+        self._room = RoomState()
         self._profiles: dict[str, ProfileContext] = {}
 
     # --- wiring -------------------------------------------------------
@@ -206,6 +211,7 @@ class Assistant:
             topics.AUDIT_VALIDATION, ValidationVerdict, self._on_verdict
         )
         self._blackboard.subscribe(topics.CONTEXT_PROFILE, ProfileContext, self._on_profile)
+        self._room.subscribe(self._blackboard)
 
     def _on_profile(self, _topic: str, context: ProfileContext) -> None:
         if context.profile_id not in self._profiles and len(self._profiles) >= _PROFILES_KEPT:
@@ -248,7 +254,9 @@ class Assistant:
 
         :returns: the reply, or None for a hint that asked for nothing.
         """
-        if hint.intent is Intent.SERVICE:
+        if hint.intent in (Intent.SERVICE, Intent.QUESTION):
+            # A question is answered the same way a request is served: with
+            # the room's state, the person's context and the read tools.
             reply = self._serve(hint)
         elif hint.intent is Intent.ENVIRONMENT:
             reply = self._report_setpoint(hint)
@@ -340,7 +348,10 @@ class Assistant:
             ts=self._clock.now(),
             transcript=hint.transcript,
             intent=hint.intent,
-            reply=_describe_verdict(verdict, hint, self._safe_range_c),
+            reply=_with_caveat(
+                _describe_verdict(verdict, hint, self._safe_range_c, self._room.cooling_on_hold),
+                self._room.caveat(verdict.applied.get(SETPOINT_KEY)) if verdict else "",
+            ),
         )
 
     def _await_verdict(self, since_ts: float) -> ValidationVerdict | None:
@@ -371,6 +382,7 @@ class Assistant:
                             now=now, days=coming_days(self._clock, self._utc_offset_h)
                         ),
                         self._person_prompt(hint),
+                        self._room.summary(),
                     )
                     if part
                 ),
@@ -645,8 +657,15 @@ def _fallback(results: list[ToolResult]) -> str:
     return " ".join(result.message for result in results if result.message)
 
 
+def _with_caveat(reply: str, caveat: str) -> str:
+    return f"{reply} {caveat}".strip() if caveat else reply
+
+
 def _describe_verdict(
-    verdict: ValidationVerdict | None, hint: PreferenceHint, safe_range_c: Bounds
+    verdict: ValidationVerdict | None,
+    hint: PreferenceHint,
+    safe_range_c: Bounds,
+    on_hold: bool = False,
 ) -> str:
     if verdict is None:
         if hint.subject and hint.subject.lower() not in ("temperature", ""):
@@ -655,6 +674,9 @@ def _describe_verdict(
     asked = verdict.proposed.get(SETPOINT_KEY)
     applied = verdict.applied.get(SETPOINT_KEY)
     if verdict.verdict is Verdict.ACCEPTED:
+        if on_hold:
+            # "Done" would claim an effect nothing will produce (U-03).
+            return f"I've set the target to {applied:g} degrees."
         return f"Done. The room is now set to {applied:g} degrees."
     if not safe_range_c.contains(asked):
         limit = safe_range_c.clamp(asked)
