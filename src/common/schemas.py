@@ -507,13 +507,23 @@ class Intent(str, Enum):
         An action against an external service. Requires explicit
         confirmation before anything is invoked (FR-54), so it is never
         acted on from here.
+    ``QUESTION``
+        Asking about the room, the system, the calendar or what is
+        remembered, or small talk. Answered, and never acted on: a question
+        carries no temperature, so "why is it so warm?" cannot move the
+        setpoint the way it once did.
     ``NONE``
         Nothing actionable was said. The ordinary case, not an error.
     """
 
     ENVIRONMENT = "environment"
     SERVICE = "service"
+    QUESTION = "question"
     NONE = "none"
+
+
+#: Intents that only ever produce words: neither may carry a temperature.
+_ANSWER_ONLY_INTENTS = frozenset({Intent.QUESTION, Intent.NONE})
 
 
 #: Subjects a spoken preference may name and still be about the temperature.
@@ -577,18 +587,20 @@ class PreferenceHint(TimestampedMessage):
 
     @model_validator(mode="after")
     def _nothing_actionable_carries_no_request(self) -> PreferenceHint:
-        """A NONE intent must not smuggle a request through.
+        """A NONE or QUESTION intent must not smuggle a request through.
 
-        Without this, an extraction that decided nothing was asked could
-        still name a target temperature, and the goal path would have no way
-        to tell an actual request from a discarded one.
+        Without this, an extraction that decided nothing was asked -- or that
+        a question was -- could still name a target temperature, and the goal
+        path would have no way to tell an actual request from a question.
         """
-        if self.intent is not Intent.NONE:
+        if self.intent not in _ANSWER_ONLY_INTENTS:
             return self
         if self.comfort is not Comfort.UNCHANGED:
-            raise ValueError("an intent of NONE must carry comfort 'unchanged'")
+            raise ValueError(f"an intent of {self.intent.value} must carry comfort 'unchanged'")
         if self.target_c is not None:
-            raise ValueError("an intent of NONE must not name a target temperature")
+            raise ValueError(
+                f"an intent of {self.intent.value} must not name a target temperature"
+            )
         return self
 
 
