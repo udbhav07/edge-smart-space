@@ -21,8 +21,9 @@ class StubContext:
         self._hint = hint
         self.heard: list[str] = []
 
-    def extract(self, transcript):
+    def extract(self, transcript, recent=()):
         self.heard.append(transcript)
+        self.recent = recent
         return self._hint
 
 
@@ -123,3 +124,82 @@ def test_declining_books_nothing(config, capsys):
     converse(conversation, "book a flight", answer_yes=False, ask=lambda _: "no")
     assert "nothing was booked" in capsys.readouterr().out
     assert not [t for t, *_ in transport.published if t == topics.ASSIST_CONFIRMED.pattern]
+
+
+
+class TestWhatTheUserSees:
+    """The user-test findings about tools.say itself (U-01, U-06, U-09, U-29, U-33)."""
+
+    def test_the_conversation_so_far_reaches_personal_context(self, config):
+        from src.common.schemas import ContextTurn, ProfileContext
+
+        conversation, _, other, clock, context = _wired(config, None)
+        turn = ContextTurn(ts=clock.now(), said="put a meeting at 3", replied="Added Meeting at 15:00.")
+        other.publish(
+            topics.CONTEXT_PROFILE,
+            ProfileContext(ts=clock.now(), profile_id="guest", recent=(turn,)),
+            profile_id="guest",
+        )
+        conversation.hear("move it to 4")
+        assert context.recent == (turn,)
+
+    def test_a_fault_explanation_is_shown_when_it_arrives(self, config, capsys):
+        from src.common.schemas import DiagnosisConfidence, FaultDiagnosis, Hypothesis, Mode
+
+        conversation, _, other, clock, _ = _wired(config, _hint(SimClock()))
+        other.publish(
+            topics.DIAGNOSIS,
+            FaultDiagnosis(
+                ts=clock.now(), fault_id="f1", primary_hypothesis=Hypothesis.SENSOR_STUCK,
+                confidence=DiagnosisConfidence.HIGH, recommended_mode=Mode.DEGRADED_SENSOR,
+                user_message="The temperature sensor appears stuck.", recommendation_legal=True,
+            ),
+            fault_id="f1",
+        )
+        other.publish(
+            topics.CONTEXT_REPLY,
+            AssistantReply(ts=clock.now(), transcript="make it 22", intent=Intent.ENVIRONMENT, reply="Done."),
+        )
+        converse(conversation, "make it 22", None, input)
+        assert "notice: The temperature sensor appears stuck." in capsys.readouterr().out
+
+    def test_a_slow_reply_says_it_is_still_thinking(self, config):
+        """U-09: the first answer took 85 s, in silence."""
+
+        class Ticking:
+            """A clock that moves a second each time it is read."""
+
+            def __init__(self):
+                self.t = 0.0
+
+            def monotonic(self):
+                self.t += 1.0
+                return self.t
+
+            def now(self):
+                return 1756032000.0
+
+        transport = LoopbackTransport()
+        board = Blackboard(config.mqtt, transport)
+        transport.attach(board)
+        conversation = Conversation(config, Ticking(), board, StubContext())
+        told = []
+        conversation.await_reply("nothing", timeout_s=15.0, waiting=lambda: told.append(True))
+        assert told == [True]
+
+    def test_an_unclear_answer_is_said_to_be_taken_as_no(self, config, capsys):
+        conversation, _, other, clock, _ = _wired(config, _hint(SimClock(), "book a flight"))
+        other.publish(
+            topics.CONTEXT_REPLY,
+            AssistantReply(ts=clock.now(), transcript="book a flight", intent=Intent.SERVICE,
+                           reply="Shall I go ahead?", awaiting_confirmation="inv_1"),
+        )
+        converse(conversation, "book a flight", None, lambda _prompt: "maybe")
+        out = capsys.readouterr().out
+        assert "taking it as no" in out and "nothing was booked" in out
+
+    def test_an_invalid_speaker_is_refused(self, capsys):
+        from tools.say import main
+
+        assert main(["--as", "Ravi Kumar", "hello"]) == 2
+        assert "not a profile id" in capsys.readouterr().out

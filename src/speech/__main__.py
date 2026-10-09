@@ -27,6 +27,7 @@ from pathlib import Path
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, load_config
+from src.common.conversation import Conversations
 from src.common.device import resolve
 from src.common.mqtt_client import Blackboard, build_transport
 from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
@@ -47,7 +48,7 @@ _FRAME_WAIT_S = 0.5
 
 
 def build_pipeline(
-    config: Config, clock: Clock, capture: AudioCapture
+    config: Config, clock: Clock, capture: AudioCapture, conversations: Conversations | None = None
 ) -> SpeechPipeline:
     """Assemble the pipeline from configuration.
 
@@ -64,6 +65,7 @@ def build_pipeline(
         transcriber=Transcriber(config.speech),
         personal_context=PersonalContext(config.reasoning, clock),
         speaker=SpeakerIdentifier(config.speech),
+        conversations=conversations,
     )
 
 
@@ -127,7 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     holder.append(blackboard)
 
     capture = AudioCapture(config.speech, clock)
-    pipeline = build_pipeline(config, clock, capture)
+    conversations = Conversations()
+    conversations.subscribe(blackboard)
+    pipeline = build_pipeline(config, clock, capture, conversations)
 
     blackboard.start()
     capture.start()

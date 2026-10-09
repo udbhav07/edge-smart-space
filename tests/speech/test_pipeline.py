@@ -76,7 +76,7 @@ class FakePersonalContext:
         self.error = error
         self.transcripts: list[str] = []
 
-    def extract(self, transcript: str):
+    def extract(self, transcript: str, recent=()):
         self.transcripts.append(transcript)
         if self.error is not None:
             raise self.error
@@ -362,3 +362,33 @@ class TestWhoIsSpeaking:
     def test_without_a_recogniser_everyone_is_a_guest(self, config):
         pipeline = self._woken(config, None, _hint(SimClock()))
         assert pipeline.accept(AUDIO_FRAME).profile_id == ""
+
+
+
+class TestTheConversationSoFar:
+    """U-01: the extraction is told the conversation, so a follow-up reads as one."""
+
+    def test_the_speakers_conversation_reaches_the_extraction(self, config):
+        from src.common.schemas import ContextTurn
+
+        turn = ContextTurn(ts=1.0, said="put a meeting at 3", replied="Added it.")
+
+        class Conversations:
+            def recent(self, profile_id):
+                return (turn,) if profile_id == "ravi" else ()
+
+        class Remembering(FakePersonalContext):
+            def extract(self, transcript, recent=()):
+                self.recent = recent
+                return super().extract(transcript, recent)
+
+        context = Remembering(hint=_hint(SimClock()))
+        detector = FakeDetector(hears=True)
+        pipeline, _ = _pipeline(
+            config, SimClock(), detector=detector, utterance=FakeUtterance(ends_after=1),
+            personal_context=context, speaker=FakeSpeaker("ravi"), conversations=Conversations(),
+        )
+        pipeline.accept(AUDIO_FRAME)
+        detector.hears = False
+        pipeline.accept(AUDIO_FRAME)
+        assert context.recent == (turn,)

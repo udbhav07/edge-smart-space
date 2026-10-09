@@ -162,7 +162,7 @@ class TestSpeakingAs:
         def __init__(self, hint):
             self.hint = hint
 
-        def extract(self, _transcript):
+        def extract(self, _transcript, recent=()):
             return self.hint
 
     def _published(self, config, speaker):

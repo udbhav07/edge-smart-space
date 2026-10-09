@@ -57,6 +57,7 @@ class SpeechPipeline:
         transcriber,
         personal_context,
         speaker=None,
+        conversations=None,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -67,6 +68,8 @@ class SpeechPipeline:
         self._personal_context = personal_context
         #: Optional: without it every speaker is a guest, as before FR-52.
         self._speaker = speaker
+        #: Optional: the conversation so far, so a follow-up is read as one.
+        self._conversations = conversations
         self._state = PipelineState.WAITING_FOR_WAKE_WORD
         self._buffer: list = []
 
@@ -129,7 +132,8 @@ class SpeechPipeline:
         LOGGER.info("heard: %s", transcript)
         profile_id = self._speaker_of(frames)
         try:
-            hint = self._personal_context.extract(transcript)
+            recent = self._conversations.recent(profile_id) if self._conversations else ()
+            hint = self._personal_context.extract(transcript, recent)
         except Exception as exc:
             # Speech is the lowest-priority feature set and is cuttable
             # without affecting the main results. It degrades on its own
