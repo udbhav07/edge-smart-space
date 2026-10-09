@@ -474,6 +474,9 @@ class DetectorBankService:
         in the log, in the health message, and in the mode change that follows.
         """
         self._blackboard.clear_retained(topics.FAULT, fault_id=event.fault_id)
+        # Its explanation goes with it: a retained diagnosis of a fault that
+        # no longer holds would tell the occupant something untrue.
+        self._blackboard.clear_retained(topics.DIAGNOSIS, fault_id=event.fault_id)
         LOGGER.info("withdrew %s", event.fault_id)
 
     def _publish_health(self, findings: Iterable[Finding]) -> None:

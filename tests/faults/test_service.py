@@ -287,6 +287,17 @@ class TestPublishingFaults:
         )
         assert transport.withdrawals() == [f"space/fault/{raised.fault_id}"]
 
+    def test_its_explanation_is_withdrawn_with_it(self, wired, clock):
+        """A retained diagnosis must not outlive the fault it explains (U-14)."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        clock.advance(60.0)
+        service.tick()
+        raised = transport.faults()[0]
+        _report_healthily(service, blackboard, clock, config_confirm_s() + 10.0)
+        withdrawn = [topic for topic, payload, _, retain in transport.published if not payload and retain]
+        assert f"space/diagnosis/{raised.fault_id}" in withdrawn
+
     def test_nothing_is_published_before_any_reading_arrives(self, wired, clock):
         """Every detector answers UNKNOWN, which is not a claim about health."""
         service, transport, _ = wired

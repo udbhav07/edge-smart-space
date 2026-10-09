@@ -1498,7 +1498,7 @@ startup, which NFR-06 forbids.
 | `space/estimate/thermal` | pub | yes | 0 | `ThermalEstimate` |
 | `space/estimate/coefficients` | pub | yes | 1 | `Coefficients` |
 | `space/fault/{fault_id}` | pub | yes | 1 | `FaultEvent` |
-| `space/diagnosis/{fault_id}` | pub | no | 1 | `FaultDiagnosis` |
+| `space/diagnosis/{fault_id}` | pub | yes | 1 | `FaultDiagnosis` |
 | `space/system/mode` | pub | yes | 1 | `ModeState` |
 | `space/goal/proposed` | pub | no | 1 | `Goal` |
 | `space/goal/active` | pub | yes | 1 | `Goal` |

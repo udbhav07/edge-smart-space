@@ -138,9 +138,11 @@ ESTIMATE_COEFFICIENTS = TopicSpec(
 # --- Faults and mode (FR-20 to FR-31, FR-61) -------------------------------
 
 FAULT = TopicSpec("space/fault/{fault_id}", Qos.AT_LEAST_ONCE, retain=True)
-#: A person-readable explanation of a confirmed fault (FR-25). Not retained:
-#: a diagnosis outliving its fault would explain something no longer true.
-DIAGNOSIS = TopicSpec("space/diagnosis/{fault_id}", Qos.AT_LEAST_ONCE, retain=False)
+#: A person-readable explanation of a confirmed fault (FR-25, FR-28).
+#: Retained, so whoever looks later -- the viewer, the assistant asked "is
+#: everything ok?" -- still finds it (U-06, U-14); and withdrawn with its
+#: fault by the detector bank, so it never explains something no longer true.
+DIAGNOSIS = TopicSpec("space/diagnosis/{fault_id}", Qos.AT_LEAST_ONCE, retain=True)
 SYSTEM_MODE = TopicSpec("space/system/mode", Qos.AT_LEAST_ONCE, retain=True)
 
 # --- Goals (FR-40, FR-45) --------------------------------------------------
