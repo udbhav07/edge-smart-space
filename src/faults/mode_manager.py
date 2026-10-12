@@ -213,8 +213,10 @@ class ModeManager:
         """Enter a mode and describe the entry."""
         now = self._clock.now()
         if target is not self._mode:
-            LOGGER.warning(
-                "mode %s -> %s: %s", self._mode.value, target.value, reason
+            # Into NORMAL is the room working; only leaving it is news (U-27).
+            level = logging.INFO if target is Mode.NORMAL else logging.WARNING
+            LOGGER.log(
+                level, "mode %s -> %s: %s", self._mode.value, target.value, reason
             )
             self._track_substitution(target)
             self._mode = target

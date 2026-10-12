@@ -97,6 +97,18 @@ class TestStartup:
         state = manager.update([], sensors_reporting=True)
         assert state.reason == "no active faults"
 
+    def test_reaching_normal_is_not_logged_as_a_warning(self, manager, caplog):
+        """U-27: ordinary operation must not look alarming."""
+        with caplog.at_level("INFO"):
+            manager.update([], sensors_reporting=True)
+        assert [record.levelname for record in caplog.records if "->" in record.message] == ["INFO"]
+
+    def test_leaving_normal_is_a_warning(self, manager, caplog):
+        manager.update([], sensors_reporting=True)
+        with caplog.at_level("INFO"):
+            manager.update([_fault()], sensors_reporting=True)
+        assert [record.levelname for record in caplog.records if "->" in record.message] == ["WARNING"]
+
     def test_an_unchanged_mode_publishes_nothing(self, manager):
         """Republishing a retained mode every tick would bury the transitions
         that matter in the ones that do not."""
