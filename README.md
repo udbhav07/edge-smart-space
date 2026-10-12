@@ -199,18 +199,36 @@ has been measured on synthetic voices, not yet on real ones; DESIGN.md section
 ### Watching what happens
 
 Every decision in the system is on the blackboard. Nothing is hidden in
-process memory, so a debugger is never needed to see what it did:
+process memory, so a debugger is never needed to see what it did. The
+project's own viewer works the same on every platform:
+
+```bash
+python -m tools.blackboard_view            # one screen: sensors, unit, mode, faults, diagnoses
+python -m tools.blackboard_view --stream   # one line per message, flushed, safe to pipe
+```
+
+The summary lists every configured sensor, a silent one first; shows the
+setpoint the room is actually being held to beside the one asked for, and why
+they differ (peak tariff); and keeps the latest explanation of each active
+fault, so it is useful even when opened after the fact. Its last line names
+any declared topic nothing has published to, which answers "is that service
+actually running?" without guesswork.
+
+`mosquitto_sub` shows the raw messages:
 
 ```bash
 mosquitto_sub -t 'space/#' -v
-```
-
-Useful subsets:
-
-```bash
 mosquitto_sub -t 'space/sensor/+/state' -v      # raw readings
 mosquitto_sub -t 'space/audit/validation' -v    # what the safety gate decided
 mosquitto_sub -t 'space/system/mode' -v         # degradation state
+```
+
+On Windows the installer leaves `mosquitto_sub` off the PATH, and cmd and
+PowerShell do not treat single quotes as quoting. In PowerShell:
+
+```powershell
+& "C:\Program Files\mosquitto\mosquitto_sub.exe" -t "space/#" -v
+python -m tools.blackboard_view --stream | Select-String fault
 ```
 
 A clamped setpoint appearing in `space/audit/validation` is the gate working,
@@ -245,7 +263,8 @@ python -m tools.inject ac dead               # the unit accepts commands and coo
 python -m tools.inject ac clear
 ```
 
-Then watch what the detectors make of it:
+Then watch what the detectors make of it, with `python -m tools.blackboard_view`
+or the topics themselves:
 
 ```bash
 mosquitto_sub -t 'space/fault/#' -v             # faults, with their evidence
@@ -282,8 +301,11 @@ being injected right now.
 
 Detection is not instant, and the delays are honest ones: a dropout takes 15 s
 (three missed samples), an implausible reading 10 s (two samples), a stuck
-sensor about five minutes because that is how long the variance window is, and
-an actuator fault about ten minutes because that is how slowly a room responds.
+sensor five to six minutes — a whole five-minute variance window of frozen
+readings, then the next detector tick — and an actuator fault ten to twelve
+minutes: ten minutes of sustained cooling that achieves nothing, counted from
+when the unit should have started. Those are the times measured on a live run,
+not the window lengths alone.
 Drift is found by accumulating evidence, so how long it takes depends on how
 fast the sensor is drifting — which is the point of using a cumulative test
 rather than a threshold.

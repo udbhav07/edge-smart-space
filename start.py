@@ -515,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for service in services:
             running[service.name] = launch(service, arguments.config)
-        LOGGER.info("watch the blackboard with: mosquitto_sub -t 'space/#' -v")
+        LOGGER.info("watch the blackboard with: python -m tools.blackboard_view")
         by_name = {service.name: service for service in services}
         return supervise(
             running,
