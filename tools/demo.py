@@ -34,6 +34,7 @@ from src.common.injection import InjectedFault
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     Command,
+    CommandKind,
     FaultEvent,
     Mode,
     ModeState,
@@ -67,6 +68,9 @@ class Narrator:
         self._quiet = quiet
         self._started = clock.now()
         self._commands = 0
+        self._switches = 0
+        #: The unit starts off, so the first COOL is a switch.
+        self._last_kind = CommandKind.OFF
         blackboard.subscribe(topics.FAULT, FaultEvent, self._on_fault)
         blackboard.subscribe(topics.SYSTEM_MODE, ModeState, self._on_mode)
         blackboard.subscribe(topics.ACTUATOR_COMMAND, Command, self._on_command)
@@ -75,9 +79,25 @@ class Narrator:
     def commands(self) -> int:
         return self._commands
 
-    def _at(self) -> str:
-        elapsed = self._clock.now() - self._started
-        return f"[{int(elapsed) // 60:02d}:{int(elapsed) % 60:02d}]"
+    @property
+    def switches(self) -> int:
+        """Commands that changed the unit: COOL after OFF, or OFF after COOL.
+
+        Counting every command reported "396 commands issued" for a run
+        that switched the unit a handful of times; the rest re-assert the
+        state the unit should already be in, every few seconds (U-32).
+        """
+        return self._switches
+
+    def tally(self, since_commands: int = 0, since_switches: int = 0) -> str:
+        switches = self._switches - since_switches
+        reasserted = (self._commands - since_commands) - switches
+        return f"{switches} switch(es) of the unit, {reasserted} re-assertion(s)"
+
+    def _at(self, ts: float | None = None) -> str:
+        elapsed = (self._clock.now() if ts is None else ts) - self._started
+        sign, elapsed = ("-", -elapsed) if elapsed < 0 else ("", elapsed)
+        return f"[{sign}{int(elapsed) // 60:02d}:{int(elapsed) % 60:02d}]"
 
     def say(self, message: str) -> None:
         print(f"{self._at()} {message}")
@@ -89,21 +109,31 @@ class Narrator:
     def _on_fault(self, _topic: str, event: FaultEvent) -> None:
         self.say(f"FAULT   {event.detector.value} on {event.subject}")
         for name, value in sorted(event.evidence.items()):
-            self.detail(f"{name} = {value:.4g}")
+            # A timestamp as an epoch (1.756e+09) means nothing to a viewer;
+            # on the run's own clock it is a moment they just watched.
+            shown = f"at {self._at(value)}" if name.endswith("_ts") else f"{value:.4g}"
+            self.detail(f"{name} = {shown}")
 
     def _on_mode(self, _topic: str, state: ModeState) -> None:
         self.say(f"MODE    {state.mode.value} -- {state.reason}")
 
     def _on_command(self, _topic: str, command: Command) -> None:
         self._commands += 1
+        if command.kind in (CommandKind.COOL, CommandKind.OFF):
+            if command.kind is not self._last_kind:
+                self._switches += 1
+            self._last_kind = command.kind
 
 
 class Demo:
     """The four services, a plant, and someone watching."""
 
-    def __init__(self, config: Config, quiet: bool) -> None:
+    def __init__(self, config: Config, quiet: bool, shipped_budget_s: float | None = None) -> None:
         self.clock = SimClock()
         self.config = config
+        #: The budget the room really runs with, so the shortened one is
+        #: explained rather than passed off as the real thing (U-32).
+        self.shipped_budget_s = shipped_budget_s or config.mode.degraded_sensor_budget_s
         transport = LoopbackTransport()
 
         boards = [Blackboard(config.mqtt, transport) for _ in range(6)]
@@ -136,7 +166,7 @@ class Demo:
         self.narrator.say(
             f"ROOM    {label}: {self.simulator.room_temperature_c:.2f} C, "
             f"setpoint {self.control.setpoint_c:.1f} C, "
-            f"{self.narrator.commands} commands issued"
+            f"{self.narrator.tally()} so far"
         )
 
 
@@ -159,15 +189,19 @@ def _stuck_sensor(demo: Demo) -> None:
         INDOOR_TEMPERATURE_ID, InjectedFault.STUCK_AT, STUCK_VALUE_C
     )
 
-    before = demo.narrator.commands
+    before, switched = demo.narrator.commands, demo.narrator.switches
     demo.run_for(window_s + 120.0)
     demo.narrator.say(
-        f"STILL   controlling: {demo.narrator.commands - before} commands since "
+        f"STILL   controlling: {demo.narrator.tally(before, switched)} since "
         f"the sensor broke, on the model's prediction (FR-27)"
     )
     demo.report_room("while degraded")
 
-    demo.narrator.say("WAIT    letting the prediction budget run out")
+    demo.narrator.say(
+        f"WAIT    letting the prediction budget run out: "
+        f"{demo.config.mode.degraded_sensor_budget_s:.0f} s here so the story fits "
+        f"one run; the room itself allows {demo.shipped_budget_s:.0f} s"
+    )
     demo.run_for(DEMO_BUDGET_S)
     demo.report_room("after the budget")
 
@@ -258,10 +292,10 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="smart-space-demo-") as scratch:
         configured = _isolated(_configure(config, arguments.scenario), Path(scratch))
-        demo = Demo(configured, arguments.quiet)
+        demo = Demo(configured, arguments.quiet, config.mode.degraded_sensor_budget_s)
         SCENARIOS[arguments.scenario](demo)
     print(
-        f"\nDone. {demo.narrator.commands} commands issued, "
+        f"\nDone. {demo.narrator.tally()}, "
         f"final mode {demo.control.mode.value}."
     )
     return 0

@@ -100,6 +100,24 @@ class TestTheStuckSensorStory:
         assert "D5_ACTUATOR_NO_RESPONSE" not in printed
 
 
+class TestTheNarrationIsReadable:
+    """U-32: what a viewer reads must mean something to them."""
+
+    def test_a_timestamp_is_shown_on_the_runs_clock_not_as_an_epoch(self, capsys):
+        main([])
+        printed = capsys.readouterr().out
+        assert "onset_ts = at [" in printed and "e+09" not in printed
+
+    def test_the_shortened_budget_is_explained(self, capsys, config):
+        main(["--quiet"])
+        printed = capsys.readouterr().out
+        assert f"the room itself allows {config.mode.degraded_sensor_budget_s:.0f} s" in printed
+
+    def test_switches_are_counted_apart_from_re_assertions(self, capsys):
+        main(["--quiet"])
+        assert "switch(es) of the unit" in capsys.readouterr().out
+
+
 class TestTheDemonstrationLeavesRealStateAlone:
     """Regression: a demonstration run overwrote the live system's persisted
     coefficients with an estimate stamped in the simulated clock's epoch."""
