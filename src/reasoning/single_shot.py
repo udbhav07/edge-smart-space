@@ -111,9 +111,15 @@ _BLANK_COMFORT = (None, "")
 def _comfort_field(decoded: dict) -> object:
     """The comfort answer, with a blank one read as "unchanged".
 
-    A missing key is passed through as None so the enum rejects it.
+    A missing key is passed through as None so the enum rejects it -- for an
+    environment request, the one intent where comfort is the answer. For any
+    other intent comfort can only be "unchanged", and the served model leaves
+    the key out: "remember that I like tea" was dropped as invalid for want
+    of a field that could hold one value (U-07, measured live).
     """
     if "comfort" in decoded and decoded["comfort"] in _BLANK_COMFORT:
+        return Comfort.UNCHANGED.value
+    if "comfort" not in decoded and decoded.get("intent") not in (None, Intent.ENVIRONMENT.value):
         return Comfort.UNCHANGED.value
     return decoded.get("comfort")
 

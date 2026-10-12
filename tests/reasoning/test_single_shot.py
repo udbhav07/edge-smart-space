@@ -212,6 +212,21 @@ class TestWhatServedModelsActuallySend:
         assert hint is not None
         assert hint.intent is Intent.SERVICE
 
+    @pytest.mark.parametrize("intent", ["service", "question", "none"])
+    def test_a_missing_comfort_is_unchanged_when_comfort_cannot_apply(self, config, intent):
+        """U-07, live: "remember that I like tea" came back with no comfort
+        key at all and was discarded, so nothing was remembered."""
+        client = StubClient(
+            '{"intent": "' + intent + '", "subject": "memory", "target_c": null, '
+            '"rationale": "remember tea", "spoken_reply": ""}'
+        )
+        hint = _context(config, client).extract("remember that I like tea")
+        assert hint is not None and hint.comfort is Comfort.UNCHANGED
+
+    def test_an_environment_request_without_comfort_is_still_discarded(self, config):
+        client = StubClient('{"intent": "environment", "target_c": 23.0, "rationale": ""}')
+        assert _context(config, client).extract(TRANSCRIPT) is None
+
     def test_a_blank_comfort_reads_as_unchanged(self, config):
         client = StubClient(
             '{"intent": "environment", "subject": "temperature", "comfort": "", '
