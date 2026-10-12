@@ -24,6 +24,7 @@ def _config():
 @pytest.fixture(name="all_reachable")
 def _all_reachable(monkeypatch):
     monkeypatch.setattr(start, "is_reachable", lambda host, port, **_: True)
+    monkeypatch.setattr(start, "loaded_models", lambda config: None)
 
 
 @pytest.fixture(name="none_reachable")
@@ -145,6 +146,41 @@ class TestCommandLine:
     def test_a_missing_config_file_is_reported_clearly(self, tmp_path):
         assert start.main(["--config", str(tmp_path / "absent.yaml")]) == 2
 
+
+
+class TestModelState:
+    """U-09: --check says whether the first reply will be the slow one."""
+
+    def test_a_loaded_model_is_reported_as_such(self, config):
+        assert start.describe_model_state(config, (config.reasoning.model,)).endswith("is loaded")
+
+    def test_a_cold_model_warns_that_the_first_reply_is_slow(self, config):
+        assert "about a minute" in start.describe_model_state(config, ())
+
+    def test_a_server_that_cannot_say_is_reported_honestly(self, config):
+        assert start.describe_model_state(config, None).startswith("cannot tell")
+
+
+class TestAlreadyRunning:
+    """U-12: a second simulator would publish a second room onto the same topics."""
+
+    def _services(self, *names):
+        return tuple(service for service in start.SERVICES if service.name in names)
+
+    def test_a_running_simulator_is_noticed(self):
+        busy = start.already_running(self._services("simulator"), {"space/sensor/temp_01/state"})
+        assert busy == {"simulator": "space/sensor/temp_01/state"}
+
+    def test_a_quiet_broker_blocks_nothing(self):
+        assert start.already_running(self._services("simulator", "control"), set()) == {}
+
+    def test_only_the_services_being_started_are_checked(self):
+        busy = start.already_running(self._services("reasoning"), {"space/sensor/temp_01/state"})
+        assert busy == {}
+
+    def test_a_duplicate_stops_the_launch(self, config, all_reachable, monkeypatch):
+        monkeypatch.setattr(start, "listen_live", lambda config, seconds: {"space/sensor/temp_01/state"})
+        assert start.main(["--only", "simulator", "--config", str(CONFIG_PATH)]) == 1
 
 
 class TestLayerOneFollowsTheConfiguration:
