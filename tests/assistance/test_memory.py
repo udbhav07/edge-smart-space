@@ -281,3 +281,9 @@ class TestRememberingAPreference:
     def test_a_fact_that_only_mentions_a_number_stays_a_fact(self, store, ravi):
         self._remember(store, "Has 2 cats")
         assert store.load("ravi").facts == ("Has 2 cats",)
+
+    def test_forgetting_a_sentence_says_so_with_one_full_stop(self, store, ravi):
+        from src.assistance.providers.profile_memory import ProfileMemory
+        store.remember("ravi", "Is vegetarian.")
+        outcome = ProfileMemory(store).invoke("forget", {"profile_id": "ravi", "about": "vegetarian"})
+        assert outcome.message == "Forgotten: Is vegetarian."

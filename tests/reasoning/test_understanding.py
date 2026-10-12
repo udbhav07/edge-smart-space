@@ -7,7 +7,7 @@ saw the served model get wrong.
 import pytest
 
 from src.common.schemas import Comfort, ContextTurn, Intent, PreferenceHint
-from src.reasoning.understanding import understood
+from src.reasoning.understanding import memory_request, understood
 
 
 def _hint(intent=Intent.ENVIRONMENT, comfort=Comfort.UNCHANGED, target_c=None, subject=""):
@@ -134,3 +134,25 @@ class TestNothingIsInvented:
     def test_an_empty_transcript_changes_nothing(self):
         hint = _hint(comfort=Comfort.COOLER)
         assert understood(hint, "  ") == hint
+
+
+class TestMemoryRequest:
+    """U-07: which memory tool the words plainly ask for."""
+
+    @pytest.mark.parametrize(
+        "said, expected",
+        [
+            ("please remember that I am vegetarian", ("remember", "Is vegetarian.")),
+            ("remember I like meetings after 10am", ("remember", "Likes meetings after 10am.")),
+            ("I prefer the room at 23 degrees, remember that", ("remember", "Prefers the room at 23 degrees.")),
+            ("don't forget my birthday is in May", ("remember", "Their birthday is in May.")),
+            ("forget that I am vegetarian", ("forget", "vegetarian")),
+            ("forget what I said about meetings", ("forget", "meetings")),
+        ],
+    )
+    def test_the_tool_and_its_text(self, said, expected):
+        assert memory_request(said) == expected
+
+    @pytest.mark.parametrize("said", ["what do you know about me", "make it cooler", "hello"])
+    def test_anything_else_is_not_a_memory_request(self, said):
+        assert memory_request(said) is None

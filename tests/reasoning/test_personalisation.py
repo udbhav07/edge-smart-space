@@ -127,6 +127,37 @@ class TestMemoryTools:
         assert room.store.load("ravi").facts == ()
 
 
+class TestTheWordsDecideTheMemoryTool:
+    """U-07, measured live: the model claimed actions it never took."""
+
+    def test_a_remember_the_model_left_undone_is_carried_out(self, config):
+        """It replied "I'll remember that you like tea" and called nothing."""
+        room = Room(config, ScriptedChat(saying("I'll remember that you like tea, Ravi.")))
+        room.say("remember that I like tea")
+        assert "Likes tea." in room.store.load("ravi").facts
+
+    def test_the_reply_is_the_providers_not_the_models_claim(self, config):
+        room = Room(config, ScriptedChat(saying("I've forgotten that you are vegetarian, Ravi.")))
+        reply = room.say("forget that I am vegetarian")
+        assert "nothing" in reply.reply.lower()
+
+    def test_forget_called_for_a_remember_is_replaced(self, config):
+        """'Please remember that I am vegetarian' was answered with forget."""
+        room = Room(config, ScriptedChat(calling(call("forget", about="vegetarian"))))
+        room.say("please remember that I am vegetarian")
+        assert "Is vegetarian." in room.store.load("ravi").facts
+
+    def test_the_models_phrasing_is_kept_when_it_chose_right(self, config):
+        room = Room(config, ScriptedChat(calling(call("remember", fact="Likes green tea."))))
+        room.say("remember that I like green tea")
+        assert "Likes green tea." in room.store.load("ravi").facts
+
+    def test_a_guest_gets_no_memory_from_the_words_either(self, config):
+        room = Room(config, ScriptedChat(saying("I can't keep that.")))
+        room.say("remember that I like tea", profile_id="")
+        assert "Likes tea." not in room.store.load("ravi").facts
+
+
 class TestRecognitionPermitsNothing:
     def test_the_first_reply_says_recognition_only_personalises(self, config):
         room = Room(config, ScriptedChat(saying("Hello.")))

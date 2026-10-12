@@ -63,6 +63,7 @@ from src.common.schemas import (
 from src.common.tools import (
     ASSISTANCE_TOOLS,
     PROFILE_TOOLS,
+    REMEMBER,
     ToolInvocation,
     ToolRequester,
     ToolResult,
@@ -77,6 +78,7 @@ from src.reasoning.chat import (
 )
 from src.reasoning.dates import annotation, named_days, on_day, the_one_day
 from src.reasoning.room_state import RoomState
+from src.reasoning.understanding import memory_request
 from src.reasoning.single_shot import ReasoningUnavailableError
 
 LOGGER = logging.getLogger(__name__)
@@ -321,6 +323,29 @@ class Assistant:
             if recognised or name not in PROFILE_TOOLS
         )
 
+    def _memory_asked(self, hint: PreferenceHint, utterance: str) -> ToolCall | None:
+        """The memory tool the words plainly ask for, for a recognised person."""
+        if hint.subject != "memory" or self._recognised(hint) is None:
+            return None
+        request = memory_request(utterance)
+        if request is None:
+            return None
+        tool, text = request
+        argument = "fact" if tool == REMEMBER.name else "about"
+        return ToolCall(call_id="from-the-words", name=tool, arguments={argument: text})
+
+    def _as_asked(self, call: ToolCall, asked: ToolCall | None) -> ToolCall:
+        """A memory call the words contradict is replaced by the one they ask for.
+
+        "Please remember that I am vegetarian" was answered with ``forget``.
+        The model's own phrasing is kept when it chose the right tool.
+        """
+        if asked is None or call.name not in PROFILE_TOOLS or call.name == asked.name:
+            return call
+        LOGGER.info("model called %s for a request to %s; using %s", call.name, asked.name, asked.name)
+        self._corrections.append(f"{call.name} for a request to {asked.name} became {asked.name}")
+        return asked
+
     def _system_supplied(self, tool: str, arguments: dict, hint: PreferenceHint) -> dict:
         """Fill what the model is never shown -- whose memory -- from the voice.
 
@@ -397,6 +422,7 @@ class Assistant:
         ]
         turns: list[ChatTurn] = []
         results: list[ToolResult] = []
+        asked = self._memory_asked(hint, utterance)
         try:
             for _ in range(self._config.max_tool_rounds):
                 turn = self._chat.complete(messages, self._tools_for(hint))
@@ -405,9 +431,16 @@ class Assistant:
                     break
                 messages.append(assistant_message(turn))
                 for call in turn.tool_calls:
-                    result = self._run(call, utterance, hint)
+                    result = self._run(self._as_asked(call, asked), utterance, hint)
                     results.append(result)
                     messages.append(tool_message(call, _for_the_model(result)))
+            if asked is not None and not any(result.tool in PROFILE_TOOLS for result in results):
+                # The model said "I'll remember that" and called nothing:
+                # the words asked plainly, so the request is carried out
+                # rather than claimed (FR-45, U-07).
+                LOGGER.info("memory request the model did not act on: %s", asked.name)
+                self._corrections.append(f"{asked.name} run for a memory request the model left undone")
+                results.append(self._run(asked, utterance, hint))
             confirmation = next(
                 (
                     result

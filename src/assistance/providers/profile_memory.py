@@ -104,7 +104,7 @@ class ProfileMemory:
         """
         profile = self._store.set_preference(profile_id, COMFORT_PREFERENCE, celsius)
         return ProviderOutcome(
-            message=f"I'll remember you like the room at {celsius} \u00b0C, {profile.display_name}.",
+            message=f"I'll remember you like the room at {celsius} degrees, {profile.display_name}.",
             detail={PROFILE_DETAIL_KEY: profile_id, "preference": COMFORT_PREFERENCE, "value": celsius},
         )
 
@@ -113,7 +113,7 @@ class ProfileMemory:
         if not removed:
             message = f"I had nothing about {about!r} to forget."
         elif len(removed) == 1:
-            message = f"Forgotten: {removed[0]}."
+            message = f"Forgotten: {removed[0].rstrip('.')}."
         else:
             message = f"Forgotten {len(removed)} things about {about!r}."
         return ProviderOutcome(

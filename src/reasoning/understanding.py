@@ -86,6 +86,71 @@ _TEMPERATURE_CUE = re.compile(
 _TEMPERATURE_EXCHANGE = re.compile(r"\bdegrees?\b|\btemperature\b|\bsafe\s+range\b")
 
 
+#: "forget (that|about) X". "Don't forget" is the opposite and is not this.
+_FORGET = re.compile(
+    r"^\s*(?:please\s+)?(?:can\s+you\s+)?(?<!don't\s)forget\s+"
+    r"(?:that\s+|about\s+|what\s+i\s+said\s+about\s+)?(?P<what>.+)$",
+    re.IGNORECASE,
+)
+#: "(please) remember (that) X", "don't forget (that) X".
+_REMEMBER = re.compile(
+    r"^\s*(?:please\s+)?(?:can\s+you\s+)?(?:remember|memori[sz]e|note|don'?t\s+forget)\s+"
+    r"(?:that\s+)?(?P<what>.+)$",
+    re.IGNORECASE,
+)
+#: "X, remember that" -- the request after the fact.
+_REMEMBER_AFTER = re.compile(
+    r"^(?P<what>.+?)[,.;]?\s+(?:please\s+)?(?:remember|note)\s+(?:that|this|it)\s*$",
+    re.IGNORECASE,
+)
+#: First-person openings, in the third person the profile is written in.
+_THIRD_PERSON = (
+    (re.compile(r"^(?:i\s+am|i'?m)\s+", re.IGNORECASE), "Is "),
+    (re.compile(r"^i\s+have\s+", re.IGNORECASE), "Has "),
+    (re.compile(r"^my\s+", re.IGNORECASE), "Their "),
+    (re.compile(r"^i\s+(like|love|prefer|hate|want|need|eat|drink|work|live|enjoy|dislike|take)\s+", re.IGNORECASE), None),
+)
+_STATED = frozenset({"Is", "Has", "Likes", "Loves", "Prefers", "Hates", "Wants", "Needs", "Eats",
+                     "Drinks", "Works", "Lives", "Enjoys", "Dislikes", "Takes"})
+
+
+def memory_request(text: str) -> tuple[str, str] | None:
+    """Which memory tool the words ask for, and with what (U-07).
+
+    The served model, asked to remember, sometimes called ``forget``, and
+    sometimes called nothing while replying "I'll remember that". The words
+    are unambiguous where the model is not, so they decide.
+
+    :returns: ``("remember", fact)`` or ``("forget", about)``, or None when
+        the words do not plainly ask either.
+    """
+    said = " ".join(text.split()).rstrip(" .!?")
+    forget = _FORGET.match(said)
+    if forget and not said.lower().startswith(("don't", "dont")):
+        stated = _in_third_person(forget.group("what"))
+        first, _, rest = stated.partition(" ")
+        # "Is vegetarian" is kept; "vegetarian" is what to look for.
+        if first in _STATED and rest:
+            return "forget", rest.rstrip(".")
+        return "forget", forget.group("what").strip(" ,.;")
+    for pattern in (_REMEMBER, _REMEMBER_AFTER):
+        remember = pattern.match(said)
+        if remember:
+            return "remember", _in_third_person(remember.group("what"))
+    return None
+
+
+def _in_third_person(fact: str) -> str:
+    fact = fact.strip(" ,.;")
+    for pattern, replacement in _THIRD_PERSON:
+        match = pattern.match(fact)
+        if match:
+            verb = replacement or match.group(1).lower().capitalize() + "s "
+            fact = verb + fact[match.end():]
+            break
+    return (fact[:1].upper() + fact[1:] + ".") if fact else fact
+
+
 def understood(
     hint: PreferenceHint, transcript: str, recent: Sequence[ContextTurn] = ()
 ) -> PreferenceHint:
