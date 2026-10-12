@@ -95,3 +95,22 @@ def test_a_turn_goes_back_into_the_conversation_with_its_calls(config):
     rendered = assistant_message(turn)
     assert rendered["tool_calls"][0]["function"]["name"] == "get_events"
     assert tool_message(turn.tool_calls[0], "none")["tool_call_id"] == "c1"
+
+
+def test_warming_asks_for_one_token(config):
+    """U-09: the load is paid at startup, cheaply."""
+    completions = FakeCompletions(SimpleNamespace(content="", tool_calls=None))
+    ChatClient(config, SimClock(), _client(completions)).warm()
+    assert completions.requests[0]["max_tokens"] == 1
+
+
+def test_warming_reports_how_long_the_load_took(config):
+    clock = SimClock()
+    completions = FakeCompletions(SimpleNamespace(content="", tool_calls=None), delay_s=85.0, clock=clock)
+    assert ChatClient(config, clock, _client(completions)).warm() == pytest.approx(85.0)
+
+
+def test_a_failed_warm_up_is_reported_as_unavailable(config):
+    completions = FakeCompletions(None, error=ConnectionError("refused"))
+    with pytest.raises(ReasoningUnavailableError):
+        ChatClient(config, SimClock(), _client(completions)).warm()

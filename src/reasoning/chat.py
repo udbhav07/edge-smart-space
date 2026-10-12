@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -121,6 +122,48 @@ class ChatClient:
             completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
             raw=_render(content, calls),
         )
+
+
+    def warm(self) -> float:
+        """Load the model now, so the first person to speak does not wait.
+
+        The first completion after the server starts pays for loading the
+        weights: 85 s was measured, against 10 s for every later one (U-09).
+        Paid here, at startup, it is paid by nobody.
+
+        :returns: how long it took, in s.
+        :raises ReasoningUnavailableError: as for :meth:`complete`.
+        """
+        started = self._clock.monotonic()
+        try:
+            self._client.chat.completions.create(
+                model=self._config.model,
+                messages=[{"role": "user", "content": "ok"}],
+                max_tokens=1,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            raise ReasoningUnavailableError(f"inference failed: {exc}") from exc
+        return self._clock.monotonic() - started
+
+
+def warm_in_background(chat: ChatClient) -> threading.Thread:
+    """Warm the model without holding anything up (FR-47).
+
+    Nothing waits on this: regulatory control never needed the model, and an
+    utterance that arrives first simply shares the load.
+    """
+
+    def run() -> None:
+        LOGGER.info("loading %s so the first reply is not the slow one", chat.model)
+        try:
+            LOGGER.info("%s ready after %.0f s", chat.model, chat.warm())
+        except ReasoningUnavailableError as exc:
+            LOGGER.warning("could not warm %s: %s", chat.model, exc)
+
+    thread = threading.Thread(target=run, name="warm-up", daemon=True)
+    thread.start()
+    return thread
 
 
 def assistant_message(turn: ChatTurn) -> dict[str, object]:

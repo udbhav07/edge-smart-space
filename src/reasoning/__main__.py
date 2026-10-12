@@ -24,7 +24,7 @@ from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.reasoning.assistant import Assistant
-from src.reasoning.chat import ChatClient
+from src.reasoning.chat import ChatClient, warm_in_background
 from src.reasoning.diagnosis import FaultDiagnoser
 from src.reasoning.supervisor_agent import SupervisorAgent
 from src.reasoning.supervisor_tools import SupervisorState
@@ -125,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = RealClock()
     chat = ChatClient(config.reasoning, clock)
+    warm_in_background(chat)
     assistant_board = _board(config, ASSISTANT_CLIENT_ID)
     supervisor_board = _board(config, SUPERVISOR_CLIENT_ID)
     diagnosis_board = _board(config, DIAGNOSIS_CLIENT_ID)
