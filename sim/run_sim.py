@@ -118,6 +118,10 @@ class RoomSimulator:
         self._last_outdoor_publish_ts: float | None = None
         self._last_ack = AckStatus.UNKNOWN
         self._last_kind = CommandKind.OFF
+        #: When the unit was last told to change, and what the meter on its
+        #: supply last said: the evidence the device bridge acknowledges on.
+        self._last_change_ts: float | None = None
+        self._metered_w: float | None = None
 
     @property
     def room_temperature_c(self) -> float:
@@ -161,9 +165,13 @@ class RoomSimulator:
 
     def _on_command(self, topic: str, command: Command) -> None:
         LOGGER.debug("command on %s: %s", topic, command.kind.value)
+        ack = self._actuator.command(command.kind, command.setpoint_c)
         if command.kind in _STATE_CHANGING_COMMANDS:
             self._last_kind = command.kind
-        self._last_ack = self._actuator.command(command.kind, command.setpoint_c)
+            self._last_change_ts = command.ts
+            self._last_ack = ack
+        elif ack is not AckStatus.UNKNOWN:
+            self._last_ack = ack
 
     def _inject_actuator(self, command: InjectionCommand) -> None:
         """Break or repair the unit itself (FR-24, FR-31).
@@ -264,6 +272,7 @@ class RoomSimulator:
         self._publish_outdoor(outdoor_c)
         self._publish_occupancy()
         self._publish_power()
+        self._acknowledge_from_meter()
         self._publish_actuator_state()
 
     def _publish_indoor(self) -> None:
@@ -329,7 +338,30 @@ class RoomSimulator:
             # healthy meter wired backwards. An injected fault is left as
             # injected, so an examiner can still make it report the impossible.
             reading = reading.model_copy(update={"value": max(0.0, reading.value)})
+        if reading is not None:
+            self._metered_w = reading.value
         self._publish_reading(reading, POWER_ID)
+
+    def _acknowledge_from_meter(self) -> None:
+        """Acknowledge on the draw, exactly as the device bridge does (U-21).
+
+        A unit with no readback of its own (``sim.actuator.acknowledges``
+        false, R-02) used to stay UNKNOWN forever in simulation while the
+        meter beside it plainly showed standby, so the simulator was kinder
+        to D5 than hardware is crueller to it, in the wrong direction. Same
+        rule, same thresholds: after ``devices.ac_ack_grace_s`` a COOL that
+        landed draws ``devices.ac_running_power_w`` and an OFF does not.
+        """
+        if self._config.sim.actuator.acknowledges:
+            return
+        if self._metered_w is None or self._last_change_ts is None:
+            return
+        devices = self._config.devices
+        if self._clock.now() - self._last_change_ts < devices.ac_ack_grace_s:
+            return
+        running = self._metered_w >= devices.ac_running_power_w
+        wanted = self._last_kind is CommandKind.COOL
+        self._last_ack = AckStatus.ACKNOWLEDGED if running is wanted else AckStatus.FAILED
 
     def _motion_this_step(self) -> bool:
         """Whether an occupant moved enough to trip the PIR this period."""

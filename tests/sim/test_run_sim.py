@@ -15,6 +15,7 @@ from src.common.config import load_config
 from src.common.injection import InjectedFault
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    AckStatus,
     ActuatorState,
     Command,
     CommandKind,
@@ -553,3 +554,31 @@ class TestPowerMeter:
             without_meter.step(); clock_b.advance(5.0)
         topic = f"space/sensor/{INDOOR_TEMPERATURE_ID}/state"
         assert transport_a.payloads_on(topic) == transport_b.payloads_on(topic)
+
+
+class TestAcknowledgingFromTheMeter:
+    """U-21: with no readback, the simulator acknowledges on the draw, as the bridge does."""
+
+    def _ack(self, transport):
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        return ActuatorState.model_validate_json(payload).ack
+
+    def _cool_for(self, config, simulator, clock, board, seconds):
+        TestPowerMeter()._cool(simulator, clock, board, int(seconds / 5.0) + 1)
+
+    def test_a_working_unit_is_acknowledged_after_the_grace_period(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        self._cool_for(quiet_config, simulator, clock, board, quiet_config.devices.ac_ack_grace_s + 30.0)
+        assert self._ack(transport) is AckStatus.ACKNOWLEDGED
+
+    def test_a_dead_unit_is_reported_failed(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        simulator._actuator.inject_failure(True)
+        self._cool_for(quiet_config, simulator, clock, board, quiet_config.devices.ac_ack_grace_s + 30.0)
+        assert self._ack(transport) is AckStatus.FAILED
+
+    def test_within_the_grace_period_it_stays_unknown(self, quiet_config):
+        """A compressor takes time to start; judging sooner would cry wolf."""
+        simulator, transport, clock, board = _running(quiet_config)
+        TestPowerMeter()._cool(simulator, clock, board, 2)
+        assert self._ack(transport) is AckStatus.UNKNOWN
