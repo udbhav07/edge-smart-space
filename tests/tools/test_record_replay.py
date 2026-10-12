@@ -69,3 +69,19 @@ def test_replay_can_be_restricted_to_some_topics():
 def test_a_non_positive_speed_is_refused():
     with pytest.raises(ValueError):
         replay([], lambda *args: None, SimClock(), speed=0.0)
+
+
+def test_an_intentional_stop_is_not_reported_as_a_lost_broker(caplog):
+    """U-26: ending a recording is not losing the broker."""
+    recorder = Recorder(SimClock(), io.StringIO())
+    recorder.stopping = True
+    with caplog.at_level("WARNING"):
+        recorder.on_disconnected()
+    assert not caplog.records
+
+
+def test_an_unexpected_disconnect_is_still_reported(caplog):
+    recorder = Recorder(SimClock(), io.StringIO())
+    with caplog.at_level("WARNING"):
+        recorder.on_disconnected()
+    assert "lost the broker" in caplog.text

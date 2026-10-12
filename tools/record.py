@@ -44,6 +44,9 @@ class Recorder:
         self._lock = threading.Lock()
         self._transport = None
         self.count = 0
+        #: Set when the recording ends on purpose, so the disconnect that
+        #: follows is not reported as a lost broker (U-26).
+        self.stopping = False
 
     def attach(self, transport) -> None:
         self._transport = transport
@@ -54,6 +57,8 @@ class Recorder:
             self._transport.subscribe(f"{TOPIC_ROOT}/#", _EVERYTHING_QOS)
 
     def on_disconnected(self) -> None:
+        if self.stopping:
+            return
         LOGGER.warning("recorder lost the broker; the gap will show in the recording")
 
     def dispatch(self, topic: str, payload: bytes) -> None:
@@ -99,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
         finally:
+            recorder.stopping = True
             transport.loop_stop()
             transport.disconnect()
         LOGGER.info("recorded %d messages", recorder.count)

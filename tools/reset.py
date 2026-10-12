@@ -29,8 +29,12 @@ from src.common import topics
 from src.common.clock import RealClock
 from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
-from src.common.schemas import ModeReset
+from src.common.schemas import ModeReset, ModeState
 from tools.console import quiet_connection_logs
+
+#: How long to wait for the mode the reset produced.
+_OUTCOME_WAIT_S = 5.0
+_POLL_S = 0.1
 
 LOGGER = logging.getLogger("reset")
 
@@ -92,15 +96,41 @@ def main(argv: list[str] | None = None) -> int:
         requester=arguments.requester,
         reason=arguments.reason,
     )
+    modes: list[ModeState] = []
+    blackboard.subscribe(topics.SYSTEM_MODE, ModeState, lambda _topic, state: modes.append(state))
     blackboard.publish(topics.SYSTEM_RESET, reset)
     clock.sleep(_SETTLE_S)
+    deadline = clock.monotonic() + _OUTCOME_WAIT_S
+    while clock.monotonic() < deadline and not any(state.ts >= reset.ts for state in modes):
+        clock.sleep(_POLL_S)
     blackboard.stop()
 
-    print(
-        f"reset requested by {reset.requester}; "
-        f"watch space/system/mode to see whether the faults come back"
-    )
+    print(describe_outcome(reset, modes))
     return 0
+
+
+def describe_outcome(reset: ModeReset, modes: list[ModeState]) -> str:
+    """What the reset did, and what it did not promise (U-18).
+
+    A reset re-tests rather than overrides: every fault is retired and a
+    fault still present comes back within its detector's window, which for
+    the air conditioner is about ten minutes. Showing NORMAL with no word
+    of that made a unit still broken look fixed.
+
+    :param modes: every mode heard, oldest first; the retained one arrives
+        first, so a reset that changed nothing still has a mode to report.
+    """
+    if not modes:
+        return "reset sent, but no mode was heard: is the detectors service running?"
+    state = modes[-1]
+    changed = state.ts >= reset.ts
+    line = f"mode {'is now' if changed else 'stays'} {state.mode.value}: {state.reason}"
+    if state.active_fault_ids:
+        line += f"\nstill active: {', '.join(state.active_fault_ids)}"
+    return (
+        f"{line}\nfaults are re-tested from scratch: one still present comes back "
+        f"within its detector's window (about ten minutes for the air conditioner)"
+    )
 
 
 if __name__ == "__main__":

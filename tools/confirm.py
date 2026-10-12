@@ -156,8 +156,11 @@ def main(argv: list[str] | None = None) -> int:
             # Nothing is retained on the assistance topics, so this lists what
             # is asked while it watches -- a short window, then out.
             clock.sleep(_LIST_WINDOW_S)
-            for invocation in desk.waiting():
+            waiting = desk.waiting()
+            for invocation in waiting:
                 print(describe(invocation))
+            if not waiting:
+                print("nothing is waiting for your confirmation")
             return 0
         print("watching for bookings that need your confirmation; Ctrl-C to stop")
         while True:

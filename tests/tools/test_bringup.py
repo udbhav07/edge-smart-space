@@ -97,6 +97,31 @@ class TestSensors:
         indoor = next(v for v in room.monitor.sensors() if v.sensor_id == "temp_01")
         assert indoor.problem.startswith("OUT OF LIMITS")
 
+    def test_a_frozen_sensor_is_flagged(self, config):
+        """U-13: a sensor that reports one value forever is not healthy."""
+        room = Room(config)
+        room.injector.inject("temp_01", InjectedFault.STUCK_AT, 23.0)
+        room.run_for(60.0)
+        indoor = next(v for v in room.monitor.sensors() if v.sensor_id == "temp_01")
+        assert indoor.problem.startswith("FROZEN")
+
+    def test_a_frozen_occupancy_sensor_is_not_flagged(self, config):
+        """A binary sensor holding one value is an empty room, not a fault."""
+        room = Room(config)
+        room.run_for(60.0)
+        occupancy = next(v for v in room.monitor.sensors() if v.sensor_id == "pir_01")
+        assert not occupancy.problem.startswith("FROZEN")
+
+    def test_a_missing_value_keeps_the_columns_aligned(self, config):
+        room = Room(config)
+        room.injector.inject("hum_01", InjectedFault.DROPOUT)
+        room.run_for(30.0)
+        header, *rows = room.monitor.report().splitlines()
+        column = header.index("verdict")
+        sensor_rows = [row for row in rows if row.split()[0] in {"temp_01", "hum_01"}]
+        assert len(sensor_rows) == 2
+        assert all(row[column - 2:column] == "  " and row[column] != " " for row in sensor_rows)
+
     def test_sigma_is_measured_for_r04(self, config):
         """The number Week 7 sets detector thresholds from."""
         room = Room(config)
