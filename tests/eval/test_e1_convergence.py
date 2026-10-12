@@ -87,6 +87,14 @@ class TestTheRunItself:
     def test_the_experiment_completes(self, result):
         assert result.samples > 0
 
+    def test_it_never_writes_the_live_rooms_state(self, config, tmp_path):
+        """U-28: a simulated-time estimate in state/ was discarded at the
+        next live start as 410 days old."""
+        live = tmp_path / "coefficients.json"
+        persistence = config.persistence.model_copy(update={"path": str(live)})
+        run(config.model_copy(update={"persistence": persistence}), 0.5, identifiable=True, label="x")
+        assert not live.exists()
+
     def test_most_pairs_are_fitted(self, result):
         """Skips come from dropouts and jitter, both on by default."""
         assert result.updates_fitted > result.samples * 0.9
