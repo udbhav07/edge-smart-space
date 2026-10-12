@@ -99,6 +99,9 @@ class FaultInjector:
         topic = self._blackboard.publish(
             topics.INJECT, command, subject=command.subject
         )
+        if command.kind is InjectedFault.NONE:
+            LOGGER.info("cleared the injection on %s via %s", command.subject, topic)
+            return
         LOGGER.info(
             "injected %s on %s (magnitude %.4g) via %s",
             command.kind.value,

@@ -30,6 +30,7 @@ from src.common.clock import RealClock
 from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.schemas import ModeReset
+from tools.console import quiet_connection_logs
 
 LOGGER = logging.getLogger("reset")
 
@@ -67,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    quiet_connection_logs()
 
     try:
         config = load_config(arguments.config)

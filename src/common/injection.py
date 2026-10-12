@@ -78,3 +78,6 @@ NO_FAULT = FaultInjection(kind=InjectedFault.NONE)
 BINARY_SUPPORTED_FAULTS = frozenset(
     {InjectedFault.NONE, InjectedFault.DROPOUT, InjectedFault.STUCK_AT}
 )
+
+#: Faults a continuous sensor accepts: everything but an unresponsive unit.
+CONTINUOUS_SUPPORTED_FAULTS = frozenset(InjectedFault) - {InjectedFault.NO_RESPONSE}

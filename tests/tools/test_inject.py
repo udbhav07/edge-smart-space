@@ -81,6 +81,33 @@ class TestRefusals:
     def test_a_missing_config_file_exits_two(self):
         assert main(["--config", "config/nope.yaml", "temp_01", "dropout"]) == 2
 
+    def test_an_unknown_subject_is_refused_before_anything_is_published(self):
+        """U-11: the typo temp01 was "injected", exited 0, and stayed retained."""
+        assert main(["temp01", "stuck", "27"]) == 2
+
+    def test_a_binary_sensor_cannot_drift(self, caplog):
+        assert main(["pir_01", "drift", "0.1"]) == 2
+        assert "accepts: clear, dropout, stuck" in caplog.text
+
+    def test_the_air_conditioner_cannot_be_stuck(self):
+        assert main(["ac", "stuck", "20"]) == 2
+
+    def test_a_sensor_cannot_be_dead(self):
+        assert main(["temp_01", "dead"]) == 2
+
+
+class TestWhatEachSubjectAccepts:
+    def test_a_continuous_sensor_accepts_every_sensor_fault(self, config):
+        from tools.inject import supported_faults
+
+        assert InjectedFault.DRIFT in supported_faults(config, "temp_01")
+        assert InjectedFault.NO_RESPONSE not in supported_faults(config, "temp_01")
+
+    def test_an_unknown_subject_accepts_nothing_known(self, config):
+        from tools.inject import supported_faults
+
+        assert supported_faults(config, "temp01") is None
+
 
 class TestListing:
     def test_listing_exits_cleanly_without_a_broker(self):

@@ -25,6 +25,7 @@ from src.common.clock import Clock, RealClock
 from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import PAYLOAD_ENCODING, build_transport
 from src.common.topics import TOPIC_ROOT
+from tools.console import quiet_connection_logs
 
 LOGGER = logging.getLogger("tools.record")
 
@@ -75,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     arguments = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    quiet_connection_logs()
     try:
         config = load_config(arguments.config)
     except ConfigError as exc:

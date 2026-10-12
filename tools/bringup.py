@@ -45,6 +45,7 @@ from src.common.schemas import (
     SensorReading,
     ValidationVerdict,
 )
+from tools.console import quiet_connection_logs
 
 LOGGER = logging.getLogger("bringup")
 
@@ -292,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    quiet_connection_logs()
     try:
         config = load_config(arguments.config)
     except ConfigError as exc:

@@ -30,9 +30,17 @@ from pathlib import Path
 from src.common import topics
 from src.common.clock import RealClock
 from src.common.config import ConfigError, load_config
-from src.common.injection import FAULTS_REQUIRING_MAGNITUDE, InjectedFault
+from src.common.injection import (
+    ACTUATOR_SUPPORTED_FAULTS,
+    BINARY_SUPPORTED_FAULTS,
+    CONTINUOUS_SUPPORTED_FAULTS,
+    FAULTS_REQUIRING_MAGNITUDE,
+    InjectedFault,
+)
+from src.common.schemas import Unit
 from src.common.mqtt_client import Blackboard, build_transport
 from src.faults.injector import FaultInjector
+from tools.console import quiet_connection_logs
 
 LOGGER = logging.getLogger("inject")
 
@@ -151,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+    quiet_connection_logs()
+
     try:
         config = load_config(arguments.config)
     except ConfigError as exc:
@@ -167,17 +177,25 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.error("%s", problem)
         return 2
 
-    known = {sensor.sensor_id for sensor in config.sensors.adapters}
-    known.add(topics.AIR_CONDITIONER_ID)
-    if arguments.subject not in known:
-        # A warning rather than a refusal: the configured list is what this
-        # machine expects, and a subject published by something else is a
-        # legitimate thing to aim at.
-        LOGGER.warning(
-            "%s is not in this configuration's sensors: %s",
+    kind = FAULT_NAMES[arguments.fault]
+    supported = supported_faults(config, arguments.subject)
+    if supported is None and kind is not InjectedFault.NONE:
+        # Refused, not warned about: a typo was once "injected", exited 0,
+        # and left a retained command for a subject nothing reads (U-11).
+        LOGGER.error(
+            "%s is not a sensor or actuator here: %s (try --list)",
             arguments.subject,
-            ", ".join(sorted(known)),
+            ", ".join(sorted(known_subjects(config))),
         )
+        return 2
+    if supported is not None and kind not in supported:
+        LOGGER.error(
+            "%s cannot be %s; it accepts: %s",
+            arguments.subject,
+            arguments.fault,
+            ", ".join(sorted(name for name, fault in FAULT_NAMES.items() if fault in supported)),
+        )
+        return 2
 
     clock = RealClock()
     holder: list = []
@@ -187,6 +205,14 @@ def main(argv: list[str] | None = None) -> int:
     blackboard.start()
 
     injector = FaultInjector(blackboard, clock, requester=arguments.requester)
+    if supported is None:
+        # Clearing a subject that is not configured: withdraw whatever was
+        # left retained for it -- a typo's injection -- rather than adding one.
+        blackboard.clear_retained(topics.INJECT, subject=arguments.subject)
+        clock.sleep(_SETTLE_S)
+        blackboard.stop()
+        print(f"withdrew any injection left for {arguments.subject}")
+        return 0
     try:
         command = injector.inject(
             arguments.subject,
@@ -200,11 +226,35 @@ def main(argv: list[str] | None = None) -> int:
 
     clock.sleep(_SETTLE_S)
     blackboard.stop()
-    print(
-        f"asked {command.subject} for {command.kind.value}; "
-        f"watch space/fault/# for what the detectors make of it"
-    )
+    if command.kind is InjectedFault.NONE:
+        print(
+            f"cleared {command.subject}; its faults retire once it has been "
+            f"healthy for the confirmation period"
+        )
+    else:
+        print(
+            f"asked {command.subject} for {command.kind.value}; "
+            f"watch space/fault/# for what the detectors make of it"
+        )
     return 0
+
+
+def known_subjects(config) -> set[str]:
+    return {sensor.sensor_id for sensor in config.sensors.adapters} | {topics.AIR_CONDITIONER_ID}
+
+
+def supported_faults(config, subject: str) -> frozenset[InjectedFault] | None:
+    """What a subject's adapter will accept, or None for an unknown subject.
+
+    The same sets the simulator and the device bridge enforce, so the CLI
+    refuses what the device would refuse instead of reporting it injected.
+    """
+    if subject == topics.AIR_CONDITIONER_ID:
+        return ACTUATOR_SUPPORTED_FAULTS
+    for sensor in config.sensors.adapters:
+        if sensor.sensor_id == subject:
+            return BINARY_SUPPORTED_FAULTS if sensor.unit is Unit.BOOLEAN else CONTINUOUS_SUPPORTED_FAULTS
+    return None
 
 
 if __name__ == "__main__":
