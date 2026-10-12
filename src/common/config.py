@@ -911,6 +911,12 @@ class ProfilesConfig(_Section):
     short_term_ttl_s: float = Field(
         default=1800.0, gt=0.0, description="An exchange older than this is forgotten, in s"
     )
+    guest_short_term_ttl_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description="The same for the guest, in s: every unrecognised voice "
+        "shares it, so it lasts one conversation, not half an hour",
+    )
     short_term_max_turns: int = Field(
         default=10, gt=0, description="Exchanges kept per person"
     )
@@ -1022,7 +1028,26 @@ def load_config(path: Path) -> Config:
     try:
         return Config.model_validate(raw)
     except ValueError as exc:
-        raise ConfigError(f"config at {path} is invalid: {exc}") from exc
+        raise ConfigError(f"config at {path} is invalid: {exc}{_extends_hint(exc, path)}") from exc
+
+
+def _extends_hint(exc: ValueError, path: Path) -> str:
+    """Point at ``extends:`` when a file that overrides a few values misses the rest.
+
+    Eighteen "Field required" errors for a file that set one value read as
+    eighteen problems; there is one, and this names it (U-31).
+    """
+    errors = getattr(exc, "errors", None)
+    if errors is None or EXTENDS_KEY in _read_mapping(path):
+        return ""
+    missing = sum(1 for error in errors() if error.get("type") == "missing")
+    if not missing:
+        return ""
+    return (
+        f"\n{missing} required setting(s) are missing. To change only a few "
+        f"values, start the file with '{EXTENDS_KEY}: default.yaml' and give "
+        f"just the ones that differ."
+    )
 
 
 def _read_layered(path: Path, seen: tuple[Path, ...]) -> dict:

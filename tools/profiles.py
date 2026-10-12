@@ -77,6 +77,11 @@ class Profiles:
         lines.extend(f"    {key}: {value}" for key, value in context.preferences.items())
         lines.append("  facts:" if context.facts else "  facts: none")
         lines.extend(f"    - {fact}" for fact in context.facts)
+        if profile_id != GUEST_PROFILE_ID:
+            unread = self._store.load(profile_id).unread
+            if unread:
+                lines.append("  not understood (dropped at the next change; fix the file):")
+                lines.extend(f"    ? {line}" for line in unread)
         lines.append("  recent:" if context.recent else "  recent: none")
         lines.extend(f"    > {turn.said}\n      < {turn.replied}" for turn in context.recent)
         return lines

@@ -163,6 +163,12 @@ class TestManagement:
         managed.remember("ravi", "vegetarian")
         assert managed.forget("ravi", "veg") == ["forgot: vegetarian"]
 
+    def test_show_lists_lines_it_could_not_read(self, managed, config):
+        """U-15: a hand edit the parser could not place is shown, not lost."""
+        path = Path(config.profiles.directory) / "ravi.md"
+        path.write_text(path.read_text(encoding="utf-8") + "\n## Preferences\n- warm-ish\n", encoding="utf-8")
+        assert any("? - warm-ish" in line for line in managed.show("ravi"))
+
     def test_prefer(self, managed):
         managed.prefer("ravi", "comfort_c", "23")
         assert any("comfort_c: 23" in line for line in managed.show("ravi"))

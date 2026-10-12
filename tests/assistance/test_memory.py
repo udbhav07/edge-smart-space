@@ -146,6 +146,41 @@ class TestHandEdits:
         profile = parse_profile("ravi", "# Ravi\n\n- profile_id: someone_else\n")
         assert profile.profile_id == "ravi"
 
+    def test_a_lowercase_heading_is_still_the_facts(self):
+        """U-15: "Edit it freely" has to survive a person's own case."""
+        assert parse_profile("ravi", "# Ravi\n\n## facts\n- likes tea\n").facts == ("likes tea",)
+
+    def test_a_bare_facts_line_starts_the_facts(self):
+        profile = parse_profile("ravi", "# Ravi\n\nfacts:\n* likes tea\n- allergic to dust\n")
+        assert profile.facts == ("likes tea", "allergic to dust")
+
+    def test_a_fact_without_a_bullet_is_kept(self):
+        assert parse_profile("ravi", "# Ravi\n\n## Facts\nlikes tea\n").facts == ("likes tea",)
+
+    def test_a_first_line_without_a_hash_names_the_person(self):
+        assert parse_profile("ravi", "Ravi Kumar\n\n## Facts\n- likes tea\n").display_name == "Ravi Kumar"
+
+    def test_a_preferences_heading_in_any_case_is_read(self):
+        profile = parse_profile("ravi", "# Ravi\n\n### PREFERENCES\n- comfort_c: 23\n")
+        assert profile.preferences == {"comfort_c": "23"}
+
+    def test_a_line_that_cannot_be_placed_is_reported_not_dropped(self):
+        profile = parse_profile("ravi", "# Ravi\n\n## Preferences\n- warm but not too warm\n")
+        assert profile.unread == ("- warm but not too warm",)
+
+    def test_the_templates_placeholders_are_not_facts(self, store, ravi):
+        assert store.load("ravi").facts == () and store.load("ravi").unread == ()
+
+    def test_the_findings_example_loses_nothing(self):
+        """The exact file from U-15."""
+        text = (
+            "Ravi notes\n\nfacts:\n* likes tea\n- allergic to dust\n\n"
+            "## facts\n- lowercase heading fact\n\n## Facts\n- proper fact\n"
+        )
+        profile = parse_profile("ravi", text)
+        assert profile.display_name == "Ravi notes"
+        assert profile.facts == ("likes tea", "allergic to dust", "lowercase heading fact", "proper fact")
+
     def test_rendering_and_parsing_round_trip(self, store, ravi):
         store.remember("ravi", "vegetarian")
         store.set_preference("ravi", "comfort_c", "23")
@@ -163,6 +198,17 @@ class TestShortTermContext:
         store.record_turn("ravi", "hello", "hi")
         clock.advance(config.short_term_ttl_s + 1.0)
         assert store.recent("ravi") == ()
+
+    def test_the_guest_forgets_sooner(self, store, clock, config):
+        """U-20: every unrecognised voice shares the guest's context."""
+        store.record_turn(GUEST_PROFILE_ID, "my pin is 1234", "I won't keep that.")
+        clock.advance(config.guest_short_term_ttl_s + 1.0)
+        assert store.recent(GUEST_PROFILE_ID) == ()
+
+    def test_a_known_person_keeps_context_past_the_guests_window(self, store, clock, config, ravi):
+        store.record_turn("ravi", "hello", "hi")
+        clock.advance(config.guest_short_term_ttl_s + 1.0)
+        assert len(store.recent("ravi")) == 1
 
     def test_only_the_last_few_exchanges_are_kept(self, store, config, ravi):
         for index in range(config.short_term_max_turns + 3):
@@ -212,3 +258,26 @@ class TestContext:
         assert context.display_name == "Ravi"
         assert context.facts == ("vegetarian",)
         assert context.recent[0].replied == "hello"
+
+
+class TestRememberingAPreference:
+    """U-30: a stated room temperature is a preference, not a loose fact."""
+
+    def _remember(self, store, fact):
+        from src.assistance.providers.profile_memory import ProfileMemory
+        return ProfileMemory(store).invoke("remember", {"profile_id": "ravi", "fact": fact})
+
+    def test_a_liked_temperature_is_kept_as_comfort(self, store, ravi):
+        self._remember(store, "I prefer the room at 23 degrees")
+        assert store.load("ravi").preferences == {"comfort_c": "23"}
+
+    def test_it_is_not_also_kept_as_a_fact(self, store, ravi):
+        self._remember(store, "Ravi likes it at 22.5 C")
+        assert store.load("ravi").facts == ()
+
+    def test_the_reply_says_what_was_kept(self, store, ravi):
+        assert "23" in self._remember(store, "I like the room at 23 degrees").message
+
+    def test_a_fact_that_only_mentions_a_number_stays_a_fact(self, store, ravi):
+        self._remember(store, "Has 2 cats")
+        assert store.load("ravi").facts == ("Has 2 cats",)

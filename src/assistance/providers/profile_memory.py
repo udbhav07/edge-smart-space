@@ -13,6 +13,7 @@ is refused with a sentence that says so.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 
 from src.assistance.memory import ProfileNotFoundError, ProfileStore
@@ -24,6 +25,17 @@ PROVIDER_NAME = "profile_memory"
 #: Detail key naming whose memory changed, so whatever publishes profiles
 #: can republish that one without being told by anything but the result.
 PROFILE_DETAIL_KEY = "profile_id"
+
+#: The preference a stated room temperature is kept under.
+COMFORT_PREFERENCE = "comfort_c"
+
+#: "I prefer the room at 23 degrees", "I like it at 22.5 C": a liking for a
+#: temperature, as opposed to a fact that merely mentions one.
+_COMFORT = re.compile(
+    r"\b(?:prefer|prefers|like|likes|comfortable|comfy)\b.*?"
+    r"(\d{2}(?:\.\d)?)\s*(?:degrees?|deg|\u00b0\s*c?|c)\b",
+    re.IGNORECASE,
+)
 
 
 class ProfileMemory:
@@ -67,6 +79,9 @@ class ProfileMemory:
         raise ValueError(f"{PROVIDER_NAME} does not serve {tool!r}")
 
     def _remember(self, profile_id: str, fact: str) -> ProviderOutcome:
+        comfort = _COMFORT.search(fact)
+        if comfort is not None:
+            return self._prefer(profile_id, comfort.group(1))
         profile, added = self._store.remember(profile_id, fact)
         kept = profile.facts[-1] if added else fact
         message = (
@@ -77,6 +92,20 @@ class ProfileMemory:
         return ProviderOutcome(
             message=message,
             detail={PROFILE_DETAIL_KEY: profile_id, "fact": kept, "facts_kept": len(profile.facts)},
+        )
+
+    def _prefer(self, profile_id: str, celsius: str) -> ProviderOutcome:
+        """Keep a stated temperature as the named preference, not a loose fact.
+
+        Stored as a fact it sat beside "likes tea" while the Preferences
+        section stayed empty (U-30). Kept here, it is what the assistant is
+        told the person likes. It sets nothing: a recognised voice
+        personalises replies and grants no control (FR-52).
+        """
+        profile = self._store.set_preference(profile_id, COMFORT_PREFERENCE, celsius)
+        return ProviderOutcome(
+            message=f"I'll remember you like the room at {celsius} \u00b0C, {profile.display_name}.",
+            detail={PROFILE_DETAIL_KEY: profile_id, "preference": COMFORT_PREFERENCE, "value": celsius},
         )
 
     def _forget(self, profile_id: str, about: str) -> ProviderOutcome:

@@ -742,7 +742,11 @@ REMEMBER = ToolSpec(
         ToolParameter(
             name="fact",
             type=ParameterType.STRING,
-            description="The fact, as one short sentence about them.",
+            description=(
+                "The fact, as one short sentence about them in the third "
+                "person, without their name: 'Likes meetings after 10am.', "
+                "not 'I like ...' or 'Ravi likes ...'."
+            ),
         ),
     ),
 )

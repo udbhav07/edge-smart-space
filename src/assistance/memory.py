@@ -97,6 +97,9 @@ class Profile:
     #: Sections a person added by hand, kept verbatim so a write never
     #: deletes what somebody else wrote.
     other_sections: str = ""
+    #: Lines the parser could not place, shown by ``tools.profiles show``
+    #: rather than dropped without a word (U-15). Not kept on the next write.
+    unread: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "preferences", MappingProxyType(dict(self.preferences)))
@@ -245,7 +248,7 @@ class ProfileStore:
             except FileNotFoundError:
                 continue
         if removed:
-            LOGGER.warning("deleted everything kept about %s", profile_id)
+            LOGGER.info("deleted everything kept about %s", profile_id)
         return removed
 
     # --- short-term ---------------------------------------------------
@@ -287,7 +290,14 @@ class ProfileStore:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             LOGGER.warning("short-term context for %s unreadable, starting afresh: %s", profile_id, exc)
             return ()
-        horizon = self._clock.now() - self._config.short_term_ttl_s
+        # Every unrecognised voice shares the guest's context, so it is kept
+        # only as long as one conversation lasts (U-20).
+        ttl_s = (
+            self._config.guest_short_term_ttl_s
+            if profile_id == GUEST_PROFILE_ID
+            else self._config.short_term_ttl_s
+        )
+        horizon = self._clock.now() - ttl_s
         fresh = [turn for turn in turns if turn.ts >= horizon]
         return tuple(fresh[-self._config.short_term_max_turns:])
 
@@ -394,45 +404,65 @@ def parse_profile(profile_id: str, text: str) -> Profile:
     The file name is the id; an id written inside that disagrees is reported
     and the name wins, so renaming a file cannot leave two people with one
     identity. Unknown sections are kept verbatim.
+
+    "Edit it freely" has to survive a person's own way of writing (U-15):
+    section headings in any case and at any level, a bare ``facts:`` line,
+    ``*`` bullets, a fact with no bullet at all, and a first line that names
+    the person without a ``#``. Whatever still cannot be read is not dropped
+    in silence: it is listed in :attr:`Profile.unread` for the person to see.
     """
     text = _COMMENT.sub("", text)
     display_name = profile_id
+    titled = False
     created = ""
     preferences: dict[str, str] = {}
     facts: list[str] = []
     other: list[str] = []
+    unread: list[str] = []
     section: str | None = None
 
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped.startswith("# ") and section is None and display_name == profile_id:
-            display_name = stripped[2:].strip() or profile_id
-            continue
-        if stripped.startswith("## "):
-            section = stripped[3:].strip()
-            if section not in (_PREFERENCES, _FACTS):
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            title = stripped.lstrip("#").strip()
+            if level == 1 and section is None and not titled:
+                display_name, titled = title or profile_id, True
+                continue
+            section = _section_named(title) or title
+            if section not in _KNOWN_SECTIONS:
                 other.append(line)
             continue
-        if section not in (None, _PREFERENCES, _FACTS):
+        if section not in (None, *_KNOWN_SECTIONS):
             other.append(line)
             continue
-        bullet = _BULLET.match(line)
-        if bullet is None:
+        if not stripped or _PLACEHOLDER.match(stripped):
             continue
-        item = bullet.group(1)
+        if stripped.endswith(":") and _section_named(stripped) is not None:
+            section = _section_named(stripped)
+            continue
+        bullet = _BULLET.match(line)
+        item = bullet.group(1) if bullet else stripped
         if section == _FACTS:
             facts.append(item)
             continue
         pair = _KEY_VALUE.match(item)
-        if pair is None:
-            continue
-        key, value = pair.group(1).strip().lower().replace(" ", "_"), pair.group(2).strip()
         if section == _PREFERENCES:
-            preferences[key] = value
-        elif key == _ID_KEY and value != profile_id:
-            LOGGER.warning("%s.md names itself %r; the file name wins", profile_id, value)
+            if pair is None:
+                unread.append(stripped)
+            else:
+                preferences[_key(pair)] = pair.group(2).strip()
+            continue
+        key = _key(pair) if bullet and pair else None
+        if key == _ID_KEY:
+            if pair.group(2).strip() != profile_id:
+                LOGGER.warning("%s.md names itself %r; the file name wins", profile_id, pair.group(2).strip())
         elif key == _CREATED_KEY:
-            created = value
+            created = pair.group(2).strip()
+        elif not bullet and not titled and not facts and not preferences:
+            display_name, titled = stripped, True
+        else:
+            unread.append(stripped)
 
     return Profile(
         profile_id=profile_id,
@@ -441,4 +471,19 @@ def parse_profile(profile_id: str, text: str) -> Profile:
         preferences=preferences,
         facts=tuple(facts),
         other_sections="\n".join(other),
+        unread=tuple(unread),
     )
+
+
+_KNOWN_SECTIONS = (_PREFERENCES, _FACTS)
+_SECTION_BY_NAME = {name.casefold(): name for name in _KNOWN_SECTIONS}
+_PLACEHOLDER = re.compile(r"^_.*_$")
+
+
+def _section_named(title: str) -> str | None:
+    """The known section a heading names, in whatever case it was written."""
+    return _SECTION_BY_NAME.get(title.rstrip(":").strip().casefold())
+
+
+def _key(pair: re.Match) -> str:
+    return pair.group(1).strip().lower().replace(" ", "_")

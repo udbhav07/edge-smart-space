@@ -353,6 +353,7 @@ profiles:
   directory: state/profiles          # long-term, <profile_id>.md
   context_directory: state/context   # short-term, <profile_id>.json
   short_term_ttl_s: 1800.0           # a conversation is forgotten after 30 min
+  guest_short_term_ttl_s: 300.0      # every unknown voice shares one; 5 min
   short_term_max_turns: 10
   max_facts: 50
   max_fact_chars: 200

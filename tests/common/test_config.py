@@ -172,6 +172,20 @@ class TestLoadFailures:
         with pytest.raises(ConfigError):
             load_config(_write(tmp_path, "mqtt: [unclosed\n"))
 
+    def test_a_partial_file_is_pointed_at_extends(self, tmp_path):
+        """U-31: one problem, not eighteen "Field required" errors."""
+        with pytest.raises(ConfigError, match="extends: default.yaml"):
+            load_config(_write(tmp_path, "controller: {deadband_c: 0.5}\n"))
+
+    def test_a_file_that_extends_gets_no_such_hint(self, tmp_path):
+        base = tmp_path / "base.yaml"
+        base.write_text("controller: {deadband_c: 0.5}\n", encoding="utf-8")
+        override = tmp_path / "over.yaml"
+        override.write_text("extends: base.yaml\n", encoding="utf-8")
+        with pytest.raises(ConfigError) as caught:
+            load_config(override)
+        assert "start the file with" not in str(caught.value)
+
     def test_a_non_mapping_document_is_rejected(self, tmp_path):
         with pytest.raises(ConfigError):
             load_config(_write(tmp_path, "- just\n- a\n- list\n"))
