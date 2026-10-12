@@ -241,6 +241,7 @@ speech:
   speaker_match_threshold: 0.15
   speaker_min_enrolment_utterances: 3
   speaker_min_audio_s: 1.0        # shorter utterances are judged as a guest
+  speaker_min_speech_s: 1.5       # each enrolment take must hold this much speech
   asr_model: base.en
   # GPU first. 'auto' prefers CUDA and falls back to CPU so a laptop still
   # runs (NFR-09); 'cuda' demands it and fails loudly if absent, which is what

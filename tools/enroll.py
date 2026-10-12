@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import wave
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +43,38 @@ _INT16_FULL_SCALE = 32768.0
 
 class RecordingError(ValueError):
     """A recording that cannot be enrolled from, and why."""
+
+
+#: Measures how many seconds of speech a recording holds.
+SpeechMeter = Callable[[np.ndarray], float]
+
+
+def silero_speech_seconds(sample_rate_hz: int) -> SpeechMeter:
+    """The pipeline's own voice-activity detector, as a speech meter.
+
+    :raises RecordingError: when the speech extra is not installed. Without
+        it nothing can say whether a recording holds a voice, and enrolling
+        room noise is exactly what this check exists to stop (U-05).
+    """
+    try:
+        import torch
+        from silero_vad import get_speech_timestamps, load_silero_vad
+    except ImportError as exc:
+        raise RecordingError(
+            f"checking a recording for speech needs the speech extra "
+            f"(pip install -e .[speech]): {exc}"
+        ) from exc
+    model = load_silero_vad()
+
+    def measure(audio: np.ndarray) -> float:
+        stamps = get_speech_timestamps(
+            torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)),
+            model,
+            sampling_rate=sample_rate_hz,
+        )
+        return sum(stamp["end"] - stamp["start"] for stamp in stamps) / sample_rate_hz
+
+    return measure
 
 
 def read_wav(path: Path, sample_rate_hz: int) -> np.ndarray:
@@ -91,16 +125,39 @@ def record(config: Config, seconds: float) -> np.ndarray:
 
 
 def enroll(
-    config: Config, profile_id: str, display_name: str, utterances: list[np.ndarray]
+    config: Config,
+    profile_id: str,
+    display_name: str,
+    utterances: list[np.ndarray],
+    speech_seconds: SpeechMeter | None = None,
 ) -> list[str]:
     """Add utterances to a voiceprint, starting the profile if it is new.
 
+    Every recording must hold ``speech.speaker_min_speech_s`` of speech, as
+    the voice-activity detector hears it, or nothing is enrolled: three
+    takes of an empty room were once accepted as a voice (U-05).
+
+    :param speech_seconds: measures speech in a recording; the pipeline's
+        voice-activity detector by default.
     :returns: lines to report.
-    :raises ProfileError, VoiceprintError: when the enrolment cannot be made.
+    :raises ProfileError, VoiceprintError, RecordingError: when the
+        enrolment cannot be made.
     """
+    meter = speech_seconds or silero_speech_seconds(config.speech.sample_rate_hz)
+    needed_s = config.speech.speaker_min_speech_s
+    heard = [meter(audio) for audio in utterances]
+    for index, seconds in enumerate(heard, start=1):
+        if seconds < needed_s:
+            raise RecordingError(
+                f"recording {index} holds {seconds:.1f} s of speech; at least "
+                f"{needed_s:g} s is needed. Nothing was enrolled -- speak for the "
+                f"whole take and try again"
+            )
     identifier = SpeakerIdentifier(config.speech)
     store = build_store(config, RealClock())
-    lines = []
+    lines = [
+        "speech heard: " + ", ".join(f"{seconds:.1f} s" for seconds in heard)
+    ]
     if not store.exists(profile_id):
         store.create(profile_id, display_name)
         lines.append(f"started the profile {profile_id} ({display_name})")
@@ -144,7 +201,16 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(arguments.config)
         utterances = [read_wav(path, config.speech.sample_rate_hz) for path in arguments.recordings]
         for index in range(arguments.record):
-            input(f"press Enter, then speak for {arguments.seconds:g} s ({index + 1}/{arguments.record})")
+            prompt = f"speak for {arguments.seconds:g} s ({index + 1}/{arguments.record})"
+            # No terminal to wait on (U-24): record at once, and say so. Both
+            # tests are needed: on Windows NUL is a character device, so
+            # isatty() says yes and only reading it reveals there is nobody.
+            try:
+                if sys.stdin is None or not sys.stdin.isatty():
+                    raise EOFError
+                input(f"press Enter, then {prompt}")
+            except EOFError:
+                print(f"recording now: {prompt}")
             utterances.append(record(config, arguments.seconds))
         if not utterances:
             print("nothing to enrol from: give WAV files, or --record N")

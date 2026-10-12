@@ -19,6 +19,17 @@ from tools.enroll import RecordingError, enroll, read_wav
 from tools.say import Conversation
 
 
+#: Seconds of speech the stand-in meter hears in every take. Synthetic test
+#: voices are not speech to Silero, so the real meter is replaced here and
+#: tested for what it refuses separately.
+HEARD_S = 2.0
+
+
+@pytest.fixture(autouse=True)
+def _a_meter_that_hears_speech(monkeypatch):
+    monkeypatch.setattr(enroll_tool, "silero_speech_seconds", lambda _rate: (lambda _audio: HEARD_S))
+
+
 @pytest.fixture(name="config")
 def _config(tmp_path):
     config = load_config(Path("config/default.yaml"))
@@ -99,6 +110,33 @@ class TestEnrolment:
         assert enroll_tool.main(["ravi"]) == 2
 
 
+class TestEnrolmentNeedsSpeech:
+    """U-05: three takes of an empty room were enrolled as a voice."""
+
+    def test_a_take_without_speech_is_refused_and_nothing_is_enrolled(self, config):
+        with pytest.raises(RecordingError, match="0.0 s of speech"):
+            enroll(config, "ravi", "Ravi", _clips(RAVI), speech_seconds=lambda _audio: 0.0)
+        assert SpeakerIdentifier(config.speech).enrolled == {}
+        assert not (Path(config.profiles.directory) / "ravi.md").exists()
+
+    def test_one_bad_take_refuses_the_lot(self, config):
+        takes = iter([2.0, 0.3, 2.0])
+        with pytest.raises(RecordingError, match="recording 2"):
+            enroll(config, "ravi", "Ravi", _clips(RAVI), speech_seconds=lambda _audio: next(takes))
+
+    def test_the_speech_heard_is_reported(self, config):
+        lines = enroll(config, "ravi", "Ravi", _clips(RAVI), speech_seconds=lambda _audio: 2.4)
+        assert lines[0] == "speech heard: 2.4 s, 2.4 s, 2.4 s"
+
+    def test_recording_without_a_terminal_does_not_wait_for_enter(self, config, monkeypatch, capsys):
+        """U-24: --record crashed with EOFError when nothing could press Enter."""
+        monkeypatch.setattr(enroll_tool, "load_config", lambda _path: config)
+        monkeypatch.setattr(enroll_tool, "record", lambda _config, _seconds: utterance(*RAVI, 7))
+        monkeypatch.setattr("sys.stdin", None)
+        assert enroll_tool.main(["ravi", "--record", "1"]) == 0
+        assert "recording now" in capsys.readouterr().out
+
+
 @pytest.fixture(name="managed")
 def _managed(config):
     enroll(config, "ravi", "Ravi", _clips(RAVI))
@@ -106,6 +144,12 @@ def _managed(config):
 
 
 class TestManagement:
+    def test_a_profile_can_be_created_without_a_voice(self, config):
+        """U-24: only enrolment, which needs audio, used to make a profile."""
+        managed = profiles_tool.build(config)
+        managed.create("anu", "Anu")
+        assert any(line.startswith("anu") and "not yet recognisable" in line for line in managed.list())
+
     def test_list_shows_each_person_and_the_guest(self, managed):
         lines = managed.list()
         assert any(line.startswith("ravi") for line in lines)

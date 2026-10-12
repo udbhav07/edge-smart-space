@@ -516,6 +516,13 @@ class SpeechConfig(_Section):
         description="Utterances a voice needs before it can be matched: one "
         "has no spread to measure distance in",
     )
+    speaker_min_speech_s: float = Field(
+        default=1.5,
+        gt=0.0,
+        description="Speech, as the voice-activity detector hears it, every "
+        "enrolment recording must hold, in s. A take with less is refused: "
+        "enrolling room noise as a voice was accepted once (U-05)",
+    )
     speaker_min_audio_s: float = Field(
         default=1.0,
         gt=0.0,

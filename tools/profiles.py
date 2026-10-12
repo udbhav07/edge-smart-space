@@ -1,6 +1,7 @@
 """See and manage what the room keeps about each person (FR-52, NFR-05).
 
     python -m tools.profiles list
+    python -m tools.profiles create ravi --name Ravi   # no voice needed yet
     python -m tools.profiles show ravi
     python -m tools.profiles remember ravi "prefers meetings after ten"
     python -m tools.profiles forget ravi meetings
@@ -80,6 +81,14 @@ class Profiles:
         lines.extend(f"    > {turn.said}\n      < {turn.replied}" for turn in context.recent)
         return lines
 
+    def create(self, profile_id: str, display_name: str) -> list[str]:
+        """A profile with no voice yet (U-24): memory first, enrolment later."""
+        self._store.create(profile_id, display_name or profile_id)
+        return [
+            f"created {profile_id}; enrol their voice with "
+            f"python -m tools.enroll {profile_id} --record 3"
+        ]
+
     def remember(self, profile_id: str, fact: str) -> list[str]:
         _, added = self._store.remember(profile_id, fact)
         return ["kept" if added else "already kept"]
@@ -134,6 +143,9 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("prune")
     for name in ("show", "clear-recent"):
         commands.add_parser(name).add_argument("profile_id")
+    create = commands.add_parser("create")
+    create.add_argument("profile_id")
+    create.add_argument("--name", default="")
     remember = commands.add_parser("remember")
     remember.add_argument("profile_id")
     remember.add_argument("fact")
@@ -156,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
             lines = profiles.list()
         elif command == "prune":
             lines = profiles.prune()
+        elif command == "create":
+            lines = profiles.create(arguments.profile_id, arguments.name)
         elif command == "show":
             lines = profiles.show(arguments.profile_id)
         elif command == "clear-recent":
