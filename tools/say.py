@@ -183,8 +183,10 @@ def converse(conversation: Conversation, utterance: str, answer_yes: bool | None
     reply = conversation.await_reply(
         hint.transcript,
         waiting=lambda: print(
-            "  (still thinking -- the first answer after startup can take a minute "
-            "while the model loads)"
+            # Not "the model is loading": reasoning loads it at startup now
+            # (U-09), and this line had started to blame a cold model that
+            # was already warm.
+            "  (still thinking -- a reply that uses the calendar can take 20 s)"
         ),
     )
     for notice in conversation.notices():
