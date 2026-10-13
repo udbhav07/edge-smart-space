@@ -36,6 +36,7 @@ from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import PAYLOAD_ENCODING, topic_matches
 from src.common.schemas import (
     ActuatorState,
+    AssistantReply,
     Coefficients,
     CommandKind,
     FaultDiagnosis,
@@ -72,6 +73,7 @@ _SCHEMAS = (
     (topics.GOAL_ACTIVE, Goal),
     (topics.ACTUATOR_STATE, ActuatorState),
     (topics.CONTEXT_PREFERENCE, PreferenceHint),
+    (topics.CONTEXT_REPLY, AssistantReply),
     (topics.AUDIT_VALIDATION, ValidationVerdict),
     (topics.DIAGNOSIS, FaultDiagnosis),
     (topics.CONTROL_TRACKING, TrackingState),
@@ -418,6 +420,13 @@ def describe(topic: str, entry: TopicActivity) -> str:
         return f"[health   ] {message.sensor_id:<12} {message.quality.value}{fault}"
     if isinstance(message, FaultDiagnosis):
         return f"[diagnosis] {message.fault_id}: {message.user_message}"
+    if isinstance(message, PreferenceHint):
+        target = f" {message.target_c:g} C" if message.target_c is not None else ""
+        return f"[heard    ] {message.transcript or message.rationale!r} -> {message.intent.value}{target}"
+    if isinstance(message, AssistantReply):
+        # In voice mode nothing speaks the reply; this line is where the
+        # occupant's answer appears.
+        return f"[reply    ] {message.reply}"
     if isinstance(message, TrackingState):
         reason = f": {message.reason}" if message.reason else ""
         return (

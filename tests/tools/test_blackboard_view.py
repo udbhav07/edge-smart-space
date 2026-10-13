@@ -25,6 +25,7 @@ from src.common.schemas import (
     FaultDiagnosis,
     Goal,
     GoalSource,
+    Intent,
     Hypothesis,
     Mode,
     Quality,
@@ -273,6 +274,13 @@ class TestStreamLines:
         entry = view.accept("space/goal/active", goal.model_dump_json().encode())
         line = describe("space/goal/active", entry)
         assert line.startswith("[goal") and "<" not in line
+
+    def test_a_reply_reads_as_the_answer(self, view, clock):
+        """In voice mode the reply is not spoken; the stream is where it is read."""
+        from src.common.schemas import AssistantReply
+        reply = AssistantReply(ts=clock.now(), transcript="make it 500 degrees", intent=Intent.ENVIRONMENT, reply="30 degrees is the most I can do.")
+        entry = view.accept("space/context/reply", reply.model_dump_json().encode())
+        assert describe("space/context/reply", entry) == "[reply    ] 30 degrees is the most I can do."
 
     def test_an_unknown_topic_is_shown_as_json(self, view):
         entry = view.accept("space/other/thing", b'{"a": 1}')
