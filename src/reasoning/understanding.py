@@ -82,6 +82,11 @@ _TEMPERATURE_CUE = re.compile(
     r"\bheat|\bfreez|\bchill|\bthermostat|\bair\s*con|\bac\b|\ba/c\b|\broom\b)"
 )
 
+#: A number said as a temperature, unit and all: "500 degrees", "22 °C".
+_NAMED_TEMPERATURE = re.compile(
+    r"(-?\d+(?:\.\d+)?)\s*(?:°\s*c?|degrees?|deg|celsius|centigrade)"
+)
+
 #: What a recent exchange about temperature looks like, in either voice.
 _TEMPERATURE_EXCHANGE = re.compile(r"\bdegrees?\b|\btemperature\b|\bsafe\s+range\b")
 
@@ -171,6 +176,24 @@ def understood(
         return _as(hint, Intent.QUESTION, "conversation")
     if _QUESTION_OPENING.match(text) and not _REQUEST_VERB.search(text):
         return _as(hint, Intent.QUESTION, hint.subject or "room")
+
+    named = _NAMED_TEMPERATURE.search(text)
+    if named is not None and hint.target_c is None and (
+        hint.intent is Intent.ENVIRONMENT
+        or (hint.intent in (Intent.QUESTION, Intent.NONE) and _REQUEST_VERB.search(text))
+    ):
+        # Live: "make the temperature go to 500 degrees" came back with no
+        # target at all, and the occupant never heard the safety gate's
+        # answer. The number is in the words; the validator decides what of
+        # it is allowed (FR-13, FR-53).
+        return hint.model_copy(
+            update={
+                "intent": Intent.ENVIRONMENT,
+                "subject": "temperature",
+                "target_c": float(named.group(1)),
+                "comfort": _said_comfort(text) or Comfort.UNCHANGED,
+            }
+        )
 
     if hint.intent is not Intent.ENVIRONMENT:
         return hint

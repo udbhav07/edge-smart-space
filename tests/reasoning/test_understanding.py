@@ -156,3 +156,23 @@ class TestMemoryRequest:
     @pytest.mark.parametrize("said", ["what do you know about me", "make it cooler", "hello"])
     def test_anything_else_is_not_a_memory_request(self, said):
         assert memory_request(said) is None
+
+
+class TestANamedTemperature:
+    """Live: "500 degrees" came back with no target, so the gate never answered."""
+
+    def test_the_number_the_model_dropped_is_restored(self):
+        hint = understood(_hint(), "can you make the temperature go to 500 degrees centigrade")
+        assert hint.intent is Intent.ENVIRONMENT and hint.target_c == 500.0
+
+    def test_a_request_filed_as_a_question_is_a_request(self):
+        hint = understood(_hint(intent=Intent.QUESTION), "set it to 22 °C please")
+        assert hint.intent is Intent.ENVIRONMENT and hint.target_c == 22.0
+
+    def test_a_question_about_degrees_stays_a_question(self):
+        hint = understood(_hint(intent=Intent.QUESTION), "what is 20 degrees in fahrenheit")
+        assert hint.intent is Intent.QUESTION and hint.target_c is None
+
+    def test_the_models_own_number_is_kept(self):
+        hint = understood(_hint(target_c=23.0), "make it 23 degrees")
+        assert hint.target_c == 23.0

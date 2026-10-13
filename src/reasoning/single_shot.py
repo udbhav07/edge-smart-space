@@ -121,6 +121,10 @@ def _comfort_field(decoded: dict) -> object:
         return Comfort.UNCHANGED.value
     if "comfort" not in decoded and decoded.get("intent") not in (None, Intent.ENVIRONMENT.value):
         return Comfort.UNCHANGED.value
+    if "comfort" not in decoded and isinstance(decoded.get("target_c"), (int, float)):
+        # "Make it 22 again" came back with a target and no comfort key. A
+        # named number is the answer to the question comfort asks.
+        return Comfort.UNCHANGED.value
     return decoded.get("comfort")
 
 

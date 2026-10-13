@@ -116,7 +116,7 @@ class TestPostDecodeValidation:
             "not json at all",
             "[1, 2, 3]",
             '{"comfort": "freezing", "target_c": null, "rationale": ""}',
-            '{"target_c": 23.0, "rationale": "no comfort key"}',
+            '{"target_c": null, "rationale": "no comfort key and no target"}',
             '{"comfort": "cooler", "target_c": "warm", "rationale": ""}',
         ],
         ids=[
@@ -223,8 +223,14 @@ class TestWhatServedModelsActuallySend:
         hint = _context(config, client).extract("remember that I like tea")
         assert hint is not None and hint.comfort is Comfort.UNCHANGED
 
+    def test_a_named_target_without_comfort_is_kept(self, config):
+        """Live: "make it 22 degrees again" came back with no comfort key."""
+        client = StubClient('{"intent": "environment", "subject": "temperature", "target_c": 22, "rationale": "22"}')
+        hint = _context(config, client).extract("make the temperature go to 22 degrees again")
+        assert hint is not None and hint.target_c == 22.0
+
     def test_an_environment_request_without_comfort_is_still_discarded(self, config):
-        client = StubClient('{"intent": "environment", "target_c": 23.0, "rationale": ""}')
+        client = StubClient('{"intent": "environment", "target_c": null, "rationale": ""}')
         assert _context(config, client).extract(TRANSCRIPT) is None
 
     def test_a_blank_comfort_reads_as_unchanged(self, config):
