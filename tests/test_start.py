@@ -25,6 +25,7 @@ def _config():
 def _all_reachable(monkeypatch):
     monkeypatch.setattr(start, "is_reachable", lambda host, port, **_: True)
     monkeypatch.setattr(start, "loaded_models", lambda config: None)
+    monkeypatch.setattr(start, "active_injections", lambda config: [])
 
 
 @pytest.fixture(name="none_reachable")
@@ -181,6 +182,24 @@ class TestAlreadyRunning:
     def test_a_duplicate_stops_the_launch(self, config, all_reachable, monkeypatch):
         monkeypatch.setattr(start, "listen_live", lambda config, seconds: {"space/sensor/temp_01/state"})
         assert start.main(["--only", "simulator", "--config", str(CONFIG_PATH)]) == 1
+
+
+class TestStaleInjections:
+    """A unit left "dead" by last week's demonstration is named at start."""
+
+    def _held(self, subject="ac", kind="NO_RESPONSE", ts=1_000_000.0):
+        from src.common.schemas import InjectionCommand
+        return InjectionCommand(ts=ts, subject=subject, kind=kind, magnitude=0.0, requester="operator")
+
+    def test_each_injection_is_named_with_its_age_and_the_cure(self):
+        lines = start.describe_injections([self._held()], 1_000_000.0 + 3 * 3600, 5.5)
+        assert lines == [
+            "ac is being injected NO_RESPONSE since 1970-01-12 19:16 (3 h ago); "
+            "clear it with: python -m tools.inject ac clear"
+        ]
+
+    def test_nothing_held_says_nothing(self):
+        assert start.describe_injections([], 0.0, 5.5) == []
 
 
 class TestLayerOneFollowsTheConfiguration:

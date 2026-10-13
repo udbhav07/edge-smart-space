@@ -44,7 +44,10 @@ from urllib.parse import urlparse
 
 from src.common import topics
 from src.common.config import Config, ConfigError, DeviceSource, load_config
+from src.common.injection import InjectedFault
+from src.common.localtime import local_time
 from src.common.mqtt_client import topic_matches
+from src.common.schemas import InjectionCommand
 
 LOGGER = logging.getLogger("start")
 
@@ -203,6 +206,11 @@ def preflight(config: Config, system: str) -> bool:
             )
             if dependency.name == _INFERENCE:
                 LOGGER.info("         %s", describe_model_state(config))
+            if dependency.required:
+                for line in describe_injections(
+                    active_injections(config), time.time(), config.site.utc_offset_h
+                ):
+                    LOGGER.warning("INJECTED %s", line)
             continue
 
         level = LOGGER.error if dependency.required else LOGGER.warning
@@ -288,6 +296,60 @@ def already_running(
         if heard:
             found[service.name] = heard[0]
     return found
+
+
+def active_injections(config: Config, seconds: float = 1.0) -> list[InjectionCommand]:
+    """Injections the broker still holds, which every adapter obeys on start.
+
+    ``space/inject/{subject}`` is retained so it always answers what is being
+    injected now -- including a unit made "dead" in last week's demonstration.
+    """
+    import paho.mqtt.client as mqtt
+
+    held: list[InjectionCommand] = []
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"start-injections-{id(held)}")
+
+    def on_connect(_client, _userdata, _flags, _reason_code, _properties=None) -> None:
+        client.subscribe(topics.INJECT.wildcard(), 0)
+
+    def on_message(_client, _userdata, message) -> None:
+        if not message.payload:
+            return
+        try:
+            command = InjectionCommand.model_validate_json(message.payload)
+        except ValueError:
+            return
+        if command.kind is not InjectedFault.NONE:
+            held.append(command)
+
+    client.on_connect = on_connect
+    client.on_message = on_message
+    try:
+        client.connect(config.mqtt.host, config.mqtt.port, int(config.mqtt.keepalive_s))
+    except OSError:
+        return held
+    client.loop_start()
+    try:
+        time.sleep(seconds)
+    finally:
+        client.loop_stop()
+        client.disconnect()
+    return held
+
+
+def describe_injections(
+    held: list[InjectionCommand], now_ts: float, utc_offset_h: float
+) -> list[str]:
+    """One warning line per injection still in force, with how to clear it."""
+    lines = []
+    for command in sorted(held, key=lambda item: item.subject):
+        age_h = (now_ts - command.ts) / 3600.0
+        when = local_time(command.ts, utc_offset_h).strftime("%Y-%m-%d %H:%M")
+        lines.append(
+            f"{command.subject} is being injected {command.kind.value} since {when} "
+            f"({age_h:.0f} h ago); clear it with: python -m tools.inject {command.subject} clear"
+        )
+    return lines
 
 
 def listen_live(config: Config, seconds: float) -> set[str]:

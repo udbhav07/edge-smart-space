@@ -582,3 +582,29 @@ class TestAcknowledgingFromTheMeter:
         simulator, transport, clock, board = _running(quiet_config)
         TestPowerMeter()._cool(simulator, clock, board, 2)
         assert self._ack(transport) is AckStatus.UNKNOWN
+
+
+class TestInjectionsLeftFromEarlier:
+    """An injection older than the simulator is obeyed, and said out loud."""
+
+    def _inject(self, board, ts, kind="NO_RESPONSE"):
+        from src.common.schemas import InjectionCommand
+        command = InjectionCommand(ts=ts, subject="ac", kind=kind, magnitude=0.0, requester="operator")
+        board.dispatch("space/inject/ac", command.model_dump_json().encode())
+
+    def test_an_old_injection_is_a_warning(self, quiet_config, caplog):
+        _, _, clock, board = _running(quiet_config)
+        with caplog.at_level("WARNING"):
+            self._inject(board, clock.now() - 86400.0)
+        assert "left on the broker by an earlier session" in caplog.text
+
+    def test_it_is_still_obeyed(self, quiet_config):
+        simulator, _, clock, board = _running(quiet_config)
+        self._inject(board, clock.now() - 86400.0)
+        assert simulator._actuator._failed is True
+
+    def test_a_fresh_injection_is_not_a_warning(self, quiet_config, caplog):
+        _, _, clock, board = _running(quiet_config)
+        with caplog.at_level("WARNING"):
+            self._inject(board, clock.now())
+        assert "earlier session" not in caplog.text

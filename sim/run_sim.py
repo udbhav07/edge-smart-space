@@ -30,7 +30,7 @@ from src.common.injection import (
     FaultInjection,
     InjectedFault,
 )
-from src.common.localtime import SECONDS_PER_HOUR
+from src.common.localtime import SECONDS_PER_HOUR, local_time
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -122,6 +122,10 @@ class RoomSimulator:
         #: supply last said: the evidence the device bridge acknowledges on.
         self._last_change_ts: float | None = None
         self._metered_w: float | None = None
+        #: An injection stamped before this is one left on the broker by an
+        #: earlier session, which the simulator obeys as it must (FR-31) --
+        #: but out loud, not as one INFO line among the startup chatter.
+        self._started_ts = clock.now()
 
     @property
     def room_temperature_c(self) -> float:
@@ -201,6 +205,17 @@ class RoomSimulator:
         logged rather than ignored: an injection that appears to work and does
         nothing turns a detection trial into a phantom missed detection.
         """
+        if command.kind is not InjectedFault.NONE and command.ts < self._started_ts:
+            # A unit left "dead" from a demonstration days ago looked, to the
+            # next person, like a room that would not cool.
+            LOGGER.warning(
+                "%s is still being injected %s, left on the broker by an earlier "
+                "session (%s); clear it with: python -m tools.inject %s clear",
+                command.subject,
+                command.kind.value,
+                local_time(command.ts, self._config.site.utc_offset_h).strftime("%Y-%m-%d %H:%M"),
+                command.subject,
+            )
         if command.subject == topics.AIR_CONDITIONER_ID:
             self._inject_actuator(command)
             return
