@@ -23,6 +23,7 @@ _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
 _RELATIVE = {
     "day after tomorrow": 2,
     "tomorrow": 1,
+    "yesterday": -1,
     "tonight": 0,
     "today": 0,
     "this evening": 0,
@@ -59,13 +60,41 @@ def the_one_day(utterance: str, today: date) -> date | None:
     return days.pop() if len(days) == 1 else None
 
 
-def annotation(utterance: str, today: date) -> str:
-    """The resolved days, as a line appended to what the model is asked."""
-    days = named_days(utterance, today)
-    if not days:
+#: "in 10 minutes", "in an hour", "in half an hour", "in 2 hrs".
+_FROM_NOW = re.compile(
+    r"\bin\s+(?P<count>an?|one|two|three|half\s+an|\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>minutes?|mins?|hours?|hrs?)\b"
+)
+_COUNT_WORDS = {"a": 1.0, "an": 1.0, "one": 1.0, "two": 2.0, "three": 3.0}
+
+
+def from_now(utterance: str) -> timedelta | None:
+    """How far ahead "in N minutes" puts something, or None if it says no such thing.
+
+    The model read "remind me to call mom in 10 minutes" as a ten-minute
+    entry starting now, which had already passed by the time it was checked.
+    """
+    match = _FROM_NOW.search(utterance.lower())
+    if match is None:
+        return None
+    count, unit = match.group("count"), match.group("unit")
+    if count.startswith("half"):
+        return timedelta(minutes=30)
+    amount = _COUNT_WORDS.get(count) or float(count)
+    return timedelta(hours=amount) if unit.startswith(("hour", "hr")) else timedelta(minutes=amount)
+
+
+def annotation(utterance: str, today: date, now: datetime | None = None) -> str:
+    """The resolved days and times, as a line appended to what the model is asked."""
+    parts = [
+        f"{phrase} = {day.isoformat()}" for phrase, day in named_days(utterance, today).items()
+    ]
+    ahead = from_now(utterance)
+    if ahead is not None and now is not None:
+        parts.append(f"{_FROM_NOW.search(utterance.lower()).group(0)} = {(now + ahead).isoformat(timespec='minutes')}")
+    if not parts:
         return ""
-    listed = "; ".join(f"{phrase} = {day.isoformat()}" for phrase, day in days.items())
-    return f"(Dates named: {listed}.)"
+    return f"(Dates named: {'; '.join(parts)}.)"
 
 
 def on_day(value: str, day: date) -> str | None:

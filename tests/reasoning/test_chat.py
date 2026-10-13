@@ -114,3 +114,18 @@ def test_a_failed_warm_up_is_reported_as_unavailable(config):
     completions = FakeCompletions(None, error=ConnectionError("refused"))
     with pytest.raises(ReasoningUnavailableError):
         ChatClient(config, SimClock(), _client(completions)).warm()
+
+
+def test_a_call_written_as_bare_json_is_recovered(config):
+    """Live: the opening tag was lost and "portun {...} </tool_call>" was spoken."""
+    content = 'portun\n{"name": "schedule_event", "arguments": {"subject": "dentist"}}\n</tool_call>'
+    completions = FakeCompletions(SimpleNamespace(content=content, tool_calls=None))
+    turn = ChatClient(config, SimClock(), _client(completions)).complete([])
+    assert [call.name for call in turn.tool_calls] == ["schedule_event"]
+    assert turn.content == ""
+
+
+def test_json_that_is_not_a_call_stays_text(config):
+    completions = FakeCompletions(SimpleNamespace(content='The reading is {"t": 27}.', tool_calls=None))
+    turn = ChatClient(config, SimClock(), _client(completions)).complete([])
+    assert turn.tool_calls == () and "27" in turn.content

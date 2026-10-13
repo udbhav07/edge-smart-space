@@ -458,3 +458,30 @@ class TestCalendarCallsAreChecked:
         reply = room.say("move it to 4")
         assert [event["starts_at"] for event in room.calendar()] == ["2026-10-01T16:00"]
         assert "Moved review" in reply.reply
+
+
+class TestNoClaimWithoutATool:
+    """Live: "cancel my meeting with the CEO" -- there was none -- was answered
+    "-cancelled the meeting with the CEO" with no tool called."""
+
+    def test_a_claimed_cancellation_is_withheld(self, config):
+        room = Room(config, ScriptedChat(saying("Cancelled the meeting with the CEO at 16:00.")))
+        reply = room.say("cancel my meeting with the CEO")
+        assert "Cancelled" not in reply.reply and "haven't changed anything" in reply.reply
+
+    def test_a_plain_answer_is_left_alone(self, config):
+        room = Room(config, ScriptedChat(saying("Which day would you like it on?")))
+        assert room.say("put a meeting in with Anu").reply == "Which day would you like it on?"
+
+
+class TestInSoManyMinutes:
+    def test_the_entry_is_put_that_far_ahead(self, config):
+        """The model put "in 10 minutes" at now, for ten minutes, and it was refused as past."""
+        now = datetime(2026, 9, 26, 15, 0)
+        chat = ScriptedChat(
+            calling(call("schedule_event", subject="call mom", starts_at=now.isoformat(), duration_min=10)),
+            saying("Added."),
+        )
+        room = Room(config, chat)
+        room.say("remind me to call mom in 10 minutes")
+        assert room.calendar()[0]["starts_at"].startswith("2026-09-26T15:10")

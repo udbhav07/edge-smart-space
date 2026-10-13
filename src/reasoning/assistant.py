@@ -76,7 +76,7 @@ from src.reasoning.chat import (
     assistant_message,
     tool_message,
 )
-from src.reasoning.dates import annotation, named_days, on_day, the_one_day
+from src.reasoning.dates import annotation, from_now, named_days, on_day, the_one_day
 from src.reasoning.room_state import RoomState
 from src.reasoning.understanding import memory_request
 from src.reasoning.single_shot import ReasoningUnavailableError
@@ -147,6 +147,17 @@ ANSWER_PROMPT = (
 )
 
 _NO_TOOL_REPLY = "Sorry, I could not do that."
+
+#: A reply written as though something was done.
+_CLAIMS_DONE = re.compile(
+    r"\b(cancell?ed|added|scheduled|rescheduled|booked|moved|removed|deleted|"
+    r"remembered|forgotten|reserved|put\s+(it|that)\s+in)\b",
+    re.IGNORECASE,
+)
+_NOTHING_DONE = (
+    "I haven't changed anything: I couldn't carry that out. "
+    "Could you say it another way?"
+)
 _NO_RESULT = "The request got no answer in time, so nothing is confirmed."
 
 
@@ -417,7 +428,7 @@ class Assistant:
             },
             {
                 "role": "user",
-                "content": f"{utterance}\n{annotation(utterance, self._today())}".strip(),
+                "content": f"{utterance}\n{annotation(utterance, self._today(), self._local_now())}".strip(),
             },
         ]
         turns: list[ChatTurn] = []
@@ -464,6 +475,13 @@ class Assistant:
             LOGGER.warning("assistant unavailable: %s", exc)
             reply_text = _fallback(results) if results else hint.spoken_reply
         reply_text = reply_text or _fallback(results) or _NO_TOOL_REPLY
+        if hint.intent is Intent.SERVICE and not results and _CLAIMS_DONE.search(reply_text):
+            # Live: "cancel my meeting with the CEO" -- there was none -- was
+            # answered "-cancelled the meeting with the CEO" with no tool
+            # called. A claim no tool stands behind is not passed on (FR-45).
+            LOGGER.warning("reply claimed an action no tool performed: %r", reply_text[:120])
+            self._corrections.append("a claimed action with no tool behind it was withheld")
+            reply_text = _NOTHING_DONE
         if _REMINDER.search(utterance.lower()) and any(
             result.status is ToolStatus.OK and result.tool == "schedule_event" for result in results
         ):
@@ -487,6 +505,29 @@ class Assistant:
             invocation_ids=tuple(result.invocation_id for result in results),
             awaiting_confirmation=awaiting,
         )
+
+    def _local_now(self) -> datetime:
+        return local_time(self._clock.now(), self._utc_offset_h)
+
+    def _from_now(self, tool: str, arguments: dict, utterance: str) -> dict:
+        """ "In 10 minutes" is arithmetic on the clock, so it is done here (FR-44).
+
+        A duration equal to the delay is dropped: it was the delay misread as
+        how long the entry lasts.
+        """
+        ahead = from_now(utterance)
+        if ahead is None or not isinstance(arguments.get("starts_at"), str):
+            return arguments
+        corrected = dict(arguments)
+        corrected["starts_at"] = (self._local_now() + ahead).replace(second=0, microsecond=0).isoformat(
+            timespec="seconds"
+        )
+        if corrected.get("duration_min") == ahead.total_seconds() / 60:
+            corrected.pop("duration_min")
+        if corrected != arguments:
+            LOGGER.info("%s: time put %s from now: %s", tool, ahead, corrected["starts_at"])
+            self._corrections.append(f"{tool} time computed from 'in {ahead}'")
+        return corrected
 
     def _today(self):
         return local_time(self._clock.now(), self._utc_offset_h).date()
@@ -544,6 +585,7 @@ class Assistant:
         arguments = {key: _flat(value) for key, value in call.arguments.items()}
         arguments = self._system_supplied(call.name, arguments, hint)
         corrected = _onto_named_day(call.name, arguments, the_one_day(utterance, self._today()))
+        corrected = self._from_now(call.name, corrected, utterance)
         if corrected != arguments:
             LOGGER.info("%s: dates moved to the day named: %s", call.name, corrected)
             self._corrections.append(f"{call.name} date corrected to the day named")
