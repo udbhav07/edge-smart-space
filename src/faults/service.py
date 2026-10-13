@@ -149,7 +149,9 @@ class DetectorBankService:
         self._actuator = actuator
         self._mode_manager = mode_manager
         self._last_reading_ts: dict[str, float] = {}
-        self._published_quality: dict[str, Quality] = {}
+        #: What each sensor's retained health last said: its quality and the
+        #: fault holding it, since either changing is news.
+        self._published_quality: dict[str, tuple[Quality, str | None]] = {}
 
     # --- wiring -------------------------------------------------------
 
@@ -480,7 +482,7 @@ class DetectorBankService:
         LOGGER.info("withdrew %s", event.fault_id)
 
     def _publish_health(self, findings: Iterable[Finding]) -> None:
-        """Publish health for every sensor whose quality changed.
+        """Publish health for every sensor whose quality or fault changed.
 
         Only on change: the topic is retained, so a late subscriber gets the
         current value without this service restating it every tick.
@@ -496,9 +498,13 @@ class DetectorBankService:
                 # The actuator is a subject but not a sensor; it has no
                 # SensorHealth topic and publishing one would invent a sensor.
                 continue
-            if self._published_quality.get(sensor_id) is quality:
+            # Keyed on the fault too: keyed on quality alone, a fault retiring
+            # while the reading was already "ok" left the retained health
+            # naming a fault that no longer existed.
+            state = (quality, faulted.get(sensor_id))
+            if self._published_quality.get(sensor_id) == state:
                 continue
-            self._published_quality[sensor_id] = quality
+            self._published_quality[sensor_id] = state
             self._blackboard.publish(
                 topics.SENSOR_HEALTH,
                 SensorHealth(

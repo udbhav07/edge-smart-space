@@ -363,6 +363,17 @@ class TestPublishingHealth:
         indoor = [entry for entry in transport.health() if entry.sensor_id == INDOOR]
         assert [entry.quality for entry in indoor][-1] is Quality.OK
 
+    def test_a_retired_fault_is_no_longer_named(self, wired, clock):
+        """Live: the reading was "ok" again before the fault retired, so the
+        retained health went on naming a fault that no longer existed."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        clock.advance(60.0)
+        service.tick()
+        _report_healthily(service, blackboard, clock, config_confirm_s() + 30.0)
+        indoor = [entry for entry in transport.health() if entry.sensor_id == INDOOR]
+        assert indoor[-1].quality is Quality.OK and indoor[-1].active_fault_id is None
+
     def test_health_carries_the_last_reading_it_saw(self, wired, clock):
         service, transport, blackboard = wired
         reading = _reading(clock)
