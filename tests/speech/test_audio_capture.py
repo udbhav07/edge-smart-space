@@ -181,3 +181,34 @@ class TestShutdown:
         capture = _capture(config, stream=AwkwardStream())
         capture.stop()
         assert capture.is_running is False
+
+
+class TestChoosingTheMicrophone:
+    """Indices move when a headset connects, and the default can vanish."""
+
+    DEVICES = [
+        (1, "MME", "Microphone (C-Media(R) Audio)"),
+        (12, "Windows DirectSound", "Microphone (C-Media(R) Audio)"),
+        (29, "Windows WASAPI", "Microphone (C-Media(R) Audio)"),
+        (3, "MME", "Headset (soundcore Q20i)"),
+    ]
+
+    def _config(self, config, **changes):
+        return config.model_copy(update=changes)
+
+    def test_a_name_picks_the_device_on_the_api_that_resamples(self, config):
+        from src.speech.audio_capture import choose_device
+        assert choose_device(self.DEVICES, self._config(config, device_name="c-media", device_index=None)) == 1
+
+    def test_an_index_wins_over_a_name(self, config):
+        from src.speech.audio_capture import choose_device
+        assert choose_device(self.DEVICES, self._config(config, device_name="c-media", device_index=3)) == 3
+
+    def test_no_name_means_the_system_default(self, config):
+        from src.speech.audio_capture import choose_device
+        assert choose_device(self.DEVICES, self._config(config, device_name=None, device_index=None)) is None
+
+    def test_a_missing_microphone_names_the_ones_there_are(self, config):
+        from src.speech.audio_capture import MicrophoneError, choose_device
+        with pytest.raises(MicrophoneError, match="soundcore"):
+            choose_device(self.DEVICES, self._config(config, device_name="Blue Yeti", device_index=None))

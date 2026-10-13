@@ -480,7 +480,14 @@ class SpeechConfig(_Section):
     channels: int = Field(gt=0, description="Capture channels; mono for ASR")
     chunk_samples: int = Field(gt=0, description="Frame size; Silero VAD requires 512")
     device_index: int | None = Field(
-        default=None, description="Input device; None selects the system default"
+        default=None,
+        description="Input device by PortAudio index; wins over device_name. "
+        "Indices move when a device connects, so prefer the name",
+    )
+    device_name: str | None = Field(
+        default=None,
+        description="Input device by part of its name, case-insensitive; None "
+        "selects the system default",
     )
     queue_seconds: float = Field(
         gt=0.0, description="Audio buffered before the oldest frame is dropped"

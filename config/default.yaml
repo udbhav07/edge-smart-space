@@ -218,7 +218,11 @@ speech:
   sample_rate_hz: 16000
   channels: 1
   chunk_samples: 512            # Required size for Silero VAD
-  device_index: null            # null selects the system default
+  # The microphone, by part of its name (python -m tools.mics lists them).
+  # Not by index: indices move whenever a headset connects, and the system
+  # default vanished when one did, which stopped speech at start.
+  device_name: C-Media
+  device_index: null            # an index here wins over device_name
   queue_seconds: 5.0
   wake_word: hey_jarvis
   # Measured, not chosen. The openWakeWord hey_jarvis model is trained on

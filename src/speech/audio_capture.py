@@ -30,25 +30,86 @@ ERROR_BACKOFF_S = 0.1
 _JOIN_TIMEOUT_S = 2.0
 
 
+class MicrophoneError(OSError):
+    """No usable input device, with the ones that exist named."""
+
+
+#: Host APIs tried in this order. MME resamples to 16 kHz itself; WASAPI and
+#: WDM-KS refuse any rate but the device's own, which on test day failed every
+#: microphone except a Bluetooth headset.
+_HOST_API_PREFERENCE = ("MME", "Windows DirectSound", "Windows WASAPI")
+
+
+def input_devices(audio) -> list[tuple[int, str, str]]:
+    """Every input device as (index, host API, name)."""
+    found = []
+    for index in range(audio.get_device_count()):
+        info = audio.get_device_info_by_index(index)
+        if info.get("maxInputChannels", 0) > 0:
+            host = audio.get_host_api_info_by_index(info["hostApi"])["name"]
+            found.append((index, host, str(info["name"])))
+    return found
+
+
+def choose_device(devices: list[tuple[int, str, str]], config: SpeechConfig) -> int | None:
+    """The device index to open: configured index, else name, else the default.
+
+    :returns: None to ask PortAudio for the system default.
+    :raises MicrophoneError: when a name is configured and nothing matches.
+    """
+    if config.device_index is not None:
+        return config.device_index
+    if not config.device_name:
+        return None
+    wanted = config.device_name.casefold()
+    matches = [device for device in devices if wanted in device[2].casefold()]
+    if not matches:
+        raise MicrophoneError(
+            f"no input device matches speech.device_name {config.device_name!r}; "
+            f"inputs: {', '.join(sorted({name for _, _, name in devices}))}"
+        )
+
+    def preference(device: tuple[int, str, str]) -> int:
+        host = device[1]
+        return _HOST_API_PREFERENCE.index(host) if host in _HOST_API_PREFERENCE else len(_HOST_API_PREFERENCE)
+
+    return min(matches, key=preference)[0]
+
+
 def _open_default_stream(config: SpeechConfig):
-    """Open the microphone.
+    """Open the configured microphone.
 
     PyAudio is imported here rather than at module scope so the queue and
     error-handling logic stay importable without PortAudio installed.
 
     :returns: the stream and the PyAudio instance owning it.
+    :raises MicrophoneError: when no device can be opened, naming the inputs
+        that exist rather than PortAudio's "Invalid input device".
     """
     import pyaudio
 
     audio = pyaudio.PyAudio()
-    stream = audio.open(
-        format=pyaudio.paInt16,
-        channels=config.channels,
-        rate=config.sample_rate_hz,
-        input=True,
-        input_device_index=config.device_index,
-        frames_per_buffer=config.chunk_samples,
-    )
+    devices = input_devices(audio)
+    try:
+        index = choose_device(devices, config)
+        stream = audio.open(
+            format=pyaudio.paInt16,
+            channels=config.channels,
+            rate=config.sample_rate_hz,
+            input=True,
+            input_device_index=index,
+            frames_per_buffer=config.chunk_samples,
+        )
+    except OSError as exc:
+        audio.terminate()
+        if isinstance(exc, MicrophoneError):
+            raise
+        raise MicrophoneError(
+            f"cannot open the microphone ({exc}); set speech.device_name to one of: "
+            f"{', '.join(sorted({name for _, _, name in devices}))}"
+        ) from exc
+    name = next((name for i, _, name in devices if i == index), "the system default")
+    LOGGER.info("listening on %s", name)
     return stream, audio
 
 
