@@ -208,6 +208,23 @@ class TestWhatTheOccupantWasNotTold:
         first = lines[lines.index("SENSORS") + 1]
         assert first.split()[0] == "temp_01"
 
+    def test_a_healthy_sensor_not_yet_heard_is_waiting_not_silent(self, clock):
+        """The outdoor sensor reports once a minute and sat at the top as silent."""
+        view = BlackboardView(clock=clock, expected_sensors=("outdoor_01", "temp_01"))
+        view.accept(TEMP_TOPIC, _reading(clock))
+        health = SensorHealth(ts=clock.now(), sensor_id="outdoor_01", quality=Quality.OK)
+        view.accept("space/sensor/outdoor_01/health", health.model_dump_json().encode())
+        lines = summarise(view).splitlines()
+        outdoor = next(line for line in lines if "outdoor_01" in line)
+        assert "awaiting its next reading" in outdoor and "silent" not in outdoor
+
+    def test_a_silent_sensor_sorts_above_a_waiting_one(self, clock):
+        view = BlackboardView(clock=clock, expected_sensors=("outdoor_01", "pir_01"))
+        health = SensorHealth(ts=clock.now(), sensor_id="outdoor_01", quality=Quality.OK)
+        view.accept("space/sensor/outdoor_01/health", health.model_dump_json().encode())
+        lines = summarise(view).splitlines()
+        assert lines[lines.index("SENSORS") + 1].split()[0] == "pir_01"
+
     def test_a_faulted_sensor_names_its_fault(self, view, clock):
         view.accept(TEMP_TOPIC, _reading(clock))
         health = SensorHealth(ts=clock.now(), sensor_id="temp_01", quality=Quality.FAULTED, active_fault_id="f_d2")

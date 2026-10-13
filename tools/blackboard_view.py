@@ -325,7 +325,13 @@ def _sensor_lines(view: BlackboardView, now: float) -> list[str]:
 
     def troubled(name: str) -> bool:
         status = health.get(name)
-        return name not in readings or (status is not None and status.quality is not Quality.OK)
+        if status is not None:
+            return status.quality is not Quality.OK
+        return name not in readings
+
+    # The outdoor sensor reports once a minute, so for up to a minute after the
+    # view opens it has said nothing. With a retained "ok" from the detectors
+    # it is waiting, not silent, and does not belong at the top.
 
     lines = ["SENSORS"]
     for name in sorted(names, key=lambda name: (not troubled(name), name)):
@@ -334,6 +340,9 @@ def _sensor_lines(view: BlackboardView, now: float) -> list[str]:
         if status is not None and status.active_fault_id:
             note = f"  fault {status.active_fault_id}"
         entry = readings.get(name)
+        if entry is None and status is not None and status.quality is Quality.OK:
+            lines.append(f"  {name:<12} {'--':>15} {'ok':<8} awaiting its next reading{note}")
+            continue
         if entry is None:
             lines.append(f"  {name:<12} {'-- silent':>15} {'':<8} nothing heard since this view started{note}")
             continue
