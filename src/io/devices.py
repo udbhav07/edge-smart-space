@@ -95,6 +95,12 @@ class DeviceBridge:
                 self._by_topic[topic] = sensor.sensor_id
         self._last_kind = CommandKind.OFF
         self._last_command_ts: float | None = None
+        #: When the unit was last told to *change*. The draw is judged against
+        #: this, not against the last command: the controller re-asserts the
+        #: state in force every ``controller.reassert_interval_s``, which is no
+        #: shorter than the grace period, so restarting the grace on every
+        #: re-assertion left a steadily cooling unit UNKNOWN forever.
+        self._last_change_ts: float | None = None
         self._ack = AckStatus.UNKNOWN
         self._readback_mode: str | None = None
         self._power_w: float | None = None
@@ -182,8 +188,11 @@ class DeviceBridge:
         mode = _CLIMATE_MODES.get(command.kind)
         if mode is None:
             return  # MAINTAIN and HOLD ask for nothing new
+        changed = command.kind is not self._last_kind or self._last_change_ts is None
         self._last_kind = command.kind
         self._last_command_ts = command.ts
+        if changed:
+            self._last_change_ts = command.ts
         if self._unit_dead:
             LOGGER.warning("emulated dead unit: %s withheld", command.kind.value)
             return
@@ -194,7 +203,8 @@ class DeviceBridge:
             self._blackboard.publish_device(
                 devices.ac_target_command_topic, f"{command.setpoint_c:.1f}"
             )
-        self._ack = AckStatus.UNKNOWN
+        if changed:
+            self._ack = AckStatus.UNKNOWN
         self._reconcile()
 
     def _on_unit_mode(self, _topic: str, text: str) -> None:
@@ -218,9 +228,9 @@ class DeviceBridge:
                 else AckStatus.FAILED
             )
             return
-        if self._power_w is None or self._last_command_ts is None:
+        if self._power_w is None or self._last_change_ts is None:
             return
-        if self._clock.now() - self._last_command_ts < self._config.devices.ac_ack_grace_s:
+        if self._clock.now() - self._last_change_ts < self._config.devices.ac_ack_grace_s:
             return
         running = self._power_w >= self._config.devices.ac_running_power_w
         wanted = self._last_kind is CommandKind.COOL

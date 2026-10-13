@@ -170,8 +170,15 @@ class RoomSimulator:
     def _on_command(self, topic: str, command: Command) -> None:
         LOGGER.debug("command on %s: %s", topic, command.kind.value)
         ack = self._actuator.command(command.kind, command.setpoint_c)
+        changed = command.kind in _STATE_CHANGING_COMMANDS and (
+            command.kind is not self._last_kind or self._last_change_ts is None
+        )
         if command.kind in _STATE_CHANGING_COMMANDS:
             self._last_kind = command.kind
+        if changed:
+            # Only a change restarts the grace period: the controller re-asserts
+            # the state in force every reassert_interval_s, as long as the grace
+            # itself, and restarting on each kept the ack UNKNOWN for good.
             self._last_change_ts = command.ts
             self._last_ack = ack
         elif ack is not AckStatus.UNKNOWN:

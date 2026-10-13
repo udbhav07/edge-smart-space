@@ -253,6 +253,17 @@ class TestAcknowledgementFromTheMeter:
     def test_an_off_still_drawing_running_power_has_failed(self, metered):
         assert self._ack(metered, CommandKind.OFF, 1150.0) is AckStatus.FAILED
 
+    def test_a_reasserted_cool_stays_acknowledged(self, metered):
+        """Live: the controller re-asserts COOL every 60 s, the grace is 60 s,
+        and restarting the grace on each re-assertion kept the ack UNKNOWN."""
+        self._ack(metered, CommandKind.COOL, 1150.0)
+        for _ in range(3):
+            assert self._ack(metered, CommandKind.COOL, 1150.0, wait_s=1.0) is AckStatus.ACKNOWLEDGED
+
+    def test_a_change_of_state_still_restarts_the_grace(self, metered):
+        self._ack(metered, CommandKind.COOL, 1150.0)
+        assert self._ack(metered, CommandKind.OFF, 1150.0, wait_s=5.0) is AckStatus.UNKNOWN
+
     def test_inside_the_grace_period_it_is_unknown(self, metered):
         """A compressor takes time to start; judging sooner would fail it."""
         assert self._ack(metered, CommandKind.COOL, 4.0, wait_s=5.0) is AckStatus.UNKNOWN

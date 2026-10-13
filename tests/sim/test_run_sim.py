@@ -577,6 +577,14 @@ class TestAcknowledgingFromTheMeter:
         self._cool_for(quiet_config, simulator, clock, board, quiet_config.devices.ac_ack_grace_s + 30.0)
         assert self._ack(transport) is AckStatus.FAILED
 
+    def test_reasserting_cool_keeps_the_acknowledgement(self, quiet_config):
+        """Re-assertions every 60 s against a 60 s grace kept the ack UNKNOWN."""
+        simulator, transport, clock, board = _running(quiet_config)
+        cooler = TestPowerMeter()
+        for _ in range(4):
+            cooler._cool(simulator, clock, board, int(quiet_config.controller.reassert_interval_s / 5.0))
+        assert self._ack(transport) is AckStatus.ACKNOWLEDGED
+
     def test_within_the_grace_period_it_stays_unknown(self, quiet_config):
         """A compressor takes time to start; judging sooner would cry wolf."""
         simulator, transport, clock, board = _running(quiet_config)
