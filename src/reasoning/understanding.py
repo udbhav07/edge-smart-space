@@ -31,6 +31,7 @@ import re
 from collections.abc import Sequence
 
 from src.common.schemas import Comfort, ContextTurn, Intent, PreferenceHint
+from src.reasoning.dates import time_said
 
 #: Asking the system to keep or drop something about the speaker.
 _MEMORY_REQUEST = re.compile(
@@ -197,6 +198,13 @@ def understood(
 
     if hint.intent is not Intent.ENVIRONMENT:
         return hint
+
+    if not _TEMPERATURE_CUE.search(text) and _said_comfort(text) is None and time_said(text):
+        # Live: "actually make it half past two", after putting the dentist
+        # in at two, came back as wanting the room warmer, and the setpoint
+        # moved. A time of day said with no word about the room is about
+        # the entry, never the temperature (S-03).
+        return _as(hint, Intent.SERVICE, "follow-up")
 
     if hint.target_c is not None and not _TEMPERATURE_CUE.search(text):
         if recent and not _was_about_temperature(recent[-1]):

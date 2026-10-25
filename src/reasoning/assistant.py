@@ -76,7 +76,7 @@ from src.reasoning.chat import (
     assistant_message,
     tool_message,
 )
-from src.reasoning.dates import annotation, from_now, named_days, on_day, the_one_day
+from src.reasoning.dates import annotation, from_now, named_days, on_day, the_one_day, time_said
 from src.reasoning.room_state import RoomState
 from src.reasoning.understanding import memory_request
 from src.reasoning.single_shot import ReasoningUnavailableError
@@ -228,7 +228,7 @@ class Assistant:
         self._profiles: dict[str, ProfileContext] = {}
         #: The entry each voice last put in or moved, so "move it" means that
         #: one. Bounded by the voices kept.
-        self._last_entry: dict[str, str] = {}
+        self._last_entry: dict[str, tuple[str, str]] = {}
 
     # --- wiring -------------------------------------------------------
 
@@ -360,12 +360,49 @@ class Assistant:
         argument = "fact" if tool == REMEMBER.name else "about"
         return ToolCall(call_id="from-the-words", name=tool, arguments={argument: text})
 
-    def _as_asked(self, call: ToolCall, asked: ToolCall | None) -> ToolCall:
-        """A memory call the words contradict is replaced by the one they ask for.
+    def _entry_asked(self, hint: PreferenceHint, utterance: str) -> ToolCall | None:
+        """The calendar change the words plainly ask for about the entry just
+        discussed: "actually make it half past two", "cancel it" (S-03, S-04).
 
-        "Please remember that I am vegetarian" was answered with ``forget``.
-        The model's own phrasing is kept when it chose the right tool.
+        Only a follow-up -- "it", "that", or "actually" -- naming no day, from
+        a voice whose last entry is known. Anything else is the model's.
         """
+        voice = hint.profile_id or GUEST_PROFILE_ID
+        last = self._last_entry.get(voice)
+        said = utterance.lower()
+        if last is None or not _FOLLOW_UP.search(said) or named_days(said, self._today()):
+            return None
+        subject, starts_at = last
+        if _CANCEL.search(said):
+            return ToolCall(call_id="from-the-words", name="cancel_event", arguments={"subject": subject, "on": starts_at[:10]})
+        when = time_said(said)
+        if when is None:
+            return None
+        entry = datetime.fromisoformat(starts_at)
+        hour, minute = when.nearest_to(entry.hour)
+        moved = entry.replace(hour=hour, minute=minute).isoformat(timespec="seconds")
+        return ToolCall(call_id="from-the-words", name="move_event", arguments={"subject": subject, "starts_at": moved})
+
+    def _as_asked(self, call: ToolCall, asked: ToolCall | None, utterance: str = "") -> ToolCall:
+        """A call the words contradict is replaced by the one they ask for.
+
+        "Please remember that I am vegetarian" was answered with ``forget``;
+        "actually make it half past eleven" with a move to the wrong time, or
+        a new entry. The model's own phrasing is kept when it chose right.
+        """
+        if asked is not None and asked.name in ("move_event", "cancel_event"):
+            chosen = str(call.arguments.get("subject", "")).lower()
+            if chosen != str(asked.arguments["subject"]).lower() and any(
+                word in utterance.lower() for word in chosen.split() if len(word) > 2
+            ):
+                # "Move the design review to five, it clashes": the entry is
+                # named in the words, so the model's choice of it stands.
+                return call
+            if call.name in ("move_event", "schedule_event", "cancel_event") and (call.name != asked.name or call.arguments != asked.arguments):
+                LOGGER.info("model called %s for a follow-up the words decide; using %s", call.name, asked.name)
+                self._corrections.append(f"{call.name} for a follow-up became {asked.name} from the words")
+                return asked
+            return call
         if asked is None or call.name not in PROFILE_TOOLS or call.name == asked.name:
             return call
         LOGGER.info("model called %s for a request to %s; using %s", call.name, asked.name, asked.name)
@@ -448,7 +485,7 @@ class Assistant:
         ]
         turns: list[ChatTurn] = []
         results: list[ToolResult] = []
-        asked = self._memory_asked(hint, utterance)
+        asked = self._memory_asked(hint, utterance) or self._entry_asked(hint, utterance)
         try:
             for _ in range(self._config.max_tool_rounds):
                 turn = self._chat.complete(messages, self._tools_for(hint))
@@ -457,7 +494,7 @@ class Assistant:
                     break
                 messages.append(assistant_message(turn))
                 for call in turn.tool_calls:
-                    result = self._run(self._as_asked(call, asked), utterance, hint)
+                    result = self._run(self._as_asked(call, asked, utterance), utterance, hint)
                     results.append(result)
                     messages.append(tool_message(call, _for_the_model(result)))
             if (
@@ -485,12 +522,14 @@ class Assistant:
                         result = self._run(call, utterance, hint)
                         results.append(result)
                         messages.append(tool_message(call, _for_the_model(result)))
-            if asked is not None and not any(result.tool in PROFILE_TOOLS for result in results):
-                # The model said "I'll remember that" and called nothing:
-                # the words asked plainly, so the request is carried out
-                # rather than claimed (FR-45, U-07).
-                LOGGER.info("memory request the model did not act on: %s", asked.name)
-                self._corrections.append(f"{asked.name} run for a memory request the model left undone")
+            done = PROFILE_TOOLS if asked is not None and asked.name in PROFILE_TOOLS else {asked.name if asked else ""}
+            if asked is not None and not any(result.tool in done for result in results):
+                # The model said "I'll remember that", or "I'll update the
+                # plumber to 11:30", and called nothing: the words asked
+                # plainly, so the request is carried out rather than claimed
+                # (FR-45, U-07, S-03).
+                LOGGER.info("request the model did not act on: %s", asked.name)
+                self._corrections.append(f"{asked.name} run for a request the model left undone")
                 results.append(self._run(asked, utterance, hint))
             confirmation = next(
                 (
@@ -678,12 +717,16 @@ class Assistant:
         self._invocations_by_id[invocation_id] = invocation
         self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
         result = self._await_result(invocation)
+        voice = hint.profile_id or GUEST_PROFILE_ID
         if result.status is ToolStatus.OK and tool in ("schedule_event", "move_event"):
-            voice = hint.profile_id or GUEST_PROFILE_ID
+            starts_at = str(result.detail.get("starts_at") or corrected.get("starts_at") or "")
             self._last_entry.pop(voice, None)
-            self._last_entry[voice] = str(corrected.get("subject", ""))
+            if starts_at:
+                self._last_entry[voice] = (str(corrected.get("subject", "")), starts_at)
             while len(self._last_entry) > _VOICES_REMEMBERED:
                 self._last_entry.pop(next(iter(self._last_entry)))
+        elif result.status is ToolStatus.OK and tool == "cancel_event":
+            self._last_entry.pop(voice, None)
         return result
 
     def _the_one_meant(self, tool: str, arguments: dict, utterance: str, hint: PreferenceHint) -> dict:
@@ -696,7 +739,8 @@ class Assistant:
         """
         if tool not in ("move_event", "cancel_event") or not _PRONOUN.search(utterance):
             return arguments
-        last = self._last_entry.get(hint.profile_id or GUEST_PROFILE_ID)
+        entry = self._last_entry.get(hint.profile_id or GUEST_PROFILE_ID)
+        last = entry[0] if entry else None
         chosen = str(arguments.get("subject", ""))
         said = utterance.lower()
         if not last or chosen.lower() == last.lower():
@@ -813,6 +857,12 @@ class Assistant:
 
 #: "Move it", "cancel that": a follow-up about the entry just discussed.
 _PRONOUN = re.compile(r"\b(it|that|this one|that one)\b", re.IGNORECASE)
+
+#: A follow-up about the entry just discussed: a pronoun, or "actually ...".
+_FOLLOW_UP = re.compile(r"\b(it|that|this one|that one)\b|^\s*actually\b", re.IGNORECASE)
+
+#: Cancelling the entry just discussed, in the words people use.
+_CANCEL = re.compile(r"\b(cancel|delete|remove|scrap|drop|call\s+off)\b", re.IGNORECASE)
 
 #: Voices whose last entry is remembered for "it".
 _VOICES_REMEMBERED = 16

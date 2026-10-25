@@ -176,3 +176,27 @@ class TestANamedTemperature:
     def test_the_models_own_number_is_kept(self):
         hint = understood(_hint(target_c=23.0), "make it 23 degrees")
         assert hint.target_c == 23.0
+
+
+class TestATimeIsNotATemperature:
+    """S-03, live: "actually make it half past two" moved the setpoint 21 -> 21.5."""
+
+    def test_a_time_read_as_warmer_is_a_follow_up(self):
+        hint = understood(_hint(comfort=Comfort.WARMER), "actually make it half past two", (CALENDAR_TURN,))
+        assert hint.intent is Intent.SERVICE and hint.comfort is Comfort.UNCHANGED and hint.target_c is None
+
+    def test_even_with_no_conversation_to_go_on(self):
+        hint = understood(_hint(comfort=Comfort.WARMER), "make it half past eleven")
+        assert hint.intent is Intent.SERVICE
+
+    def test_a_time_read_as_a_temperature_is_a_follow_up(self):
+        hint = understood(_hint(target_c=21.5), "actually make it 10:30")
+        assert hint.intent is Intent.SERVICE and hint.target_c is None
+
+    def test_a_comfort_word_beside_a_time_still_wins(self):
+        hint = understood(_hint(comfort=Comfort.COOLER), "make it cooler at six")
+        assert hint.intent is Intent.ENVIRONMENT and hint.comfort is Comfort.COOLER
+
+    def test_a_named_temperature_beside_a_time_still_wins(self):
+        hint = understood(_hint(target_c=22.0), "make it 22 degrees at four")
+        assert hint.intent is Intent.ENVIRONMENT and hint.target_c == 22.0

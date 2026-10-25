@@ -586,3 +586,54 @@ class TestOverheardToolsAreNotTheAssistants:
         room.say("put the review on Thursday at 3")
         assert room.calendar() == []
         assert not [i for i in room.published(topics.ASSIST_PROPOSED, ToolInvocation) if i.tool == "pencil_event"]
+
+
+class TestFollowUpsTheWordsDecide:
+    """S-03 and S-04, as met live through the console."""
+
+    def _room_with_dentist(self, config, *then):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T14:00:00", subject="dentist")),
+            *then,
+        )
+        room = Room(config, chat)
+        room.say("put the dentist in my calendar on Thursday at two")
+        return room
+
+    def test_a_claimed_move_with_no_tool_is_carried_out(self, config):
+        """Live: "Sure, I'll update the plumber appointment to 11:30" -- and nothing moved."""
+        room = self._room_with_dentist(config, saying("Sure, I'll update the dentist to 14:30."))
+        reply = room.say("actually make it half past two")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:30"]
+        assert "Moved dentist" in reply.reply
+
+    def test_a_move_to_the_wrong_time_is_put_right(self, config):
+        room = self._room_with_dentist(
+            config, calling(call("move_event", subject="dentist", starts_at="2026-10-01T02:30:00"))
+        )
+        room.say("actually make it half past two")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:30"]
+
+    def test_a_new_entry_for_a_follow_up_becomes_the_move(self, config):
+        room = self._room_with_dentist(
+            config, calling(call("schedule_event", subject="dentist", starts_at="2026-10-01T14:30:00"))
+        )
+        room.say("actually make it half past two")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:30"]
+
+    def test_cancel_it_cancels_the_entry_just_discussed(self, config):
+        """Live: "cancel it" was answered "which entry would you like to cancel?"."""
+        room = self._room_with_dentist(config, saying("Sure, which entry would you like to cancel?"))
+        reply = room.say("cancel it")
+        assert room.calendar() == [] and "Cancelled dentist" in reply.reply
+
+    def test_a_follow_up_with_nothing_discussed_is_left_to_the_model(self, config):
+        chat = ScriptedChat(saying("Which entry do you mean?"))
+        room = Room(config, chat)
+        assert room.say("actually make it half past two").reply == "Which entry do you mean?"
+
+    def test_another_voices_entry_is_not_theirs_to_move(self, config):
+        room = self._room_with_dentist(config, saying("Which entry do you mean?"))
+        reply = room.say("actually make it half past two", profile_id="ravi")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:00"]
+        assert reply.reply == "Which entry do you mean?"
