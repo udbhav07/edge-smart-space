@@ -392,3 +392,40 @@ class TestTheConversationSoFar:
         detector.hears = False
         pipeline.accept(AUDIO_FRAME)
         assert context.recent == (turn,)
+
+
+class TestReportingActivity:
+    """FR-60: what speech is doing is shown, and showing it never stops it."""
+
+    def _run(self, config, utterance, transcriber=None, raise_in_report=False):
+        seen = []
+
+        def report(activity, heard):
+            if raise_in_report:
+                raise OSError("broker gone")
+            seen.append((activity.value, heard))
+
+        parts = {"detector": FakeDetector(hears=True), "utterance": utterance, "on_activity": report}
+        if transcriber is not None:
+            parts["transcriber"] = transcriber
+        pipeline, _ = _pipeline(config, SimClock(), **parts)
+        for _ in range(5):
+            pipeline.accept(FRAME)
+        return seen, pipeline
+
+    def test_a_full_utterance_walks_every_activity(self, config):
+        seen, _ = self._run(config, FakeUtterance(ends_after=2))
+        assert seen[:4] == [
+            ("listening", ""), ("transcribing", ""), ("understanding", TRANSCRIPT), ("waiting", ""),
+        ]
+
+    def test_silence_after_the_wake_word_returns_to_waiting(self, config):
+        quiet = FakeUtterance()
+        quiet.silence_timed_out = True
+        seen, _ = self._run(config, quiet)
+        assert seen[:2] == [("listening", ""), ("waiting", "")]
+
+    def test_a_failing_report_does_not_stop_the_pipeline(self, config):
+        transcriber = FakeTranscriber()
+        self._run(config, FakeUtterance(ends_after=2), transcriber=transcriber, raise_in_report=True)
+        assert transcriber.calls, "the utterance was still transcribed"

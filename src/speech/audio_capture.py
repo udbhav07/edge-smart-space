@@ -137,7 +137,7 @@ def _open_default_stream(config: SpeechConfig):
                 rate,
                 "" if rate == config.sample_rate_hz else f", resampled to {config.sample_rate_hz} Hz",
             )
-            return stream, audio, rate
+            return stream, audio, rate, " ".join(str(info.get("name", "")).split())
     audio.terminate()
     raise MicrophoneError(
         f"cannot open the microphone ({'; '.join(failures[-3:])}); "
@@ -193,8 +193,10 @@ class AudioCapture:
     ) -> None:
         self._config = config
         self._clock = clock
+        #: The device in use, for whoever reports it; empty when injected.
+        self.microphone = ""
         if stream is None:
-            stream, audio, stream_rate_hz = _open_default_stream(config)
+            stream, audio, stream_rate_hz, self.microphone = _open_default_stream(config)
         self._stream = stream
         self._audio = audio
         rate = stream_rate_hz or config.sample_rate_hz

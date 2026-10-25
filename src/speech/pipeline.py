@@ -22,7 +22,7 @@ from enum import Enum
 
 from src.common.clock import Clock
 from src.common.config import SpeechConfig
-from src.common.schemas import PreferenceHint
+from src.common.schemas import PreferenceHint, SpeechActivity
 from src.speech.asr import to_float_audio
 
 LOGGER = logging.getLogger(__name__)
@@ -58,6 +58,7 @@ class SpeechPipeline:
         personal_context,
         speaker=None,
         conversations=None,
+        on_activity=None,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -70,6 +71,9 @@ class SpeechPipeline:
         self._speaker = speaker
         #: Optional: the conversation so far, so a follow-up is read as one.
         self._conversations = conversations
+        #: Optional: told of every change of activity, so it can be shown
+        #: (FR-60). The pipeline does not depend on anyone listening.
+        self._on_activity = on_activity
         self._state = PipelineState.WAITING_FOR_WAKE_WORD
         self._buffer: list = []
 
@@ -101,6 +105,7 @@ class SpeechPipeline:
         self._utterance.reset()
         self._buffer = []
         self._state = PipelineState.LISTENING
+        self._tell(SpeechActivity.LISTENING)
 
     def _listen(self, frame) -> PreferenceHint | None:
         self._buffer.append(frame)
@@ -121,8 +126,13 @@ class SpeechPipeline:
         self._capture.drain()
 
         if not transcribe:
+            self._tell(SpeechActivity.WAITING)
             return None
-        return self._understand(frames)
+        self._tell(SpeechActivity.TRANSCRIBING)
+        try:
+            return self._understand(frames)
+        finally:
+            self._tell(SpeechActivity.WAITING)
 
     def _understand(self, frames: list) -> PreferenceHint | None:
         transcript = self._transcriber.transcribe(frames)
@@ -130,6 +140,7 @@ class SpeechPipeline:
             return None
 
         LOGGER.info("heard: %s", transcript)
+        self._tell(SpeechActivity.UNDERSTANDING, transcript)
         profile_id = self._speaker_of(frames)
         try:
             recent = self._conversations.recent(profile_id) if self._conversations else ()
@@ -143,6 +154,15 @@ class SpeechPipeline:
         if hint is None or not profile_id:
             return hint
         return hint.model_copy(update={"profile_id": profile_id})
+
+    def _tell(self, activity: SpeechActivity, heard: str = "") -> None:
+        if self._on_activity is None:
+            return
+        try:
+            self._on_activity(activity, heard)
+        except (OSError, ValueError) as exc:
+            # Showing what speech is doing must never stop it doing it.
+            LOGGER.warning("could not report speech activity: %s", exc)
 
     def _speaker_of(self, frames: list) -> str:
         """Whose voice it was, or "" for a guest (FR-52).

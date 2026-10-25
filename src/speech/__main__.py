@@ -35,6 +35,7 @@ from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
 from src.speech.pipeline import SpeechPipeline
 from src.speech.speaker_profile import SpeakerIdentifier
+from src.speech.status import StatusPublisher
 from src.speech.wakeword import WakeWordDetector
 
 LOGGER = logging.getLogger(__name__)
@@ -48,7 +49,11 @@ _FRAME_WAIT_S = 0.5
 
 
 def build_pipeline(
-    config: Config, clock: Clock, capture: AudioCapture, conversations: Conversations | None = None
+    config: Config,
+    clock: Clock,
+    capture: AudioCapture,
+    conversations: Conversations | None = None,
+    on_activity=None,
 ) -> SpeechPipeline:
     """Assemble the pipeline from configuration.
 
@@ -66,6 +71,7 @@ def build_pipeline(
         personal_context=PersonalContext(config.reasoning, clock),
         speaker=SpeakerIdentifier(config.speech),
         conversations=conversations,
+        on_activity=on_activity,
     )
 
 
@@ -81,6 +87,7 @@ def run(
     pipeline: SpeechPipeline,
     blackboard: Blackboard,
     frames: int | None = None,
+    status: StatusPublisher | None = None,
 ) -> int:
     """Pump audio frames through the pipeline until interrupted.
 
@@ -88,7 +95,11 @@ def run(
         what lets an integration test drive this without a microphone.
     """
     processed = 0
+    if status is not None:
+        status.changed(status.activity)
     while frames is None or processed < frames:
+        if status is not None:
+            status.heartbeat()
         try:
             frame = capture.frames.get(timeout=_FRAME_WAIT_S)
         except queue.Empty:
@@ -131,7 +142,8 @@ def main(argv: list[str] | None = None) -> int:
     capture = AudioCapture(config.speech, clock)
     conversations = Conversations()
     conversations.subscribe(blackboard)
-    pipeline = build_pipeline(config, clock, capture, conversations)
+    status = StatusPublisher(config.speech, clock, blackboard, capture.microphone)
+    pipeline = build_pipeline(config, clock, capture, conversations, on_activity=status.changed)
 
     blackboard.start()
     capture.start()
@@ -141,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         topics.CONTEXT_PREFERENCE.pattern,
     )
     try:
-        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames)
+        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames, status=status)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:
