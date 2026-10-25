@@ -135,23 +135,25 @@ python start.py --skip speech
 Each service runs as its own process with its output prefixed. `Ctrl-C` stops
 them all. `python start.py --help` lists what can currently be started.
 
-### The console: Jarvis in a browser
+### The console: a dashboard in the browser
 
-`python start.py` also starts the occupant console. Open
-**http://127.0.0.1:8077**:
+`python start.py` also starts the console. Open **http://127.0.0.1:8077**.
+Each page has its own address, so any of them can be bookmarked:
 
-- a conversation with the room's assistant, typed or spoken: anything said
-  after "Hey Jarvis" appears as it is heard, and every reply arrives live;
-- under each request, the steps the system took to answer it: what it
-  understood, the tools it called, what the safety gate ruled, how long the
-  model thought;
-- bookings wait as a card with Confirm and Decline: nothing is booked until
-  you say yes, and it is always a mock;
-- the room beside it: the temperature and the model's prediction, the
-  setpoint actually being held and why, sensors, the unit, the calendar,
-  faults with their explanation, and whether voice is running;
-- `Ctrl-K` for every action, including the operator's fault injection and
-  reset (turn those off with `console.operator_controls: false`).
+| Page | What it shows |
+|---|---|
+| **Overview** `/` | Indoor temperature, humidity, outside, presence, AC power and state, tariff; the temperature against the model's prediction and the setpoint held; faults, services and the latest decisions |
+| **Services** `/services` | Each process, judged by what it is publishing against its own cadence: live, late or silent, its rate, and its latest output per topic |
+| **Thermal model** `/estimator` | The RLS coefficients and what they mean (time constant, cooling rate, occupant gain), their history, the covariance trace, the one-step prediction and its residual against ±2σ |
+| **MQTT board** `/mqtt` | Every topic published since the console started: producer, rate, count, retained or not, the last payload verbatim; and the message stream, pausable and filterable by MQTT pattern |
+| **Faults & control** `/faults` | Mode and why, faults with their diagnosis, sensor health, goal and setpoint held, operator fault injection and reset, and the full decision log |
+| **Chat** `/chat` | Talk to Jarvis by typing, for when you would rather not speak aloud; each answer shows the steps taken to reach it |
+| **Calendar** `/calendar` | The week ahead; add and remove entries |
+| **Bookings** `/bookings` | Requests waiting for your yes, a booking form, and what has been booked |
+| **Mail** `/mail` | An inbox of what the room tells you; sending goes to a mock outbox after your yes, because this node never connects to the internet |
+
+`Ctrl-K` opens every action from anywhere. The operator's fault injection
+and reset can be turned off with `console.operator_controls: false`.
 
 It is pushed live over a WebSocket and falls back to polling if the socket
 drops. It has no authority: typed words go through the same extraction as

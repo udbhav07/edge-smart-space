@@ -27,6 +27,11 @@ export const api = {
   answer: (invocationId: string, yes: boolean) => post(`/api/bookings/${encodeURIComponent(invocationId)}`, { yes }),
   refreshCalendar: () => post("/api/calendar/refresh"),
   removeEntry: (subject: string, starts_at: string) => post("/api/calendar/remove", { subject, starts_at }),
+  addEntry: (subject: string, starts_at: string, duration_min?: number) =>
+    post("/api/calendar/add", { subject, starts_at, duration_min: duration_min ?? null }),
+  book: (booking: { kind: string; destination: string; depart_on: string; origin?: string; nights?: number | null }) =>
+    post("/api/bookings", { origin: "", nights: null, ...booking }),
+  sendMail: (to: string, subject: string, body: string) => post("/api/mail", { to, subject, body }),
   reset: (reason: string) => post("/api/operator/reset", { reason }),
   inject: (subject: string, fault: string, magnitude?: number) =>
     post("/api/operator/inject", { subject, fault, magnitude: magnitude ?? null }),

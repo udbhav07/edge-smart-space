@@ -1,22 +1,12 @@
 import { Command } from "cmdk";
-import {
-  CalendarDays,
-  CircleAlert,
-  Gauge,
-  MessageSquare,
-  RefreshCw,
-  RotateCcw,
-  Thermometer,
-  Unplug,
-  Wrench,
-} from "lucide-react";
-import type { PanelTab } from "./ContextPanel";
+import { CalendarDays, Gauge, MessageSquare, RefreshCw, RotateCcw, Thermometer, Unplug } from "lucide-react";
+import { NAV } from "@/lib/nav";
 
 export interface PaletteActions {
   ask: (text: string) => void;
   focusComposer: () => void;
   setTarget: (value: number) => void;
-  openTab: (tab: PanelTab) => void;
+  go: (to: string) => void;
   refreshCalendar: () => void;
   inject: (subject: string, fault: string, magnitude?: number) => void;
   reset: () => void;
@@ -41,16 +31,21 @@ export function CommandPalette({ open, onOpenChange, actions, operator }: { open
       onOpenChange={onOpenChange}
       label="Commands"
       overlayClassName="fixed inset-0 z-40 bg-black/40 backdrop-blur-[2px]"
-      contentClassName="fixed left-1/2 top-[18vh] z-50 w-[min(640px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-2xl border hairline bg-surface shadow-[0_30px_80px_-20px_rgb(0_0_0/0.7)]"
+      contentClassName="fixed left-1/2 top-[16vh] z-50 w-[min(640px,calc(100vw-32px))] -translate-x-1/2 overflow-hidden rounded-2xl border hairline bg-surface shadow-[0_30px_80px_-20px_rgb(0_0_0/0.7)]"
     >
       <Command.Input
-        placeholder="Type a command, or something to ask…"
+        placeholder="Go to a page, set the temperature, ask something…"
         className="w-full border-b hairline bg-transparent px-4 py-3.5 text-[15px] text-fg placeholder:text-muted focus:outline-none"
       />
-      <Command.List className="scroll-thin max-h-[52vh] overflow-y-auto p-2">
-        <Command.Empty className="px-3 py-6 text-center text-[13px] text-muted">Nothing matches. Press Enter in the message box to ask Jarvis instead.</Command.Empty>
-        <Command.Group heading="Ask">
-          <Item icon={MessageSquare} label="Write a message" hint="/" onSelect={run(actions.focusComposer)} />
+      <Command.List className="scroll-thin max-h-[56vh] overflow-y-auto p-2">
+        <Command.Empty className="px-3 py-6 text-center text-[13px] text-muted">Nothing matches.</Command.Empty>
+        <Command.Group heading="Go to">
+          {NAV.flatMap((section) => section.items).map((item) => (
+            <Item key={item.to} icon={item.icon} label={item.label} onSelect={run(() => actions.go(item.to))} />
+          ))}
+        </Command.Group>
+        <Command.Group heading="Ask Jarvis">
+          <Item icon={MessageSquare} label="Open the chat" onSelect={run(actions.focusComposer)} />
           <Item icon={CalendarDays} label="What's on my calendar today?" onSelect={run(() => actions.ask("What's on my calendar today?"))} />
           <Item icon={Gauge} label="Is anything wrong with the room?" onSelect={run(() => actions.ask("Is anything wrong with the room?"))} />
         </Command.Group>
@@ -59,11 +54,7 @@ export function CommandPalette({ open, onOpenChange, actions, operator }: { open
             <Item key={value} icon={Thermometer} label={`Set the room to ${value}°`} onSelect={run(() => actions.setTarget(value))} />
           ))}
         </Command.Group>
-        <Command.Group heading="View">
-          <Item icon={Gauge} label="Room" onSelect={run(() => actions.openTab("room"))} />
-          <Item icon={Wrench} label="Agent trace" onSelect={run(() => actions.openTab("agent"))} />
-          <Item icon={CalendarDays} label="Calendar" onSelect={run(() => actions.openTab("calendar"))} />
-          <Item icon={CircleAlert} label="System and faults" onSelect={run(() => actions.openTab("system"))} />
+        <Command.Group heading="Calendar">
           <Item icon={RefreshCw} label="Refresh the calendar" onSelect={run(actions.refreshCalendar)} />
         </Command.Group>
         {operator && (

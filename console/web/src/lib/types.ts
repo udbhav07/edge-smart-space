@@ -138,7 +138,11 @@ export interface Snapshot {
   broker: boolean;
   room: Room;
   speech: SpeechStatus | null;
-  history: { ts: number; t_in: number; t_pred: number }[];
+  series: Record<string, [number, number][]>;
+  topics: TopicRow[];
+  bookings: Booking[];
+  sent: SentMail[];
+  inbox: InboxItem[];
   faults: Fault[];
   diagnoses: Record<string, Diagnosis>;
   profiles: Profile[];
@@ -149,6 +153,56 @@ export interface Snapshot {
   calendar: { entries: CalendarEntry[]; as_of: number | null; note: string };
   tools: { name: string; purpose: string; effect: string }[];
   operator_controls: boolean;
+}
+
+export interface TopicRow {
+  topic: string;
+  count: number;
+  first_ts: number;
+  last_ts: number;
+  retained: boolean;
+  payload: unknown;
+  per_minute: number;
+  /** Arrival times seen by this browser, to keep the rate live between snapshots. */
+  arrivals?: number[];
+}
+
+export interface BoardMessage {
+  topic: string;
+  ts: number;
+  payload?: unknown;
+  count?: number;
+  retained?: boolean;
+  withdrawn?: boolean;
+}
+
+export interface Booking {
+  reference: string;
+  kind: string;
+  destination: string;
+  origin: string;
+  depart_on: string;
+  nights: number | null;
+  ts: number;
+  message: string;
+}
+
+export interface SentMail {
+  reference: string;
+  to: string;
+  subject: string;
+  body: string;
+  ts: number;
+}
+
+export interface InboxItem {
+  id: string;
+  ts: number;
+  sender: string;
+  subject: string;
+  body: string;
+  kind: string;
+  tone: Tone;
 }
 
 export type ServerEvent =
