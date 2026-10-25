@@ -67,7 +67,7 @@ _TOPICS_KEPT = 400
 #: Arrivals kept per topic to measure its rate.
 _ARRIVALS_KEPT = 60
 #: Longest payload text kept per topic; a board shows it, it does not archive it.
-_PAYLOAD_KEPT = 4000
+_PAYLOAD_KEPT = 32000
 #: Bookings, mails and inbox messages kept.
 _RECORDS_KEPT = 100
 
@@ -485,11 +485,15 @@ class ConsoleState:
         if not payload:
             self._topics.pop(topic, None)
             return [{"type": "mqtt", "data": {"topic": topic, "ts": now, "withdrawn": True}}]
-        text = payload.decode(PAYLOAD_ENCODING, errors="replace")[:_PAYLOAD_KEPT]
-        try:
-            body: Any = json.loads(text)
-        except ValueError:
-            body = text
+        # Cut only what is too long to keep; cutting before parsing would turn
+        # a large message such as the tool catalogue into broken text.
+        text = payload.decode(PAYLOAD_ENCODING, errors="replace")
+        body: Any = text[:_PAYLOAD_KEPT]
+        if len(text) <= _PAYLOAD_KEPT:
+            try:
+                body = json.loads(text)
+            except ValueError:
+                pass
         entry = self._topics.pop(topic, None) or {
             "topic": topic,
             "count": 0,

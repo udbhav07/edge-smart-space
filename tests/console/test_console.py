@@ -5,6 +5,7 @@ the operator tools already publish, and it never commands the actuator.
 """
 
 import ast
+import json
 import threading
 from pathlib import Path
 
@@ -290,6 +291,19 @@ class TestTheDashboard:
         state.accept("space/sensor/temp_01/state", b'{"anything": 2}')
         row = next(row for row in state.snapshot()["topics"] if row["topic"] == "space/sensor/temp_01/state")
         assert row["count"] == 2 and row["payload"] == {"anything": 2}
+
+    def test_a_large_message_reaches_the_board_whole(self, console):
+        state, _, _, _ = console
+        tools = [{"name": f"tool_{index}", "purpose": "x" * 200} for index in range(40)]
+        state.accept("space/assist/catalogue", json.dumps({"tools": tools}).encode())
+        row = state.snapshot()["topics"][0]
+        assert len(row["payload"]["tools"]) == 40
+
+    def test_a_message_too_long_to_keep_is_cut_as_text(self, console):
+        state, _, _, _ = console
+        state.accept("space/assist/catalogue", json.dumps({"blob": "x" * 40000}).encode())
+        row = state.snapshot()["topics"][0]
+        assert isinstance(row["payload"], str) and len(row["payload"]) == 32000
 
     def test_the_board_knows_what_is_retained(self, console):
         state, _, _, _ = console
