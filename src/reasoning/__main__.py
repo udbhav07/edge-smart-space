@@ -24,6 +24,8 @@ from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.reasoning.assistant import Assistant
+from src.reasoning.single_shot import PersonalContext
+from src.reasoning.utterances import UtteranceInterpreter
 from src.reasoning.chat import ChatClient, warm_in_background
 from src.reasoning.diagnosis import FaultDiagnoser
 from src.reasoning.supervisor_agent import SupervisorAgent
@@ -62,10 +64,17 @@ def build_supervisor(
     )
 
 
-def run(assistant: Assistant, clock: Clock, iterations: int | None = None) -> None:
-    """Answer utterances as they arrive."""
+def run(
+    assistant: Assistant,
+    clock: Clock,
+    iterations: int | None = None,
+    interpreter: UtteranceInterpreter | None = None,
+) -> None:
+    """Answer utterances as they arrive, typed ones understood first."""
     completed = 0
     while iterations is None or completed < iterations:
+        if interpreter is not None:
+            interpreter.process_pending()
         assistant.process_pending()
         clock.sleep(_IDLE_INTERVAL_S)
         completed += 1
@@ -132,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
     diagnoser = FaultDiagnoser(clock, diagnosis_board, chat)
     diagnoser.subscribe()
     assistant = build_assistant(config, clock, assistant_board, chat)
+    interpreter = UtteranceInterpreter(clock, assistant_board, PersonalContext(config.reasoning, clock))
+    interpreter.subscribe()
     supervisor = build_supervisor(config, clock, supervisor_board, chat)
     assistant.subscribe()
     if not arguments.no_supervisor:
@@ -156,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     supervising.start()
     try:
-        run(assistant, clock)
+        run(assistant, clock, interpreter=interpreter)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:
