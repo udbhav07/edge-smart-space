@@ -135,6 +135,44 @@ python start.py --skip speech
 Each service runs as its own process with its output prefixed. `Ctrl-C` stops
 them all. `python start.py --help` lists what can currently be started.
 
+### The console: Jarvis in a browser
+
+`python start.py` also starts the occupant console. Open
+**http://127.0.0.1:8077**:
+
+- a conversation with the room's assistant, typed or spoken: anything said
+  after "Hey Jarvis" appears as it is heard, and every reply arrives live;
+- under each request, the steps the system took to answer it: what it
+  understood, the tools it called, what the safety gate ruled, how long the
+  model thought;
+- bookings wait as a card with Confirm and Decline: nothing is booked until
+  you say yes, and it is always a mock;
+- the room beside it: the temperature and the model's prediction, the
+  setpoint actually being held and why, sensors, the unit, the calendar,
+  faults with their explanation, and whether voice is running;
+- `Ctrl-K` for every action, including the operator's fault injection and
+  reset (turn those off with `console.operator_controls: false`).
+
+It is pushed live over a WebSocket and falls back to polling if the socket
+drops. It has no authority: typed words go through the same extraction as
+speech, a comfort setting is a preference the validator gates, and nothing
+it does can reach the actuator (FR-56, FR-57). Stop it, or never start it,
+and the room runs exactly the same.
+
+It listens on this machine only. To open it to phones on the same network,
+set `console.host` to this machine's LAN address; it never reaches beyond the
+local network, and its page loads nothing from the internet (NFR-06).
+
+The page is built ahead of time into `src/console/static`, so running it
+needs no Node. To change the frontend (`console/web`, React and Vite):
+
+```bash
+cd console/web
+npm install
+npm run dev     # http://localhost:5173, proxied to the running console
+npm run build   # rebuilds src/console/static
+```
+
 ### Running one component directly
 
 ```bash
@@ -435,8 +473,8 @@ Honest about the gaps, so nobody hunts for something that isn't there:
   bridge (`src/io/devices.py`) and the systemd units (`deploy/`) exist and are
   tested against simulated device messages; the node topics in config are
   placeholders until the nodes are flashed
-- the local console (FR-56 to FR-58) — Week 8; `tools.say` and
-  `tools.confirm` stand in for it meanwhile
+- standing prompts in the console (FR-57): the comfort setting is built,
+  saved instructions to the supervisor are not
 - speaker recognition on real voices: it is built and measured on synthetic
   ones only (FR-52)
 - experiment E7 (latency and memory on the Jetson) — it needs the board

@@ -1463,7 +1463,9 @@ edge-smart-space/
 └── tests/
 ```
 
-As of v1.12 the following are specified above but **not yet implemented**: `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, `deploy/docker-compose.yml`, `sim/scenarios/`, and the local console (FR-56 to FR-58). They are named so the gap is explicit. `deploy/esphome/room-node.yaml` exists and is marked unverified: no node has been flashed. `speaker_profile.py` exists (§5.8.3) and has been measured on synthetic voices only; it has not been run against the microphone.
+As of v1.12 the following are specified above but **not yet implemented**: `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, `deploy/docker-compose.yml`, and `sim/scenarios/`. They are named so the gap is explicit. `deploy/esphome/room-node.yaml` exists and is marked unverified: no node has been flashed. `speaker_profile.py` exists (§5.8.3) and has been measured on synthetic voices only; it has not been run against the microphone.
+
+Added as of v1.13: the local console (FR-56 to FR-58) -- `src/console/` (a Layer 1 blackboard client: `state.py` folds every topic into a view, `actions.py` publishes only what speech and the operator tools already publish, `server.py` serves the page and a WebSocket push stream) and `console/web/` (the React frontend, built into `src/console/static/` so nothing is fetched at runtime). Typed words travel on `space/context/utterance` and are extracted by the reasoning layer exactly as speech is (`src/reasoning/utterances.py`); the speech pipeline publishes `space/speech/status`. Standing prompts (FR-57) are not built; the comfort setting is.
 
 Added as of v1.12: `src/speech/speaker_profile.py`; `src/assistance/memory.py`, `src/assistance/profiles.py` and `src/assistance/providers/profile_memory.py`; `tools/enroll.py` and `tools/profiles.py`.
 
