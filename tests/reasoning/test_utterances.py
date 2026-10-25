@@ -83,3 +83,14 @@ def test_the_console_cannot_command_the_actuator(room):
     _say(console, clock, "set the AC to 500 degrees now")
     interpreter.process_pending()
     assert not any("/actuator/" in topic for topic, _, _, _ in transport.published)
+
+
+def test_a_typed_request_says_it_was_typed(room):
+    """S-12: so the reply says 'chatting as', not 'recognised your voice'."""
+    clock, transport, (mine, console) = room
+    context = FakeContext(PreferenceHint(ts=clock.now(), intent=Intent.ENVIRONMENT, comfort=Comfort.COOLER))
+    interpreter = UtteranceInterpreter(clock, mine, context)
+    interpreter.subscribe()
+    _say(console, clock, "it's stuffy in here", "ravi")
+    interpreter.process_pending()
+    assert _published(transport, topics.CONTEXT_PREFERENCE, PreferenceHint)[-1].typed is True

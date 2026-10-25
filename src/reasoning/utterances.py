@@ -83,7 +83,7 @@ class UtteranceInterpreter:
             return self._answer(utterance, NO_MODEL)
         if hint is None:
             return self._answer(utterance, NOTHING_TO_DO)
-        hint = hint.model_copy(update={"transcript": utterance.text, "profile_id": utterance.profile_id})
+        hint = hint.model_copy(update={"transcript": utterance.text, "profile_id": utterance.profile_id, "typed": True})
         self._blackboard.publish(topics.CONTEXT_PREFERENCE, hint)
         LOGGER.info("console utterance understood as %s: %r", hint.intent.value, utterance.text)
         return hint

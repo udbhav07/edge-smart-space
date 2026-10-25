@@ -99,6 +99,14 @@ _RECOGNITION_NOTE = (
     "(I recognised your voice as {name}. That only personalises my replies; "
     "it doesn't unlock anything.)"
 )
+#: The same, for words typed in the console as someone (S-12).
+_CHATTING_AS_NOTE = (
+    "(You're chatting as {name}. That only personalises my replies; "
+    "it doesn't unlock anything.)"
+)
+
+#: "What do you know about me?" -- asked of the speaker's own memory.
+_ABOUT_ME = re.compile(r"\b(me|my|myself|i)\b|\bwhat\s+do\s+you\s+remember\b", re.IGNORECASE)
 
 #: How the model is told who it is speaking with.
 _PERSON_PROMPT = "You are speaking with {name}."
@@ -284,7 +292,13 @@ class Assistant:
 
         :returns: the reply, or None for a hint that asked for nothing.
         """
-        if hint.intent in (Intent.SERVICE, Intent.QUESTION):
+        if hint.intent is Intent.QUESTION and hint.subject == "memory" and _ABOUT_ME.search(hint.transcript or hint.rationale):
+            # Answered from the profile as it stands, never by the model:
+            # live, it recited a fact forgotten a minute earlier, copied from
+            # its own earlier reply, and told a guest about Ravi's meeting
+            # as something it knew about them (S-05, S-06).
+            reply = self._what_i_know(hint)
+        elif hint.intent in (Intent.SERVICE, Intent.QUESTION):
             # A question is answered the same way a request is served: with
             # the room's state, the person's context and the read tools.
             reply = self._serve(hint)
@@ -296,6 +310,35 @@ class Assistant:
         self._blackboard.publish(topics.CONTEXT_REPLY, reply)
         LOGGER.info("replied: %s", reply.reply)
         return reply
+
+    def _what_i_know(self, hint: PreferenceHint) -> AssistantReply:
+        """What is remembered about the speaker, read from their profile now."""
+        person = self._recognised(hint)
+        if person is None:
+            text = (
+                "I don't know who you are, so I keep nothing about you. "
+                "Someone can enrol your voice, and then I can remember things you ask me to."
+            )
+        else:
+            name = person.display_name or person.profile_id
+            known = [_as_you(fact) for fact in person.facts]
+            comfort = person.preferences.get("comfort_c")
+            if comfort:
+                known.insert(0, f"you like the room at {comfort} degrees")
+            if known:
+                listed = known[0] if len(known) == 1 else ", ".join(known[:-1]) + " and " + known[-1]
+                text = f"Here is what I remember about you, {name}: {listed}. Ask me to forget any of it."
+            else:
+                text = f"I don't have anything remembered about you yet, {name}."
+            waiting = len(person.suggestions)
+            if waiting:
+                text += f" {waiting} thing{'s' if waiting != 1 else ''} I overheard {'are' if waiting != 1 else 'is'} waiting for you to keep or dismiss on Chat."
+        return AssistantReply(
+            ts=self._clock.now(),
+            transcript=hint.transcript or hint.rationale,
+            intent=hint.intent,
+            reply=text,
+        )
 
     # --- who is speaking (FR-52) -------------------------------------
 
@@ -313,7 +356,9 @@ class Assistant:
         update: dict[str, object] = {"profile_id": hint.profile_id}
         person = self._recognised(hint)
         if person is not None and not person.recent:
-            note = _RECOGNITION_NOTE.format(name=person.display_name or person.profile_id)
+            note = (_CHATTING_AS_NOTE if hint.typed else _RECOGNITION_NOTE).format(
+                name=person.display_name or person.profile_id
+            )
             update["reply"] = f"{reply.reply} {note}"
         return reply.model_copy(update=update)
 
@@ -866,6 +911,18 @@ _CANCEL = re.compile(r"\b(cancel|delete|remove|scrap|drop|call\s+off)\b", re.IGN
 
 #: Voices whose last entry is remembered for "it".
 _VOICES_REMEMBERED = 16
+
+
+def _as_you(fact: str) -> str:
+    """A third-person fact, said to its person: "Likes tea." -> "you like tea"."""
+    text = fact.strip().rstrip(".")
+    first, _, rest = text.partition(" ")
+    verbs = {"Is": "are", "Has": "have", "Their": "your"}
+    if first in verbs:
+        return f"{'you ' if first != 'Their' else ''}{verbs[first]} {rest}".strip()
+    if first.endswith("s") and first[:1].isupper() and rest:
+        return f"you {first[:-1].lower()} {rest}"
+    return text[:1].lower() + text[1:]
 
 
 def _flat(value: object) -> bool | int | float | str | None:

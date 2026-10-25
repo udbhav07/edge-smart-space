@@ -584,6 +584,11 @@ class PreferenceHint(TimestampedMessage):
         description="Whose voice it was, if recognised; empty for a guest. "
         "Selects a personalisation profile and grants nothing (FR-52)",
     )
+    typed: bool = Field(
+        default=False,
+        description="Typed in the console rather than spoken, so the reply says "
+        "'chatting as' rather than 'recognised your voice' (S-12)",
+    )
 
     @model_validator(mode="after")
     def _nothing_actionable_carries_no_request(self) -> PreferenceHint:

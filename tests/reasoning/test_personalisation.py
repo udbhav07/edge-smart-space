@@ -199,3 +199,67 @@ class TestRecognitionPermitsNothing:
         room = Room(config, ScriptedChat(saying("Hello.")))
         room.say("hello", profile_id="")
         assert room.store.recent(GUEST_PROFILE_ID)[-1].said == "hello"
+
+
+def _ask(room, transcript, profile_id="ravi", typed=False):
+    hint = PreferenceHint(
+        ts=room.clock.now(), intent=Intent.QUESTION, comfort=Comfort.UNCHANGED,
+        subject="memory", transcript=transcript, profile_id=profile_id, typed=typed,
+    )
+    room.caller.publish(topics.CONTEXT_PREFERENCE, hint)
+    return room.assistant.process_pending()[-1]
+
+
+class TestWhatIsKnownIsReadFromTheProfile:
+    """S-05 and S-06, as met live."""
+
+    def test_the_answer_is_the_profile_as_it_stands(self, config):
+        room = Room(config, ScriptedChat())
+        reply = _ask(room, "what do you know about me?")
+        assert "prefers meetings after ten" in reply.reply.lower() or "prefer meetings after ten" in reply.reply.lower()
+        assert room.chat.requests == []
+
+    def test_a_forgotten_fact_is_never_recited(self, config):
+        """Live: after 'forget that I'm vegetarian' the reply still said 'and are vegetarian'."""
+        room = Room(config, ScriptedChat(calling(call("forget", about="vegetarian")), saying("ok")))
+        room.store.remember("ravi", "Is vegetarian.")
+        room.keeper.publish_all()
+        room.say("forget that I'm vegetarian")
+        assert "vegetarian" not in _ask(room, "what do you know about me?").reply
+
+    def test_a_kept_fact_is_included_at_once(self, config):
+        room = Room(config, ScriptedChat())
+        room.store.suggest("ravi", "Can never work if the room is noisy.")
+        room.store.settle("ravi", "Can never work if the room is noisy.", keep=True)
+        room.keeper.publish_all()
+        assert "can never work if the room is noisy" in _ask(room, "what do you know about me?").reply
+
+    def test_a_guest_is_told_nothing_is_kept_about_them(self, config):
+        """Live: a guest was told about 'a meeting with Ravi' as something known about them."""
+        reply = _ask(Room(config, ScriptedChat()), "what do you know about me?", profile_id="")
+        assert "keep nothing about you" in reply.reply and "Ravi" not in reply.reply
+
+    def test_overheard_facts_waiting_are_mentioned_not_recited(self, config):
+        room = Room(config, ScriptedChat())
+        room.store.suggest("ravi", "Hates the cold.")
+        room.keeper.publish_all()
+        reply = _ask(room, "what do you remember about me?")
+        assert "waiting for you" in reply.reply and "cold" not in reply.reply
+
+    def test_it_is_said_in_the_second_person(self):
+        from src.reasoning.assistant import _as_you
+
+        assert _as_you("Likes tea.") == "you like tea"
+        assert _as_you("Is allergic to peanuts.") == "you are allergic to peanuts"
+
+
+class TestTypedIsNotAVoice:
+    """S-12: words typed as Ravi were answered 'I recognised your voice'."""
+
+    def test_typed_says_chatting_as(self, config):
+        reply = _ask(Room(config, ScriptedChat()), "what do you know about me?", typed=True)
+        assert "chatting as Ravi" in reply.reply and "voice" not in reply.reply.split("(")[-1]
+
+    def test_spoken_still_says_recognised(self, config):
+        reply = _ask(Room(config, ScriptedChat()), "what do you know about me?")
+        assert "recognised your voice as Ravi" in reply.reply
