@@ -63,6 +63,18 @@ const FLOWS: { id: string; title: string; intro: string; steps: Step[] }[] = [
     ],
   },
   {
+    id: "ambient",
+    title: "When you're just talking",
+    intro: "The room always listens, but only what you address to it gets an answer. The rest is read for two things, and you decide what stays.",
+    steps: [
+      { title: "Heard, not asked", text: "Speech without “Hey Jarvis” is transcribed here and published as overheard. Audio is never kept.", topic: "context-ambient" },
+      { title: "Read with what came before", text: "The ambient miner reads that voice's last few lines, so “the dentist” and “Thursday at four” make one plan." },
+      { title: "A plan is pencilled in", text: "It goes into your calendar at once, hatched and marked model tentative. A trip is pencilled, never booked.", topic: "assist-proposed" },
+      { title: "A fact is offered", text: "Something lasting about you waits on Chat; Jarvis remembers it only if you keep it.", topic: "context-profile" },
+      { title: "You decide", text: "Keep or discard each plan on Calendar, keep or dismiss each fact on Chat." },
+    ],
+  },
+  {
     id: "task",
     title: "When you ask for a task",
     intro: "Calendar, travel and mail go through a tool executor with three levels of trust.",

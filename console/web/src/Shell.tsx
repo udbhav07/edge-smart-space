@@ -69,7 +69,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
         <div className="flex items-center gap-2 text-muted">
           <Mic className={cn("h-3.5 w-3.5", voice ? "text-good" : "text-muted/60")} />
-          {voice ? `Voice: ${state?.speech?.activity}` : "Voice off"}
+          {!voice ? "Voice off" : state?.speech?.listen_mode === "continuous" && state.speech.activity === "waiting" ? "Always listening" : `Voice: ${state?.speech?.activity}`}
         </div>
       </div>
     </nav>

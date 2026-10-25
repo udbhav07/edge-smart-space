@@ -98,6 +98,8 @@ export interface SpeechStatus {
   microphone: string;
   wake_word: string;
   heartbeat_s: number;
+  /** FR-76: whether everything said is transcribed, or only what follows the wake word. */
+  listen_mode?: "continuous" | "wake_word";
 }
 
 export interface Waiting {
@@ -112,6 +114,9 @@ export interface CalendarEntry {
   event_id: string;
   starts_at: string;
   subject: string;
+  /** Pencilled in from overheard conversation, not yet kept (FR-77). */
+  tentative?: boolean;
+  heard?: string;
 }
 
 export interface Profile {
@@ -119,6 +124,8 @@ export interface Profile {
   display_name: string;
   facts: string[];
   preferences: Record<string, string>;
+  /** Overheard, waiting for the person to keep or dismiss (FR-78). */
+  suggestions?: string[];
 }
 
 export interface Room {

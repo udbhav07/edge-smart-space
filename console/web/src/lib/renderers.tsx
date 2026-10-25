@@ -7,6 +7,7 @@ import {
   CircleAlert,
   Cpu,
   Droplets,
+  Ear,
   FlaskConical,
   Gauge,
   Mic,
@@ -402,6 +403,19 @@ export const RENDERERS: Renderer[] = [
     ),
   },
   {
+    pattern: "space/context/ambient",
+    icon: Ear,
+    title: () => "Overheard",
+    summary: (p) => <><Chip tone="warn">{p.profile_id || "guest"}</Chip> <span className="italic text-fg/85">“{p.transcript}”</span></>,
+    detail: (p, _t, now) => (
+      <Stack>
+        <Quote><span className="italic">{p.transcript}</span></Quote>
+        <Fields rows={[["Voice", p.profile_id || "guest (unrecognised)"], ["Spoke for", `${num(p.duration_s, 1)} s`], ["Heard", when(p.ts, now)]]} />
+        <p className="text-[12.5px] text-muted">Said without the wake word, so nobody asked for anything: it is never answered. The reasoning layer only looks in it for a plan to pencil in as tentative and a fact to offer for keeping (FR-76 to FR-78). Not retained.</p>
+      </Stack>
+    ),
+  },
+  {
     pattern: "space/context/utterance",
     icon: MessageSquare,
     title: () => "Typed in the console",
@@ -412,12 +426,18 @@ export const RENDERERS: Renderer[] = [
     pattern: "space/context/profile/+",
     icon: UserRound,
     title: (topic) => `Profile · ${segment(topic, 3)}`,
-    summary: (p) => <><span className="text-fg">{p.display_name || "Guest"}</span> <span className="text-muted">· {(p.facts ?? []).length} facts · {(p.recent ?? []).length} recent</span></>,
+    summary: (p) => <><span className="text-fg">{p.display_name || "Guest"}</span> <span className="text-muted">· {(p.facts ?? []).length} facts · {(p.recent ?? []).length} recent</span>{(p.suggestions ?? []).length > 0 && <> <Chip tone="warn">{p.suggestions.length} overheard</Chip></>}</>,
     detail: (p, _t, now) => (
       <Stack>
         <div className="text-[18px] font-semibold text-fg">{p.display_name || "Guest (unrecognised voices)"}</div>
         {Object.keys(p.preferences ?? {}).length > 0 && <div className="flex flex-wrap gap-1.5">{Object.entries(p.preferences).map(([key, value]) => <Chip key={key} tone="info">{key.replace(/_/g, " ")}: {String(value)}</Chip>)}</div>}
         {(p.facts ?? []).length > 0 && <ul className="list-disc space-y-0.5 pl-5 text-[13.5px] text-fg">{p.facts.map((fact: string) => <li key={fact}>{fact}</li>)}</ul>}
+        {(p.suggestions ?? []).length > 0 && (
+          <div className="rounded-xl border border-dashed border-ember/40 p-3">
+            <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-ember">Overheard, waiting to be kept</div>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[13px] italic text-fg/85">{p.suggestions.map((fact: string) => <li key={fact}>{fact}</li>)}</ul>
+          </div>
+        )}
         <Fields rows={[["Recent exchanges", String((p.recent ?? []).length)], ["Published", when(p.ts, now)]]} />
         <p className="text-[12.5px] text-muted">Personalises replies only; recognising a voice unlocks nothing (FR-52).</p>
       </Stack>

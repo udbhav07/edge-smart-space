@@ -517,6 +517,33 @@ export const TOPIC_DOCS: TopicDoc[] = [
     requirements: ["FR-50", "FR-57", "NFR-06"],
   },
   {
+    slug: "context-ambient",
+    pattern: "space/context/ambient",
+    name: "Overheard speech",
+    group: "Conversation",
+    short: "Something said in the room without the wake word. Never answered: only looked through for a plan to pencil in or a fact to offer.",
+    long: [
+      "The room listens continuously. Speech that starts with, or contains, “Hey Jarvis” is a request and goes the usual way. Anything else is overheard: transcribed on this machine and published here, with whose voice it was if recognised.",
+      "Nobody asked for anything, so nothing answers it. The reasoning layer reads each line together with that voice's last few, so a plan split across two sentences reads as one. It asks the model for exactly two things: plans, which it pencils into the calendar as model tentative, and lasting facts about the speaker, which it offers for keeping. It never books, sends or sets anything from here.",
+      "Audio is never kept or published, only the words, and the topic is not retained: a late subscriber does not get a transcript of the room.",
+    ],
+    producers: [{ who: "speech", when: "after each utterance without the wake word, of four words or more" }],
+    consumers: [
+      { who: "reasoning", why: "The ambient miner looks for plans to pencil in and facts to offer (FR-77, FR-78)." },
+      { who: "console", why: "Shown on the MQTT board, and never in the conversation." },
+    ],
+    retained: false,
+    qos: 1,
+    cadence: "per utterance",
+    schema: "AmbientUtterance",
+    fields: [
+      { name: "transcript", meaning: "What was said" },
+      { name: "profile_id", meaning: "Whose voice, if recognised; empty for a guest" },
+      { name: "duration_s", meaning: "How long the speech ran" },
+    ],
+    requirements: ["FR-51", "FR-76"],
+  },
+  {
     slug: "context-utterance",
     pattern: "space/context/utterance",
     name: "Typed message",
@@ -619,6 +646,7 @@ export const TOPIC_DOCS: TopicDoc[] = [
       { name: "preferences", meaning: "Comfort preferences" },
       { name: "facts", meaning: "Things they asked to be remembered" },
       { name: "recent", meaning: "The last exchanges" },
+      { name: "suggestions", meaning: "Facts overheard, waiting for them to keep or dismiss" },
     ],
     requirements: ["FR-52"],
   },
@@ -635,8 +663,8 @@ export const TOPIC_DOCS: TopicDoc[] = [
       "Tools have three effects. Read tools run at once. Write tools (calendar entries, memory) run at once because they can be undone. Commit tools (bookings, mail) are held until the occupant confirms, and expire if they don't.",
     ],
     producers: [
-      { who: "reasoning", when: "when the assistant decides to use a tool" },
-      { who: "console", when: "the forms on Calendar, Bookings and Mail" },
+      { who: "reasoning", when: "when the assistant decides to use a tool, or overheard speech holds a plan or a fact" },
+      { who: "console", when: "the forms on Calendar, Bookings and Mail, and Keep or Dismiss" },
     ],
     consumers: [
       { who: "assistance", why: "Validates the arguments and runs the tool, or holds it for confirmation." },
@@ -831,7 +859,7 @@ export const SERVICE_DOCS: ServiceDoc[] = [
     module: "src.reasoning",
     summary: "The local language model: supervisor, assistant and diagnosis.",
     details: [
-      "The supervisor plans a setpoint every 5 minutes and on events, using tools that read the blackboard. The assistant answers spoken and typed requests and calls assistance tools. Diagnosis explains faults. All three only publish proposals and records; none can command the air conditioner.",
+      "The supervisor plans a setpoint every 5 minutes and on events, using tools that read the blackboard. The assistant answers spoken and typed requests and calls assistance tools. Diagnosis explains faults. The ambient miner reads overheard speech for plans to pencil in and facts to offer. None of them can command the air conditioner, and none of them can book or send anything without a yes.",
       "The model runs locally through Ollama. If it is slow or down, these features degrade and everything else carries on.",
     ],
   },
@@ -848,7 +876,7 @@ export const SERVICE_DOCS: ServiceDoc[] = [
     module: "src.speech",
     summary: "Hears the occupant.",
     details: [
-      "Wake word, recording, local Whisper transcription, speaker recognition and the understanding call, all on this machine. It publishes what it understood and its own status; audio is never published.",
+      "Always listening: every utterance is transcribed with local Whisper and its speaker recognised, all on this machine. One that begins with, or contains, the wake word is a request, understood and published as such. Any other is published as overheard speech, which nothing answers. Audio is never kept or published.",
     ],
   },
   {

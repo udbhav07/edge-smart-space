@@ -1,0 +1,6 @@
+import{c}from"./index-9iraQ-pl.js";/**
+ * @license lucide-react v1.56.0 - ISC
+ *
+ * This source code is licensed under the ISC license.
+ * See the LICENSE file in the root directory of this source tree.
+ */const e={name:"user-round",size:24,node:[["circle",{cx:"12",cy:"8",r:"5",key:"1hypcn"}],["path",{d:"M20 21a8 8 0 0 0-16 0",key:"rfgkzh"}]],aliases:["user-2"]};e.node;const r=c(e);export{r as U};

@@ -7,6 +7,7 @@ import { useConsole, useNow, type LinkState } from "@/lib/useConsole";
 import { Composer } from "@/components/Composer";
 import { Conversation } from "@/components/Conversation";
 import { Orb, type Presence } from "@/components/Orb";
+import { Suggestions } from "@/components/Suggestions";
 
 // Talking to the room without speaking aloud. Typed words take exactly the
 // path speech does: the same extraction, the same gates (FR-57).
@@ -39,6 +40,7 @@ export function Chat() {
   const presence = presenceOf(state, link, now);
   const voice = speechAlive(state.speech, now);
   const heard = voice && state.speech?.activity === "understanding" ? state.speech.heard : "";
+  const always = voice && state.speech?.listen_mode === "continuous";
   const chooseSpeaker = (id: string) => {
     setSpeaker(id);
     try { localStorage.setItem("speaker", id); } catch { /* private window */ }
@@ -62,10 +64,11 @@ export function Chat() {
         <div className="min-w-0">
           <div className="text-[14px] font-medium text-fg">Jarvis</div>
           <div className="truncate text-[12px] text-muted">
-            {presence === "listening" ? "Listening…" : presence === "thinking" ? "Thinking…" : voice ? "Voice is on; say “Hey Jarvis”, or type below" : "Voice is off; typing works the same"}
+            {presence === "listening" ? "Listening…" : presence === "thinking" ? "Thinking…" : always ? "Always listening: say “Hey Jarvis” to ask; anything else only pencils plans and offers facts" : voice ? "Voice is on; say “Hey Jarvis”, or type below" : "Voice is off; typing works the same"}
           </div>
         </div>
       </div>
+      <Suggestions profiles={state.profiles} />
       <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
         <Conversation
           turns={state.conversation}

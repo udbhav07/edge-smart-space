@@ -71,7 +71,7 @@ export const SERVICES: ServiceSpec[] = [
     name: "Speech",
     role: "Wake word, Whisper and extraction; publishes what it heard and its own status",
     layer: "Layer 1",
-    publishes: ["space/speech/status", "space/context/preference"],
+    publishes: ["space/speech/status", "space/context/preference", "space/context/ambient"],
     cadence_s: 15,
   },
   {
