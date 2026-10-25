@@ -236,6 +236,32 @@ no long-term memory. The recogniser is deliberately simple (numpy only) and
 has been measured on synthetic voices, not yet on real ones; DESIGN.md section
 5.8.3 has the numbers.
 
+### Always listening: what it overhears
+
+The room listens continuously (`speech.listen_mode: continuous`, the default).
+Anything said with "Hey Jarvis" is a request, as before. Anything else is
+*overheard*: transcribed on this machine, never answered, and read for two
+things only (FR-76 to FR-78):
+
+- **A plan** — a meeting, an appointment, a trip — is pencilled straight into
+  the calendar, hatched and marked **model tentative**, with the words heard.
+  Keep it on the Calendar page to make it firm, or discard it. A trip is
+  pencilled in, never booked.
+- **A fact** about a recognised voice is offered on the Chat page and kept
+  only if that person says Keep. Until then it sits under *Suggested
+  (overheard)* in their profile file, apart from what is remembered.
+
+```bash
+python -m tools.overhear --as ravi "I've got the dentist on Thursday at four"
+python -m tools.overhear "we're flying to Goa next Friday"
+python -m tools.overhear --as ravi "I'm allergic to peanuts, so no satay for me"
+```
+
+`tools.overhear` publishes exactly what the microphone would, and prints what
+came of it. Audio is never kept or published, overheard words are not retained
+on the blackboard, and `listen_mode: wake_word` restores capture after the wake
+word only.
+
 ### Watching what happens
 
 Every decision in the system is on the blackboard. Nothing is hidden in
