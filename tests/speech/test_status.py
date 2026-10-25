@@ -63,3 +63,11 @@ def test_it_names_the_microphone(wired):
     status, transport, _, _ = wired
     status.changed(SpeechActivity.WAITING)
     assert transport.statuses()[-1].microphone == "Microphone (C-Media)"
+
+
+def test_it_says_whether_the_room_listens_continuously(wired):
+    from src.common.schemas import ListenMode
+
+    status, transport, _, config = wired
+    status.changed(SpeechActivity.WAITING)
+    assert transport.statuses()[-1].listen_mode is config.speech.listen_mode is ListenMode.CONTINUOUS

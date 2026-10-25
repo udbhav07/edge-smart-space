@@ -58,6 +58,7 @@ class StatusPublisher:
             microphone=self._microphone,
             wake_word=self._config.wake_word,
             heartbeat_s=self._config.status_interval_s,
+            listen_mode=self._config.listen_mode,
         )
         try:
             self._blackboard.publish(topics.SPEECH_STATUS, status)

@@ -114,6 +114,14 @@ class UtteranceDetector:
         self._frames_seen = 0
         self._speech_started = False
 
+    def begin_counting(self) -> None:
+        """Count from now, keeping what the detector has heard so far.
+
+        Listening continuously, the detector runs while nothing is said; the
+        hard cap on an utterance must run from when speech began (FR-76).
+        """
+        self._frames_seen = 1
+
     def accept(self, frame: np.ndarray) -> bool:
         """Feed one frame. Returns True when the utterance has ended."""
         self._frames_seen += 1

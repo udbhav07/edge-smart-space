@@ -199,3 +199,17 @@ class TestWiringAgainstTheRealInterfaces:
         clock = SimClock()
         runner.build_pipeline(config, clock, FakeCapture([]))
         assert captured["clock"] is clock
+
+
+class TestOverheardSpeech:
+    """FR-76: overheard words go to their own topic, never to the preference topic."""
+
+    def test_overheard_speech_is_published_as_ambient(self, config):
+        from src.common.schemas import AmbientUtterance
+
+        heard = AmbientUtterance(ts=TS, transcript="dentist on thursday at four")
+        _, _, blackboard = _run(config, [heard])
+        assert [spec for spec, _ in blackboard.published] == [topics.CONTEXT_AMBIENT]
+
+    def test_the_ambient_topic_is_not_retained(self):
+        assert topics.CONTEXT_AMBIENT.retain is False

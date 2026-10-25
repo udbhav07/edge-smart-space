@@ -30,6 +30,7 @@ from src.common.config import Config, load_config
 from src.common.conversation import Conversations
 from src.common.device import resolve
 from src.common.mqtt_client import Blackboard, build_transport
+from src.common.schemas import AmbientUtterance
 from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
 from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
@@ -75,9 +76,14 @@ def build_pipeline(
     )
 
 
-def _publish(blackboard: Blackboard, hint) -> None:
-    blackboard.publish(topics.CONTEXT_PREFERENCE, hint)
-    LOGGER.info("published preference hint: %s", hint.model_dump_json())
+def _publish(blackboard: Blackboard, heard) -> None:
+    """An addressed request is a hint (FR-53); anything else was overheard (FR-76)."""
+    if isinstance(heard, AmbientUtterance):
+        blackboard.publish(topics.CONTEXT_AMBIENT, heard)
+        LOGGER.info("published overheard speech (%d words)", len(heard.transcript.split()))
+        return
+    blackboard.publish(topics.CONTEXT_PREFERENCE, heard)
+    LOGGER.info("published preference hint: %s", heard.model_dump_json())
 
 
 def run(
@@ -148,9 +154,11 @@ def main(argv: list[str] | None = None) -> int:
     blackboard.start()
     capture.start()
     LOGGER.info(
-        "listening for %r; hints publish to %s",
+        "listening for %r (%s); hints publish to %s, overheard speech to %s",
         config.speech.wake_word,
+        config.speech.listen_mode.value,
         topics.CONTEXT_PREFERENCE.pattern,
+        topics.CONTEXT_AMBIENT.pattern,
     )
     try:
         run(config, clock, capture, pipeline, blackboard, frames=arguments.frames, status=status)
