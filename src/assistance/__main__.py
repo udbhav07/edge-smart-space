@@ -35,7 +35,9 @@ from src.common.tools import (
     CANCEL_EVENT,
     FORGET,
     GET_EVENTS,
+    KEEP_EVENT,
     MOVE_EVENT,
+    PENCIL_EVENT,
     REMEMBER,
     SCHEDULE_EVENT,
     ToolRegistry,
@@ -60,6 +62,8 @@ def build_registry(config: Config, clock: Clock) -> ToolRegistry:
     registry.bind(GET_EVENTS.name, calendar)
     registry.bind(CANCEL_EVENT.name, calendar)
     registry.bind(MOVE_EVENT.name, calendar)
+    registry.bind(PENCIL_EVENT.name, calendar)
+    registry.bind(KEEP_EVENT.name, calendar)
     registry.bind(BOOK_TRAVEL.name, MockTravel())
     registry.bind(SEND_MAIL.name, MockMail())
     memory = ProfileMemory(build_store(config, clock))

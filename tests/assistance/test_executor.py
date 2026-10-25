@@ -141,3 +141,20 @@ class TestCatalogue:
         assert topic == topics.ASSIST_CATALOGUE.pattern and retain
         names = {spec.name for spec in ToolCatalogue.model_validate_json(payload).tools}
         assert names == {"schedule_event", "get_events", "cancel_event", "move_event", "book_travel", "send_mail", "remember", "forget", "pencil_event", "keep_event", "suggest_fact", "settle_fact"}
+
+
+class TestOverheardPlans:
+    """FR-77: a plan overheard is pencilled at once; nothing commits."""
+
+    def test_a_pencilled_plan_runs_without_confirmation(self, wired, clock):
+        _, transport, caller = wired
+        invocation = _invocation(clock, "pencil_event", {**MEETING, "heard": "review on thursday"})
+        caller.publish(topics.ASSIST_PROPOSED, invocation.model_copy(update={"requester": ToolRequester.AMBIENT}))
+        assert _results(transport)[-1].status is ToolStatus.OK
+
+    def test_keeping_it_runs_too(self, wired, clock):
+        _, transport, caller = wired
+        caller.publish(topics.ASSIST_PROPOSED, _invocation(clock, "pencil_event", MEETING))
+        event_id = _results(transport)[-1].detail["event_id"]
+        caller.publish(topics.ASSIST_PROPOSED, _invocation(clock, "keep_event", {"event_id": event_id}, invocation_id="inv_2"))
+        assert _results(transport)[-1].status is ToolStatus.OK

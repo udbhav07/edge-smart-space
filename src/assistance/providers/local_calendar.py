@@ -26,7 +26,9 @@ from src.common.tools import (
     CANCEL_EVENT,
     DEFAULT_EVENT_DURATION_MIN,
     GET_EVENTS,
+    KEEP_EVENT,
     MOVE_EVENT,
+    PENCIL_EVENT,
     SCHEDULE_EVENT,
     ArgumentValue,
     ProviderOutcome,
@@ -43,6 +45,16 @@ _TEMPORARY_SUFFIX = ".tmp"
 #: How many entries a reply lists by name before summarising the rest. A
 #: spoken answer that reads out twenty meetings is not an answer.
 _ENTRIES_NAMED_IN_A_REPLY = 5
+
+#: Where a pencilled entry came from (FR-77). Kept on the entry so the
+#: console can say why it is there.
+ORIGIN_OVERHEARD = "overheard"
+
+#: The longest overheard sentence kept with an entry: enough to recognise it.
+_HEARD_KEPT_CHARS = 200
+
+#: Words too common to tell two subjects apart when matching a repeat mention.
+_FILLER = frozenset({"the", "and", "with", "for", "our", "my", "a", "an", "to", "at", "on", "in"})
 
 
 class CalendarFullError(RuntimeError):
@@ -112,6 +124,10 @@ class LocalCalendar:
             return self._cancel(arguments)
         if tool == MOVE_EVENT.name:
             return self._move(arguments)
+        if tool == PENCIL_EVENT.name:
+            return self._pencil(arguments)
+        if tool == KEEP_EVENT.name:
+            return self._keep(arguments)
         raise ValueError(f"{PROVIDER_NAME} does not serve {tool!r}")
 
     # --- entries ------------------------------------------------------
@@ -169,6 +185,70 @@ class LocalCalendar:
             },
         )
 
+    def _pencil(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
+        """A plan overheard, written in as tentative (FR-77).
+
+        A plan is mentioned more than once in a conversation, so an entry
+        already on that day with the same subject -- tentative or firm --
+        takes it, and nothing is added.
+        """
+        starts = _parse(arguments["starts_at"])
+        subject = str(arguments["subject"]).strip()
+        same = self._same_plan(subject, starts)
+        if same is not None:
+            return ProviderOutcome(
+                message=f"{same['subject']} is already in the calendar then.",
+                detail={"event_id": same["event_id"], "added": False},
+            )
+        if len(self._events) >= self._max_events:
+            raise CalendarFullError(
+                f"the calendar already holds {self._max_events} entries"
+            )
+        duration_min = int(arguments.get("duration_min") or DEFAULT_EVENT_DURATION_MIN)
+        event = {
+            "event_id": f"ev_{self._next_id:04d}",
+            "subject": subject,
+            "starts_at": starts.isoformat(timespec="minutes"),
+            "ends_at": (starts + timedelta(minutes=duration_min)).isoformat(timespec="minutes"),
+            "duration_min": duration_min,
+            "tentative": True,
+            "origin": ORIGIN_OVERHEARD,
+            "heard": " ".join(str(arguments.get("heard") or "").split())[:_HEARD_KEPT_CHARS],
+        }
+        self._events.append(event)
+        self._next_id += 1
+        self._save()
+        LOGGER.info("pencilled %s: %s at %s", event["event_id"], subject, event["starts_at"])
+        return ProviderOutcome(
+            message=f"Pencilled in {subject} at {describe_time(starts)}, tentatively.",
+            detail={"event_id": event["event_id"], "starts_at": event["starts_at"], "added": True},
+        )
+
+    def _keep(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
+        """A tentative entry the occupant kept becomes a firm one."""
+        event_id = str(arguments["event_id"])
+        event = next((event for event in self._events if event["event_id"] == event_id), None)
+        if event is None:
+            raise NoSuchEntryError(f"There is no entry {event_id}.")
+        event.pop("tentative", None)
+        self._save()
+        LOGGER.info("kept %s: %s", event_id, event["subject"])
+        return ProviderOutcome(
+            message=f"Kept {event['subject']} at {describe_time(_parse(event['starts_at']))}.",
+            detail={"event_id": event_id},
+        )
+
+    def _same_plan(self, subject: str, starts: datetime) -> dict[str, str | int] | None:
+        """An entry that day sharing the subject's telling words, if any."""
+        words = _telling(subject)
+        for event in self._sorted():
+            if _parse(event["starts_at"]).date() != starts.date():
+                continue
+            theirs = _telling(str(event["subject"]))
+            if words and theirs and (words <= theirs or theirs <= words):
+                return event
+        return None
+
     def _list(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         window_start = _parse(arguments["from_time"])
         window_end = _parse(arguments["to_time"])
@@ -180,9 +260,18 @@ class LocalCalendar:
             if _parse(event["starts_at"]) < window_end
             and _parse(event["ends_at"]) > window_start
         ]
+        tentative = [event for event in found if event.get("tentative")]
+        # The detail carries no nested values, so what was heard for each
+        # tentative entry travels under a key of its own.
+        heard = {f"heard_{event['event_id']}": str(event.get("heard", "")) for event in tentative}
         return ProviderOutcome(
             message=_summarise(found),
-            detail={"count": len(found), "entries": _listing(found)},
+            detail={
+                "count": len(found),
+                "entries": _listing(found),
+                "tentative_ids": ",".join(str(event["event_id"]) for event in tentative),
+                **heard,
+            },
         )
 
     def _cancel(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
@@ -287,6 +376,7 @@ def _summarise(found: list[dict[str, str | int]]) -> str:
         return "Nothing is in the calendar then."
     named = [
         f"{event['subject']} at {describe_time(_parse(event['starts_at']))}"
+        + (" (tentative)" if event.get("tentative") else "")
         for event in found[:_ENTRIES_NAMED_IN_A_REPLY]
     ]
     remainder = len(found) - len(named)
@@ -295,6 +385,14 @@ def _summarise(found: list[dict[str, str | int]]) -> str:
         listing += f"; and {remainder} more"
     count = "1 entry" if len(found) == 1 else f"{len(found)} entries"
     return f"{count}: {listing}."
+
+
+def _telling(subject: str) -> frozenset[str]:
+    """The words of a subject that identify it, lower-cased."""
+    return frozenset(
+        word for word in "".join(c if c.isalnum() else " " for c in subject.lower()).split()
+        if word not in _FILLER and len(word) > 2
+    )
 
 
 def _listing(found: list[dict[str, str | int]]) -> str:

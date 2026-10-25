@@ -191,3 +191,91 @@ class TestCancellingAndMoving:
         _schedule(calendar, subject="Meeting with Ravi")
         message = _schedule(calendar, subject="Dentist").message
         assert "you already have Meeting with Ravi then" in message
+
+
+def _pencil(calendar, starts_at="2026-10-01T16:00:00", subject="dentist", heard="dentist on thursday at four"):
+    return calendar.invoke("pencil_event", {"starts_at": starts_at, "subject": subject, "heard": heard})
+
+
+class TestPencilling:
+    """FR-77: a plan overheard is written in, marked tentative."""
+
+    def test_an_overheard_plan_is_added_as_tentative(self, calendar):
+        _pencil(calendar)
+        (event,) = calendar.events
+        assert event["tentative"] is True and event["origin"] == "overheard"
+
+    def test_what_was_heard_is_kept_with_it(self, calendar):
+        _pencil(calendar)
+        assert calendar.events[0]["heard"] == "dentist on thursday at four"
+
+    def test_the_reply_says_it_is_tentative(self, calendar):
+        assert "tentatively" in _pencil(calendar).message
+
+    def test_a_repeat_mention_that_day_adds_nothing(self, calendar):
+        _pencil(calendar)
+        outcome = _pencil(calendar, starts_at="2026-10-01T16:30:00", subject="the dentist")
+        assert len(calendar.events) == 1 and outcome.detail["added"] is False
+
+    def test_a_plan_already_firmly_in_the_calendar_adds_nothing(self, calendar):
+        _schedule(calendar, starts_at="2026-10-01T16:00:00", subject="dentist appointment")
+        _pencil(calendar)
+        assert len(calendar.events) == 1 and "tentative" not in calendar.events[0]
+
+    def test_the_same_subject_on_another_day_is_another_plan(self, calendar):
+        _pencil(calendar)
+        _pencil(calendar, starts_at="2026-10-08T16:00:00")
+        assert len(calendar.events) == 2
+
+    def test_a_different_subject_the_same_day_is_another_plan(self, calendar):
+        _pencil(calendar)
+        _pencil(calendar, subject="flight to Goa")
+        assert len(calendar.events) == 2
+
+    def test_a_full_calendar_refuses_it(self, calendar):
+        for day in range(1, MAX_EVENTS + 1):
+            _schedule(calendar, starts_at=f"2026-10-0{day}T09:00:00", subject=f"entry {day}")
+        with pytest.raises(CalendarFullError):
+            _pencil(calendar, starts_at="2026-10-09T16:00:00")
+
+    def test_it_survives_a_restart(self, calendar, path):
+        _pencil(calendar)
+        assert LocalCalendar(path, MAX_EVENTS).events[0]["tentative"] is True
+
+
+class TestKeeping:
+    def test_a_kept_entry_is_firm(self, calendar):
+        event_id = _pencil(calendar).detail["event_id"]
+        calendar.invoke("keep_event", {"event_id": event_id})
+        assert "tentative" not in calendar.events[0]
+
+    def test_it_stays_marked_as_overheard(self, calendar):
+        event_id = _pencil(calendar).detail["event_id"]
+        calendar.invoke("keep_event", {"event_id": event_id})
+        assert calendar.events[0]["origin"] == "overheard"
+
+    def test_an_unknown_entry_is_refused(self, calendar):
+        from src.assistance.providers.local_calendar import NoSuchEntryError
+
+        with pytest.raises(NoSuchEntryError):
+            calendar.invoke("keep_event", {"event_id": "ev_0099"})
+
+
+class TestTentativeInListings:
+    def test_a_reply_marks_it(self, calendar):
+        _pencil(calendar)
+        assert "(tentative)" in _window(calendar).message
+
+    def test_the_detail_names_the_tentative_entries(self, calendar):
+        _schedule(calendar)
+        _pencil(calendar)
+        assert _window(calendar).detail["tentative_ids"] == "ev_0002"
+
+    def test_the_detail_carries_what_was_heard(self, calendar):
+        _pencil(calendar)
+        assert _window(calendar).detail["heard_ev_0001"] == "dentist on thursday at four"
+
+    def test_a_firm_entry_is_not_marked(self, calendar):
+        _schedule(calendar)
+        detail = _window(calendar).detail
+        assert detail["tentative_ids"] == "" and "(tentative)" not in _window(calendar).message
