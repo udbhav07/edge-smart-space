@@ -524,3 +524,12 @@ class TestTheLowFindings:
         _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.NORMAL, since_ts=clock.now()))
         _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.DEGRADED_ACTUATOR, since_ts=clock.now(), reason="the unit is not cooling"))
         assert "press Reset on Faults & control" in state.snapshot()["inbox"][-1]["body"]
+
+
+def test_a_mode_note_is_written_for_a_person(console):
+    """S-14 re-verified live: the inbox opened 'D5_ACTUATOR_NO_RESPONSE on ac'."""
+    state, _, _, clock = console
+    _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.NORMAL, since_ts=clock.now()))
+    _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.DEGRADED_ACTUATOR, since_ts=clock.now(), reason="D5_ACTUATOR_NO_RESPONSE on ac"))
+    body = state.snapshot()["inbox"][-1]["body"]
+    assert "D5_" not in body and body.startswith("The air conditioner isn't cooling the room")

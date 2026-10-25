@@ -76,6 +76,15 @@ _RECORDS_KEPT = 100
 _RATE_MIN_ARRIVALS = 5
 _RATE_MIN_SPAN_S = 30.0
 
+#: Each mode in a sentence a customer reads, not a detector code (S-14):
+#: live, the inbox opened "D5_ACTUATOR_NO_RESPONSE on ac".
+_PLAIN_MODE = {
+    "NORMAL": "Everything is working normally again.",
+    "DEGRADED_SENSOR": "The indoor temperature sensor isn't trustworthy right now, so the room is being kept on the model's estimate.",
+    "DEGRADED_ACTUATOR": "The air conditioner isn't cooling the room, so it is on hold.",
+    "SAFE_HOLD": "The room has been running without a working sensor or air conditioner for too long, so it is holding safe.",
+}
+
 #: What the occupant does next, for the modes that wait on a person (S-14).
 _NEXT_STEP = {
     "DEGRADED_ACTUATOR": " When the air conditioner has been checked, press Reset on Faults & control.",
@@ -287,7 +296,8 @@ class ConsoleState:
             events.append(self._step("mode", f"Mode {before} → {state.mode.value}: {state.reason}", tone=tone))
             next_step = _NEXT_STEP.get(state.mode.value, "")
             events.append(self._say("system", f"The room is now in {state.mode.value.replace('_', ' ').lower()} mode: {state.reason}.{next_step}", tone=tone))
-            events.append(self._mail_in("Room", f"Now {state.mode.value.replace('_', ' ').lower()}", f"{state.reason or 'No reason given.'}{next_step}", "mode", tone))
+            plain = _PLAIN_MODE.get(state.mode.value) or (state.reason or "No reason given.").rstrip(".") + "."
+            events.append(self._mail_in("Room", f"Now {state.mode.value.replace('_', ' ').lower()}", f"{plain}{next_step}", "mode", tone))
         return events
 
     def _on_goal(self, _topic, goal: Goal):

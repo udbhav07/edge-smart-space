@@ -649,7 +649,7 @@ class TestNeverFineDuringAFault:
         TestRepliesTellTheTruthAboutTheRoom()._mode(room, Mode.DEGRADED_SENSOR, ("f_temp01_stuck_1",))
         reply = room.say("is everything ok?", intent=Intent.QUESTION, subject="room")
         assert "fine" not in reply.reply.lower()
-        assert reply.reply.startswith("The system is")
+        assert reply.reply == "Not quite. The temperature sensor is not working, so the room is being controlled on an estimate."
 
     def test_a_healthy_room_may_be_called_fine(self, config):
         from src.common.schemas import Mode

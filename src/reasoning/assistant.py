@@ -613,7 +613,7 @@ class Assistant:
             # fault is never "fine"; the status is said as it is (S-13).
             LOGGER.info("reply called a faulted room fine: %r", reply_text[:120])
             self._corrections.append("'everything is fine' during a fault replaced by the status")
-            reply_text = self._room.status()
+            reply_text = f"Not quite. {self._room.status()}"
         if _REMINDER.search(utterance.lower()) and any(
             result.status is ToolStatus.OK and result.tool == "schedule_event" for result in results
         ):

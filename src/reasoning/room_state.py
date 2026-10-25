@@ -101,7 +101,13 @@ class RoomState:
         """The system's state in one sentence, with any fault explained."""
         if self._mode is None:
             return "The system's state is not known yet."
-        sentence = f"The system is {_MODE_TEXT[self._mode.mode]}."
+        text = _MODE_TEXT[self._mode.mode]
+        # "The system is working normally" reads; "The system is the
+        # temperature sensor is not working" did not (S-13, re-verified live).
+        if self._mode.mode in (Mode.INIT, Mode.NORMAL):
+            sentence = f"The system is {text}."
+        else:
+            sentence = f"{text[:1].upper()}{text[1:]}."
         explained = " ".join(self.explanations())
         return f"{sentence} {explained}".strip()
 
