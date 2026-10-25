@@ -50,6 +50,9 @@ _ENTRIES_NAMED_IN_A_REPLY = 5
 #: console can say why it is there.
 ORIGIN_OVERHEARD = "overheard"
 
+#: An entry made in Google itself and mirrored here (FR-85).
+ORIGIN_GOOGLE = "google"
+
 #: The longest overheard sentence kept with an entry: enough to recognise it.
 _HEARD_KEPT_CHARS = 200
 
@@ -136,6 +139,77 @@ class LocalCalendar:
     def events(self) -> tuple[dict[str, str | int], ...]:
         """Every entry, earliest first. A copy; the file is the record."""
         return tuple(dict(event) for event in self._sorted())
+
+    def entry(self, event_id: str) -> dict[str, str | int] | None:
+        """One entry by id, as a copy; None if there is no such entry."""
+        found = next((event for event in self._events if event["event_id"] == event_id), None)
+        return dict(found) if found is not None else None
+
+    def set_google_id(self, event_id: str, google_id: str) -> None:
+        """Remember which Google event mirrors this entry (FR-85)."""
+        for event in self._events:
+            if event["event_id"] == event_id:
+                event["google_id"] = google_id
+        self._save()
+
+    def mirror(self, google_events: list[dict], window_start: datetime, window_end: datetime) -> int:
+        """Bring Google-side entries into this calendar (FR-85).
+
+        ``google_events`` are entries made in Google itself, already in local
+        time: ``google_id``, ``subject``, ``starts_at``, ``duration_min``. Each is
+        added, updated, or -- when no longer in Google within the window --
+        removed. Entries the room made are never touched here: their copy in
+        Google is the mirror, not the other way round.
+
+        :returns: how many entries changed.
+        """
+        changed = 0
+        wanted = {event["google_id"]: event for event in google_events}
+        kept: list[dict[str, str | int]] = []
+        for event in self._events:
+            if event.get("origin") != ORIGIN_GOOGLE:
+                kept.append(event)
+                continue
+            starts = _parse(event["starts_at"])
+            theirs = wanted.pop(str(event.get("google_id", "")), None)
+            if theirs is None:
+                if window_start <= starts < window_end:
+                    changed += 1  # gone from Google: gone here
+                    continue
+                kept.append(event)
+                continue
+            updated = self._from_google(theirs, str(event["event_id"]))
+            if updated != event:
+                changed += 1
+            kept.append(updated)
+        for theirs in wanted.values():
+            if len(kept) >= self._max_events:
+                LOGGER.warning("calendar full; %d Google entries not mirrored", len(wanted))
+                break
+            kept.append(self._from_google(theirs, f"ev_{self._next_id:04d}"))
+            self._next_id += 1
+            changed += 1
+        if changed:
+            self._events = kept
+            self._save()
+        return changed
+
+    @staticmethod
+    def _from_google(theirs: dict, event_id: str) -> dict[str, str | int]:
+        starts = _parse(theirs["starts_at"])
+        duration_min = int(theirs.get("duration_min") or DEFAULT_EVENT_DURATION_MIN)
+        entry: dict[str, str | int] = {
+            "event_id": event_id,
+            "subject": str(theirs["subject"]),
+            "starts_at": starts.isoformat(timespec="minutes"),
+            "ends_at": (starts + timedelta(minutes=duration_min)).isoformat(timespec="minutes"),
+            "duration_min": duration_min,
+            "origin": ORIGIN_GOOGLE,
+            "google_id": str(theirs["google_id"]),
+        }
+        if theirs.get("tentative"):
+            entry["tentative"] = True
+        return entry
 
     def remove(self, event_id: str) -> bool:
         """Delete one entry (FR-58: an unwanted entry is deleted, not undone).
