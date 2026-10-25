@@ -67,7 +67,7 @@ class FakeTranscriber:
         self.text = text
         self.calls: list[int] = []
 
-    def transcribe(self, frames) -> str:
+    def transcribe(self, frames, confident_only=False) -> str:
         self.calls.append(len(frames))
         return self.text
 
@@ -585,3 +585,29 @@ class TestListeningContinuously:
         """Live: room noise came back from Whisper as "No. No. No. No."."""
         pipeline, _ = _listening(continuous, SimClock(), text="No. No. No. No.")
         assert _feed(pipeline, SPEECH, SILENCE) == []
+
+
+class TestHallucinationLoops:
+    """S-01: live, Whisper looped on room noise and it became calendar entries."""
+
+    LOOP = "We are going to go home We are going home No we are going home We are going home We are going home"
+
+    def test_a_transcript_looping_on_itself_is_dropped(self, continuous):
+        pipeline, _ = _listening(continuous, SimClock(), text=self.LOOP)
+        assert _feed(pipeline, SPEECH, SILENCE) == []
+
+    def test_ordinary_speech_with_a_repeat_is_kept(self, continuous):
+        pipeline, _ = _listening(continuous, SimClock(), text="no, no, the dentist is on Thursday at four")
+        assert len(_feed(pipeline, SPEECH, SILENCE)) == 1
+
+    def test_overheard_speech_asks_for_confident_segments_only(self, continuous):
+        asked = []
+
+        class Recording(FakeTranscriber):
+            def transcribe(self, frames, confident_only=False):
+                asked.append(confident_only)
+                return OVERHEARD
+
+        pipeline, _ = _listening(continuous, SimClock(), transcriber=Recording())
+        _feed(pipeline, SPEECH, SILENCE)
+        assert asked == [True]

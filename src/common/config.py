@@ -547,6 +547,31 @@ class SpeechConfig(_Section):
         description="Audio kept from just before speech is detected, so the first "
         "word of an unaddressed utterance is not clipped; dropped otherwise (FR-51)",
     )
+    ambient_max_no_speech_prob: float = Field(
+        default=0.6,
+        gt=0.0,
+        le=1.0,
+        description="An overheard segment Whisper thinks is more likely silence "
+        "than this is dropped (Whisper's own no-speech threshold; S-01)",
+    )
+    ambient_min_avg_logprob: float = Field(
+        default=-1.0,
+        description="An overheard segment transcribed with less confidence than "
+        "this mean log-probability is dropped (Whisper's own threshold; S-01)",
+    )
+    ambient_max_compression_ratio: float = Field(
+        default=2.4,
+        gt=0.0,
+        description="An overheard segment more repetitive than this is dropped: "
+        "Whisper's hallucination on noise repeats itself (S-01)",
+    )
+    ambient_min_distinct_ratio: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        description="Distinct words over all words below which a longer overheard "
+        "transcript is taken as a hallucination loop and dropped (S-01)",
+    )
     voiceprints_path: str = Field(
         default="state/voiceprints.json",
         description="Enrolled voiceprints: vectors only, never audio (FR-51)",

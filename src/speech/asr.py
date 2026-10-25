@@ -177,11 +177,29 @@ class Transcriber:
                 f"'python setup_models.py' once while online"
             ) from exc
 
-    def transcribe(self, frames: list[np.ndarray]) -> str:
-        """Transcribe buffered audio. Returns an empty string for silence."""
+    def transcribe(self, frames: list[np.ndarray], confident_only: bool = False) -> str:
+        """Transcribe buffered audio. Returns an empty string for silence.
+
+        :param confident_only: drop segments Whisper itself doubts -- likely
+            silence, low confidence, or repeating itself, its signature
+            hallucination on noise. Used for overheard speech (S-01), where a
+            made-up sentence becomes a calendar entry nobody asked for. An
+            addressed request keeps every segment, as it always has.
+        """
         if not frames:
             return ""
         segments, _ = self._model.transcribe(to_float_audio(frames), beam_size=_BEAM_SIZE)
+        if confident_only:
+            segments = [segment for segment in segments if self._confident(segment)]
         # Whisper segments carry their own leading space, so each is trimmed
         # before joining: otherwise the transcript comes back double-spaced.
         return " ".join(segment.text.strip() for segment in segments).strip()
+
+    def _confident(self, segment) -> bool:
+        """Whisper's own hallucination tests, from the numbers it reports."""
+        config = self._config
+        if getattr(segment, "no_speech_prob", 0.0) > config.ambient_max_no_speech_prob:
+            return False
+        if getattr(segment, "avg_logprob", 0.0) < config.ambient_min_avg_logprob:
+            return False
+        return getattr(segment, "compression_ratio", 0.0) <= config.ambient_max_compression_ratio

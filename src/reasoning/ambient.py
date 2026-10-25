@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -46,7 +47,7 @@ from src.common.schemas import (
 )
 from src.common.tools import PENCIL_EVENT, SUGGEST_FACT, ToolInvocation, ToolRequester
 from src.reasoning.chat import ChatClient
-from src.reasoning.dates import annotation, on_day, the_one_day
+from src.reasoning.dates import annotation, from_now, named_days, on_day, the_one_day
 from src.reasoning.single_shot import ReasoningUnavailableError
 
 LOGGER = logging.getLogger(__name__)
@@ -56,6 +57,20 @@ _QUEUE_LENGTH = 32
 
 #: Voices whose context is kept at once. Bounded, like everything else.
 _VOICES_KEPT = 16
+
+#: A time said outright: "at four", "by 10:30", "6 pm", "noon". A plan needs
+#: one of these or a named day in the words themselves (S-01): live, room audio
+#: with neither -- "We'll get to them", "good night" -- became calendar entries.
+_TIME_SAID = re.compile(
+    r"\b(?:at|by|from|around|before|after|until)\s+(?:\d{1,2}(?:[:.]\d{2})?|one|two|three|four|five|six|"
+    r"seven|eight|nine|ten|eleven|twelve|half past \w+|quarter (?:past|to) \w+)\b"
+    r"|\b\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.|o'clock)\b"
+    r"|\b(?:noon|midday|midnight)\b",
+    re.IGNORECASE,
+)
+
+#: The nearest "in N minutes" that counts as a plan rather than a turn of phrase.
+_SHORTEST_PLAN_AHEAD = timedelta(minutes=30)
 
 #: Words too common to tell two plans apart.
 _FILLER = frozenset({"the", "and", "with", "for", "our", "my", "to", "at", "on", "in", "a", "an"})
@@ -222,6 +237,11 @@ class AmbientMiner:
                 # live, the second was the first echoed under another name.
                 LOGGER.info("not pencilling %r: this answer already has a plan that day", plan.subject)
                 continue
+            if not anchored(said, now):
+                # A plan is a day or a time somebody said. Without one it is
+                # a phrase that sounded like a plan (S-01).
+                LOGGER.info("not pencilling %r: no day or time was said", plan.subject)
+                continue
             if not grounded(plan.subject, said):
                 # Live, "what a long day" came back as the prompt's own
                 # example dentist: a plan must be about words actually said.
@@ -360,6 +380,14 @@ _STEM = 4
 def _telling_words(text: str) -> set[str]:
     words = "".join(c if c.isalnum() else " " for c in text.lower()).split()
     return {word for word in words if word not in _FILLER and len(word) > 2}
+
+
+def anchored(said: str, now: datetime) -> bool:
+    """Whether the words name a day or a time a plan could be on (S-01)."""
+    ahead = from_now(said)
+    # "In a minute" is an idiom, not an appointment; "in two hours" can be one.
+    soon_enough = ahead is not None and ahead >= _SHORTEST_PLAN_AHEAD
+    return bool(named_days(said, now.date()) or soon_enough or _TIME_SAID.search(said))
 
 
 def grounded(claim: str, said: str) -> bool:

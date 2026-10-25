@@ -254,6 +254,13 @@ speech:
   listen_mode: continuous
   ambient_min_words: 4           # fewer distinct words is dropped (noise reads as "No. No. No.")
   ambient_preroll_ms: 300        # keeps the first word of unaddressed speech
+  # S-01. Live, room audio became nine junk calendar entries ("We are going home
+  # We are going home ...", "Bye. Bye. Bye."). Overheard speech, and only
+  # overheard speech, is held to Whisper's own hallucination thresholds.
+  ambient_max_no_speech_prob: 0.6
+  ambient_min_avg_logprob: -1.0
+  ambient_max_compression_ratio: 2.4
+  ambient_min_distinct_ratio: 0.5    # distinct words / words, for 6 words or more
   voiceprints_path: state/voiceprints.json
   # Measured on synthetic voices: 88 % of household utterances recognised,
   # 5 % of strangers mistaken, nobody taken for the wrong member. Being a

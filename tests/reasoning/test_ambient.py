@@ -355,3 +355,45 @@ class TestGrounding:
         from src.reasoning.ambient import grounded
 
         assert not grounded("Dentist", "what a long day it has been")
+
+
+
+class TestAPlanIsADayOrATimeSomebodySaid:
+    """S-01: nine calendar entries came from room audio naming no day or time."""
+
+    LIVE_JUNK = [
+        "and the pilot me, everyone is okay, I'll grab you a second.",
+        "then log, log 1 need to run there.",
+        "I'm going to go to the water and see if there's any water in the water.",
+        "for 2 power 1. Until the remaining ending you will go to the clock.",
+        "So that I'm going to put all of those in a minute.",
+        "to be safe. So, good night. Thanks. I'll see you in a minute.",
+        "Okay. All right. Okay. We'll get to them. There we go.",
+        "Let's grab a few information.",
+    ]
+
+    @pytest.mark.parametrize("line", LIVE_JUNK)
+    def test_live_junk_pencils_nothing(self, config, line):
+        words = [w for w in line.lower().replace(".", " ").replace(",", " ").split() if len(w) > 3]
+        plan = {"subject": words[0].capitalize(), "starts_at": "2026-09-26T23:00:00"}
+        room = Room(config, saying(findings(plans=[plan])))
+        assert room.overhear(line) == []
+        assert room.calendar() == []
+
+    @pytest.mark.parametrize("line", [
+        "the dentist is on Thursday at four",
+        "dinner with Meera at eight tonight",
+        "the plumber comes at 10:30 tomorrow",
+        "we fly to Goa on Friday",
+        "lunch at noon with Anu",
+    ])
+    def test_a_day_or_a_time_said_is_an_anchor(self, line):
+        from src.reasoning.ambient import anchored
+
+        assert anchored(line, datetime(2026, 9, 26, 15, 0))
+
+    @pytest.mark.parametrize("line", LIVE_JUNK)
+    def test_live_junk_has_no_anchor(self, line):
+        from src.reasoning.ambient import anchored
+
+        assert not anchored(line, datetime(2026, 9, 26, 15, 0))

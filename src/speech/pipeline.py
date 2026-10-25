@@ -37,6 +37,9 @@ from src.speech.asr import to_float_audio
 
 LOGGER = logging.getLogger(__name__)
 
+#: Below this many words a repeated one is ordinary speech ("no, no, I said").
+_LOOP_CHECK_WORDS = 6
+
 
 class PipelineState(str, Enum):
     """Where the pipeline is.
@@ -187,11 +190,18 @@ class SpeechPipeline:
         Never shown in the retained status: the room's conversation is not
         state to be kept for whoever connects next (FR-76).
         """
-        transcript = self._transcriber.transcribe(frames)
+        transcript = self._transcriber.transcribe(frames, confident_only=True)
         # Distinct words, not words: live, room noise came back from Whisper
         # as "No. No. No. No." -- four words, one of them, and nothing said.
-        distinct = {word.strip(".,!?;:'\"").lower() for word in (transcript or "").split()} - {""}
+        words = [word.strip(".,!?;:'\"").lower() for word in (transcript or "").split()]
+        words = [word for word in words if word]
+        distinct = set(words)
         if len(distinct) < self._config.ambient_min_words:
+            return None
+        if len(words) >= _LOOP_CHECK_WORDS and len(distinct) / len(words) < self._config.ambient_min_distinct_ratio:
+            # "We are going home We are going home No we are going home ...":
+            # a transcript looping on itself is Whisper's, not anyone's (S-01).
+            LOGGER.info("overheard speech dropped: it repeats itself")
             return None
         LOGGER.info("overheard %d words", len(transcript.split()))
         duration_s = len(frames) * self._config.chunk_samples / self._config.sample_rate_hz

@@ -224,3 +224,45 @@ class TestLoadingOffline:
         monkeypatch.setattr(faster_whisper, "WhisperModel", MissingWhisper)
         with pytest.raises(ModelNotInstalledError, match="setup_models.py"):
             Transcriber(cpu_config)
+
+
+class _Segment:
+    def __init__(self, text, no_speech_prob=0.1, avg_logprob=-0.3, compression_ratio=1.4):
+        self.text, self.no_speech_prob = text, no_speech_prob
+        self.avg_logprob, self.compression_ratio = avg_logprob, compression_ratio
+
+
+class _ScoredWhisper:
+    def __init__(self, *segments):
+        self.segments = list(segments)
+
+    def transcribe(self, audio, beam_size):
+        return list(self.segments), None
+
+
+class TestConfidentOnly:
+    """S-01: overheard speech is held to Whisper's own hallucination tests."""
+
+    def test_a_confident_segment_is_kept(self, config):
+        whisper = _ScoredWhisper(_Segment("dentist on Thursday at four"))
+        assert Transcriber(config, model=whisper).transcribe([FRAME], confident_only=True) == "dentist on Thursday at four"
+
+    def test_a_segment_likely_to_be_silence_is_dropped(self, config):
+        whisper = _ScoredWhisper(_Segment("Thanks for watching!", no_speech_prob=0.9))
+        assert Transcriber(config, model=whisper).transcribe([FRAME], confident_only=True) == ""
+
+    def test_a_doubtful_segment_is_dropped(self, config):
+        whisper = _ScoredWhisper(_Segment("for 2 power 1 until the remaining", avg_logprob=-1.4))
+        assert Transcriber(config, model=whisper).transcribe([FRAME], confident_only=True) == ""
+
+    def test_a_repeating_segment_is_dropped(self, config):
+        whisper = _ScoredWhisper(_Segment("Bye. Bye. Bye. Bye. Bye. Bye.", compression_ratio=3.1))
+        assert Transcriber(config, model=whisper).transcribe([FRAME], confident_only=True) == ""
+
+    def test_only_the_doubtful_segment_goes(self, config):
+        whisper = _ScoredWhisper(_Segment("see you at the dentist"), _Segment("Bye. Bye. Bye.", compression_ratio=3.0))
+        assert Transcriber(config, model=whisper).transcribe([FRAME], confident_only=True) == "see you at the dentist"
+
+    def test_an_addressed_request_keeps_every_segment(self, config):
+        whisper = _ScoredWhisper(_Segment("make it cooler", no_speech_prob=0.9))
+        assert Transcriber(config, model=whisper).transcribe([FRAME]) == "make it cooler"
