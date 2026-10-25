@@ -242,3 +242,116 @@ class TestBounds:
         room = Room(config, saying(findings(plans=[DENTIST], facts=["Likes tea."])))
         room.overhear("I've got the dentist on Thursday at four and I like tea")
         assert not [t for t, *_ in room.transport.published if t == topics.CONTEXT_REPLY.pattern]
+
+
+class TestItemByItem:
+    """FR-44, as met live: a stray item does not cost the real one."""
+
+    def test_an_empty_plan_beside_a_real_one_is_dropped_alone(self, config):
+        """qwen2.5:7b answered the dentist and an empty {} beside it."""
+        room = Room(config, saying(json.dumps({"plans": [DENTIST, {}], "facts": []})))
+        room.overhear("I've got the dentist on Thursday at four")
+        assert [event["subject"] for event in room.calendar()] == ["dentist"]
+
+    def test_a_fact_that_is_not_words_is_dropped_alone(self, config):
+        room = Room(config, saying(json.dumps({"plans": [], "facts": [{}, "Likes tea.", ""]})))
+        room.overhear("I always have tea in the afternoon")
+        assert room.store.load("ravi").suggestions == ("Likes tea.",)
+
+    def test_missing_lists_are_empty_lists(self, config):
+        room = Room(config, saying(json.dumps({})))
+        assert room.overhear("nothing much going on today really") == []
+        assert room.records()[-1].verdict == "accepted: nothing to note"
+
+    def test_a_plan_echoed_under_another_name_the_same_day_is_dropped(self, config):
+        """Live: "Dentist" at four, then "appointment" at 09:00 the same Thursday."""
+        echo = {"subject": "appointment", "starts_at": "2026-10-01T09:00:00"}
+        room = Room(config, saying(findings(plans=[DENTIST, echo])))
+        room.overhear("I've got the dentist on Thursday at four")
+        assert [event["subject"] for event in room.calendar()] == ["dentist"]
+
+    def test_plans_on_different_days_are_both_kept(self, config):
+        friday = {"subject": "flight to Goa", "starts_at": "2026-10-02T09:00:00"}
+        room = Room(config, saying(findings(plans=[DENTIST, friday])))
+        room.overhear("dentist on Thursday then we fly to Goa the day after")
+        assert len(room.calendar()) == 2
+
+    def test_the_prompt_forbids_inferring_a_fact(self):
+        from src.reasoning.ambient import AMBIENT_PROMPT
+
+        assert "Never infer a fact" in AMBIENT_PROMPT
+
+
+class TestEarlierLinesAreNotReportedAgain:
+    """Live: the haircut came back with the peanuts, and again with the weather."""
+
+    HAIRCUT = {"subject": "Haircut", "starts_at": "2026-09-30T18:00:00"}
+    HAIRCUT_WRONG_DAY = {"subject": "Haircut", "starts_at": "2026-09-26T18:00:00"}
+
+    def test_a_plan_from_an_earlier_line_is_not_pencilled_again(self, config):
+        room = Room(
+            config,
+            saying(findings(plans=[self.HAIRCUT])),
+            saying(findings(plans=[{**self.HAIRCUT, "starts_at": "2026-09-27T18:00:00"}], facts=["Is allergic to peanuts."])),
+        )
+        room.overhear("I have a haircut on Wednesday at six in the evening")
+        proposed = room.overhear("by the way I'm allergic to peanuts, so no satay for me")
+        assert [i.tool for i in proposed] == ["suggest_fact"]
+        assert [event["subject"] for event in room.calendar()] == ["Haircut"]
+
+    def test_a_fact_from_an_earlier_line_is_not_offered_again(self, config):
+        room = Room(config, saying(findings(facts=["Is allergic to peanuts."])), saying(findings(facts=["Is allergic to peanuts"])))
+        room.overhear("by the way I'm allergic to peanuts, so no satay for me")
+        assert room.overhear("the weather has been lovely today hasn't it") == []
+
+    def test_the_same_plan_under_a_longer_name_is_the_same_plan(self, config):
+        room = Room(config, saying(findings(plans=[self.HAIRCUT])), saying(findings(plans=[{**self.HAIRCUT, "subject": "haircut appointment"}])))
+        room.overhear("I have a haircut on Wednesday at six in the evening")
+        assert room.overhear("yes that haircut on Wednesday, at six") == []
+
+    def test_after_the_window_a_plan_may_be_noted_again(self, config):
+        later = {**self.HAIRCUT, "starts_at": "2026-10-07T18:00:00"}
+        room = Room(config, saying(findings(plans=[self.HAIRCUT])), saying(findings(plans=[later])))
+        room.overhear("I have a haircut on Wednesday at six in the evening")
+        room.clock.advance(config.ambient.context_s + 1.0)
+        assert len(room.overhear("another haircut the Wednesday after, at six")) == 1
+
+    def test_one_voices_notes_do_not_silence_anothers(self, config):
+        room = Room(config, saying(findings(plans=[self.HAIRCUT])), saying(findings(plans=[{**self.HAIRCUT, "starts_at": "2026-10-01T18:00:00"}])))
+        room.overhear("I have a haircut on Wednesday at six in the evening", profile_id="ravi")
+        assert len(room.overhear("I have a haircut on Thursday at six too", profile_id="")) == 1
+
+    def test_the_prompt_says_earlier_lines_were_already_read(self):
+        from src.reasoning.ambient import AMBIENT_PROMPT
+
+        assert "never report a plan or fact from them again" in AMBIENT_PROMPT
+
+
+class TestGrounding:
+    """Live: "what a long day" came back as the prompt's own example dentist."""
+
+    def test_a_plan_nobody_mentioned_is_not_pencilled(self, config):
+        room = Room(config, saying(findings(plans=[DENTIST])))
+        assert room.overhear("what a long day it has been, honestly") == []
+        assert room.calendar() == []
+
+    def test_a_fact_nobody_stated_is_not_offered(self, config):
+        room = Room(config, saying(findings(facts=["Is vegetarian."])))
+        assert room.overhear("what a long day it has been, honestly") == []
+
+    def test_a_plan_named_in_the_earlier_line_is_grounded(self, config):
+        service = {"subject": "Car service", "starts_at": "2026-09-29T10:00:00"}
+        room = Room(config, saying(findings()), saying(findings(plans=[service])))
+        room.overhear("the car really needs its service soon")
+        assert len(room.overhear("the garage said Tuesday at ten works")) == 1
+
+    def test_an_inflected_word_still_grounds_it(self):
+        from src.reasoning.ambient import grounded
+
+        assert grounded("Flight to Goa", "we're flying to Goa next Friday")
+        assert grounded("Is allergic to peanuts.", "I have a peanut allergy")
+
+    def test_unrelated_words_do_not(self):
+        from src.reasoning.ambient import grounded
+
+        assert not grounded("Dentist", "what a long day it has been")

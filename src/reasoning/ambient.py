@@ -57,6 +57,9 @@ _QUEUE_LENGTH = 32
 #: Voices whose context is kept at once. Bounded, like everything else.
 _VOICES_KEPT = 16
 
+#: Words too common to tell two plans apart.
+_FILLER = frozenset({"the", "and", "with", "for", "our", "my", "to", "at", "on", "in", "a", "an"})
+
 #: What one call may yield. More than this from one sentence is a model
 #: inventing, not a person planning.
 _MAX_PLANS = 3
@@ -64,20 +67,36 @@ _MAX_FACTS = 3
 
 _SECONDS_PER_MINUTE = 60.0
 
+#: Live, a 7B model echoed one plan twice ("Dentist", then "appointment")
+#: and inferred a routine nobody stated. The rules and examples below are
+#: what stopped it; the per-day guard in ``_pencil`` catches what slips by.
 AMBIENT_PROMPT = (
     "You listen to a conversation in someone's home. Nobody is talking to "
-    "you; do not reply to them. Find only two things. (1) Plans: a specific "
-    "meeting, appointment, trip, flight, train or event they intend to "
-    "attend, with a day you can name. (2) Facts: something lasting about "
-    "the person speaking -- a preference, a routine, an allergy -- worth "
-    "remembering for later conversations. Ignore small talk, opinions about "
-    "the moment, things about other people, and anything hypothetical or "
-    "already past. Most of the time there is nothing: then return empty "
-    "lists. Reply with a JSON object and nothing else: "
+    "you; do not reply to them. Find only two things.\n"
+    "(1) Plans: a specific meeting, appointment, trip, flight, train or "
+    "event the speaker intends to attend, on a day you can name. Name each "
+    "plan once, by what it is (\"Dentist\", \"Flight to Goa\"), never as a "
+    "generic \"appointment\" or \"event\". Use the time they said, as people "
+    "mean it without am or pm: dinner at eight is 20:00, the dentist at four "
+    "is 16:00, breakfast at eight is 08:00. If they named a day but no time, "
+    "use 09:00.\n"
+    "(2) Facts: something lasting the speaker says outright about "
+    "themselves -- a preference, an allergy, a routine -- in their own "
+    "words. Never infer a fact from a plan, and never guess.\n"
+    "Ignore small talk, the moment's opinions, other people, and anything "
+    "hypothetical or past. Most of the time there is nothing: return empty "
+    "lists.\n"
+    "Report only what the line marked \"Just said\" adds. Earlier lines are "
+    "there to complete it -- a day, a time -- and were already read: never "
+    "report a plan or fact from them again.\n"
+    "Reply with a JSON object and nothing else: "
     '{"plans": [{"subject": short title, "starts_at": ISO-8601 local date '
     'and time, "duration_min": minutes or null}], "facts": [one short '
-    'sentence about them in the third person, without their name]}. If a '
-    "plan names a day but no time, use 09:00."
+    "sentence about them in the third person, without their name]}.\n"
+    "Examples. \"I've got the dentist on Thursday at four\" -> one plan, "
+    "Dentist, that Thursday at 16:00; no facts. \"I'm vegetarian, so no "
+    "meat for me\" -> no plans; facts [\"Is vegetarian.\"]. \"Lovely "
+    'weather today" -> {"plans": [], "facts": []}.'
 )
 
 
@@ -121,6 +140,10 @@ class AmbientMiner:
         self._pending: deque[AmbientUtterance] = deque(maxlen=_QUEUE_LENGTH)
         #: Each voice's recent lines, as (ts, words). Guest lines share one.
         self._heard: dict[str, deque[tuple[float, str]]] = {}
+        #: What each voice's window has already produced, as (ts, key), so a
+        #: plan or fact re-read from an earlier line is not proposed twice.
+        #: Live, the model re-reported the earlier lines it was given as context.
+        self._noted: dict[str, deque[tuple[float, str]]] = {}
         self._calls: deque[float] = deque()
         self._invocations = 0
 
@@ -173,16 +196,19 @@ class AmbientMiner:
         proposed: list[ToolInvocation] = []
         if findings is not None:
             said = " ".join([*earlier, heard.transcript])
-            proposed += self._pencil(findings.plans, heard.transcript, said, now)
-            proposed += self._suggest(findings.facts, heard.transcript, heard.profile_id)
+            proposed += self._pencil(findings.plans, heard.transcript, said, now, voice)
+            proposed += self._suggest(findings.facts, heard.transcript, heard.profile_id, said)
             verdict = _summary(findings, proposed, heard.profile_id)
         self._record(inputs, raw, verdict, proposed, latency_s, tokens)
         return proposed
 
-    def _pencil(self, plans: list[_Plan], line: str, said: str, now: datetime) -> list[ToolInvocation]:
+    def _pencil(self, plans: list[_Plan], line: str, said: str, now: datetime, voice: str) -> list[ToolInvocation]:
         """Each plan on the day the words name, and only if still ahead."""
-        named = the_one_day(said, now.date())
+        # The day the words name corrects a single plan; with several, which
+        # one it belongs to is not knowable from the words alone.
+        named = the_one_day(said, now.date()) if len(plans) == 1 else None
         proposed = []
+        days: set = set()
         for plan in plans:
             starts = plan.starts_at.replace(tzinfo=None)
             if named is not None:
@@ -191,6 +217,20 @@ class AmbientMiner:
             if starts < now:
                 LOGGER.info("not pencilling %r: %s is already past", plan.subject, starts)
                 continue
+            if starts.date() in days:
+                # One overheard line almost never holds two plans on one day;
+                # live, the second was the first echoed under another name.
+                LOGGER.info("not pencilling %r: this answer already has a plan that day", plan.subject)
+                continue
+            if not grounded(plan.subject, said):
+                # Live, "what a long day" came back as the prompt's own
+                # example dentist: a plan must be about words actually said.
+                LOGGER.info("not pencilling %r: nothing said names it", plan.subject)
+                continue
+            if self._already_noted(voice, _plan_key(plan.subject)):
+                LOGGER.info("not pencilling %r: an earlier line already gave it", plan.subject)
+                continue
+            days.add(starts.date())
             arguments = {
                 "subject": plan.subject.strip(),
                 "starts_at": starts.isoformat(timespec="seconds"),
@@ -201,14 +241,16 @@ class AmbientMiner:
             proposed.append(self._propose(PENCIL_EVENT.name, arguments, line))
         return proposed
 
-    def _suggest(self, facts: list[str], line: str, profile_id: str) -> list[ToolInvocation]:
+    def _suggest(self, facts: list[str], line: str, profile_id: str, said: str) -> list[ToolInvocation]:
         """Offer each fact to a recognised voice; a guest has nowhere to keep one (FR-78)."""
         if not profile_id or profile_id == GUEST_PROFILE_ID:
             return []
         proposed = []
         for fact in facts:
             text = " ".join(str(fact).split())
-            if not text or len(text) > self._max_fact_chars:
+            if not text or len(text) > self._max_fact_chars or not grounded(text, said):
+                continue
+            if self._already_noted(profile_id, f"fact:{text.casefold().rstrip('.')}"):
                 continue
             arguments = {"profile_id": profile_id, "fact": text, "heard": line}
             proposed.append(self._propose(SUGGEST_FACT.name, arguments, line))
@@ -242,11 +284,30 @@ class AmbientMiner:
             lines.popleft()
         return [words for _, words in lines]
 
+    def _already_noted(self, voice: str, key: str) -> bool:
+        """Whether this voice's window already produced it; notes it if not.
+
+        Plans match on their telling words either way round, so "dentist"
+        and "dentist appointment" are one plan.
+        """
+        if not key:
+            return False
+        noted = self._noted.setdefault(voice, deque(maxlen=self._config.max_lines * (_MAX_PLANS + _MAX_FACTS)))
+        horizon = self._clock.now() - self._config.context_s
+        while noted and noted[0][0] < horizon:
+            noted.popleft()
+        for _, seen in noted:
+            if seen == key or (key.startswith("plan:") and seen.startswith("plan:") and _same_words(seen, key)):
+                return True
+        noted.append((self._clock.now(), key))
+        return False
+
     def _remember_line(self, voice: str, heard: AmbientUtterance) -> None:
         if voice not in self._heard and len(self._heard) >= _VOICES_KEPT:
             # The voice heard from longest ago makes room.
             oldest = min(self._heard, key=lambda v: self._heard[v][-1][0] if self._heard[v] else 0.0)
             del self._heard[oldest]
+            self._noted.pop(oldest, None)
         lines = self._heard.setdefault(voice, deque(maxlen=self._config.max_lines))
         lines.append((self._clock.now(), heard.transcript))
 
@@ -290,16 +351,69 @@ class AmbientMiner:
         )
 
 
+#: Letters two words must share at the start to count as the same word, so
+#: "flying" grounds "flight"'s plan through "goa", and "allergic" matches
+#: "allergy". Short enough for inflection, long enough not to match by chance.
+_STEM = 4
+
+
+def _telling_words(text: str) -> set[str]:
+    words = "".join(c if c.isalnum() else " " for c in text.lower()).split()
+    return {word for word in words if word not in _FILLER and len(word) > 2}
+
+
+def grounded(claim: str, said: str) -> bool:
+    """Whether a plan or fact is about something actually said (FR-44).
+
+    At least one of its telling words must share its first letters with a
+    word heard. It cannot prove the model right; it does stop a model
+    reporting what nobody said at all.
+    """
+    heard = {word[:_STEM] for word in _telling_words(said)}
+    return any(word[:_STEM] in heard for word in _telling_words(claim))
+
+
+def _plan_key(subject: str) -> str:
+    """A plan's telling words, as a key: lower case, filler dropped, sorted."""
+    words = "".join(c if c.isalnum() else " " for c in subject.lower()).split()
+    telling = sorted({word for word in words if word not in _FILLER and len(word) > 2})
+    return "plan:" + " ".join(telling) if telling else ""
+
+
+def _same_words(one: str, other: str) -> bool:
+    mine, theirs = set(one[5:].split()), set(other[5:].split())
+    return bool(mine and theirs) and (mine <= theirs or theirs <= mine)
+
+
 def _validated(raw: str) -> _Findings | None:
-    """Post-decode validation (FR-44): anything malformed is nothing."""
+    """Post-decode validation (FR-44), item by item.
+
+    A plan that does not validate is dropped and the rest kept: live, the
+    model answered one real plan and an empty ``{}`` beside it, and losing
+    the dentist over the stray object helped nobody. An answer that is not
+    the shape asked for at all, or holds more than one line could, is
+    nothing.
+    """
     try:
         decoded = json.loads(raw)
-        if not isinstance(decoded, dict):
-            return None
-        return _Findings.model_validate(decoded)
-    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+    except json.JSONDecodeError as exc:
         LOGGER.warning("discarding what was made of overheard speech: %s", exc)
         return None
+    if not isinstance(decoded, dict):
+        return None
+    plans, facts = decoded.get("plans") or [], decoded.get("facts") or []
+    if not isinstance(plans, list) or not isinstance(facts, list):
+        return None
+    if len(plans) > _MAX_PLANS or len(facts) > _MAX_FACTS:
+        LOGGER.warning("discarding what was made of overheard speech: more than one line holds")
+        return None
+    kept: list[_Plan] = []
+    for item in plans:
+        try:
+            kept.append(_Plan.model_validate(item))
+        except (ValidationError, ValueError, TypeError) as exc:
+            LOGGER.info("dropping one plan made of overheard speech: %s", str(exc).splitlines()[0])
+    return _Findings(plans=kept, facts=[fact for fact in facts if isinstance(fact, str) and fact.strip()])
 
 
 def _summary(findings: _Findings, proposed: list[ToolInvocation], profile_id: str) -> str:
