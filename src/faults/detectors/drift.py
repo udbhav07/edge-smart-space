@@ -86,6 +86,10 @@ class DriftDetector:
         self._samples = 0
         self._normalised = 0.0
         self._sigma_c = 0.0
+        #: D5's finding that the room warmed while the unit demonstrably ran
+        #: (S-02): evidence against this reading the residual cannot give
+        #: once the estimator has absorbed the drift.
+        self._contradiction: dict[str, float] | None = None
 
     @property
     def subject(self) -> str:
@@ -139,6 +143,16 @@ class DriftDetector:
         if self._low == _SUM_FLOOR:
             self._low_since_ts = estimate.ts
 
+    def observe_contradiction(self, evidence: dict[str, float]) -> None:
+        """The room warmed while the unit was demonstrably cooling it.
+
+        A second route to the same verdict, for the case the CUSUM is blind
+        to: an estimator that adapted to the drift leaves no residual, but a
+        working compressor beside a rising reading is a contradiction no
+        adaptation explains. Held until the detector is reset.
+        """
+        self._contradiction = dict(evidence)
+
     @staticmethod
     def _residual(estimate: ThermalEstimate) -> tuple[float, float]:
         """The horizon residual once the estimator has measured one (FR-23).
@@ -180,6 +194,7 @@ class DriftDetector:
         self._low = _SUM_FLOOR
         self._high_since_ts = None
         self._low_since_ts = None
+        self._contradiction = None
 
     def _onset_ts(self) -> float | None:
         """When the side that tripped last stood at zero, or None if unknown."""
@@ -194,6 +209,8 @@ class DriftDetector:
         the sums are zero because nothing was measured, which must not be
         reported as a sensor observed to be drift-free.
         """
+        if self._contradiction is not None:
+            return self._finding(Judgment.FAULTED)
         if self._samples <= self._config.warmup_samples:
             return self._finding(Judgment.UNKNOWN)
 
@@ -208,6 +225,8 @@ class DriftDetector:
         (FR-26). On a clear finding it reads as progress towards detection,
         which is the number worth watching during a demonstration.
         """
+        if self._contradiction is not None:
+            return 1.0
         worst = max(self._high, self._low)
         return min(1.0, worst / self._config.threshold_sigma)
 
@@ -230,6 +249,11 @@ class DriftDetector:
                 **(
                     {ONSET_KEY: self._onset_ts()}
                     if judgment is Judgment.FAULTED and self._onset_ts() is not None
+                    else {}
+                ),
+                **(
+                    {f"plant_{key}": value for key, value in self._contradiction.items()}
+                    if self._contradiction is not None
                     else {}
                 ),
             },

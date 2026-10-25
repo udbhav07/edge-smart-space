@@ -398,6 +398,24 @@ class ActuatorDetectorConfig(_Section):
     passive_warming_slack_c: float = Field(
         ge=0.0, description="Added to that bound, for noise and unmodelled gains, in C"
     )
+    humidity_sensor_id: str = Field(
+        default="hum_01",
+        description="The indoor humidity sensor: the second witness to whether the "
+        "room really warmed (S-02); empty for none",
+    )
+    humidity_per_degree_pct: float = Field(
+        default=3.0,
+        gt=0.0,
+        description="How far relative humidity falls per degree a room truly warms, "
+        "at constant vapour, in %RH/C; R-04 re-measures it on hardware",
+    )
+    humidity_agreement: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        description="Share of that fall that must be seen for the warming to count "
+        "as real, and the unit to be blamed",
+    )
 
 
 class DetectorsConfig(_Section):

@@ -364,3 +364,28 @@ class TestOnset:
         self._drift_from(detector, quiet=10, drifting=10)
         detector.reset()
         assert ONSET_KEY not in detector.evaluate().evidence
+
+
+class TestThePlantContradicts:
+    """S-02: a working unit beside a rising reading convicts the reading."""
+
+    EVIDENCE = {"warmed_c": 4.0, "unit_running_w": 1200.0, "elapsed_s": 600.0}
+
+    def test_it_faults_the_sensor_even_before_warm_up(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        finding = detector.evaluate()
+        assert finding.judgment is Judgment.FAULTED and finding.detector is DetectorId.D4_DRIFT
+
+    def test_the_evidence_says_why(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        evidence = detector.evaluate().evidence
+        assert evidence["plant_warmed_c"] == 4.0 and evidence["plant_unit_running_w"] == 1200.0
+
+    def test_it_is_certain(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        assert detector.evaluate().confidence == 1.0
+
+    def test_a_reset_forgets_it(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        detector.reset()
+        assert detector.evaluate().judgment is not Judgment.FAULTED

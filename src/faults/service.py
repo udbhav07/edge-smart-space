@@ -106,6 +106,11 @@ class SubjectDetectors:
         if self._drift is not None:
             self._drift.observe(estimate)
 
+    def observe_contradiction(self, evidence: dict[str, float]) -> None:
+        """Hand D4 the plant's evidence against this reading (S-02)."""
+        if self._drift is not None:
+            self._drift.observe_contradiction(evidence)
+
     def evaluate(self) -> tuple[Finding, ...]:
         findings = [self._dropout.evaluate()]
         if self._stuck_at is not None:
@@ -208,6 +213,19 @@ class DetectorBankService:
         configuration gap, and taking the service down over it would lose
         detection on every sensor that *is* configured.
         """
+        if (
+            reading.sensor_id == self._config.devices.ac_power_sensor_id
+            and reading.quality is Quality.OK
+        ):
+            # The unit's draw is D5's witness to whether it ran (S-02).
+            self._actuator.observe_power(reading.value)
+        if (
+            reading.sensor_id == self._config.detectors.actuator.humidity_sensor_id
+            and reading.quality is Quality.OK
+            and self._subject_is_trusted(reading.sensor_id)
+        ):
+            # And humidity to whether the room really warmed.
+            self._actuator.observe_humidity(reading.value)
         subject = self._detectors.get(reading.sensor_id)
         if subject is None:
             LOGGER.debug("no detectors configured for %s", reading.sensor_id)
@@ -354,14 +372,20 @@ class DetectorBankService:
             re-subscribing to the topics they were published on.
         """
         findings: list[Finding] = []
-        for subject in self._detectors.values():
-            findings.extend(subject.evaluate())
         if not self._indoor_is_trusted():
             # Suspended on every tick, not only when a reading arrives: a
             # dropped sensor delivers none, and D5 would otherwise judge its
             # window on the last value heard before the silence.
             self._actuator.reset()
         findings.append(self._actuator.evaluate())
+        contradiction = self._actuator.plant_contradiction
+        indoor = self._detectors.get(self._config.estimator.indoor_sensor_id)
+        if contradiction is not None and indoor is not None:
+            # The room warmed while the unit demonstrably ran: the reading is
+            # the suspect, and D4 on the indoor sensor raises it (S-02).
+            indoor.observe_contradiction(contradiction)
+        for subject in self._detectors.values():
+            findings.extend(subject.evaluate())
 
         outcome = self._aggregator.ingest(findings)
         for event in outcome.raised:
@@ -643,6 +667,7 @@ def build_service(
             config=config.detectors.actuator,
             clock=clock,
             sample_period_s=config.loop.sensor_period_s,
+            running_power_w=config.devices.ac_running_power_w if config.devices.ac_power_sensor_id else None,
         ),
         mode_manager=ModeManager(config=config.mode, clock=clock),
     )

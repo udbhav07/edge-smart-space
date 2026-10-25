@@ -172,6 +172,13 @@ detectors:
     # not the unit's doing, and D5 leaves it to D4 (FR-23, FR-24).
     passive_warming_factor: 1.5
     passive_warming_slack_c: 0.5
+    # S-02. When the meter shows the unit running and the reading still rose,
+    # humidity says whether the room really warmed: at constant vapour a room
+    # warming 1 C loses about 3 %RH. Fell with it: the unit runs but does not
+    # cool (lost refrigerant), D5's fault. Did not: the reading drifted, D4's.
+    humidity_sensor_id: hum_01
+    humidity_per_degree_pct: 3.0
+    humidity_agreement: 0.5     # share of the expected fall that must be seen
 
 mode:
   degraded_sensor_budget_s: 1800.0   # Section 7.2; E4 tests whether this is right
