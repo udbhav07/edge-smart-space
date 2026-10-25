@@ -444,5 +444,5 @@ console:
   conversation_kept: 80
   activity_kept: 120
   calendar_days: 7
-  history_kept: 240             # estimates for the room chart: 20 min at 5 s
+  history_kept: 360             # points per charted series: 30 min at 5 s
   operator_controls: true       # fault injection and reset, for demonstration

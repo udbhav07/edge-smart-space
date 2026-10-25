@@ -126,6 +126,41 @@ class ConsoleActions:
         self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
         return invocation.invocation_id
 
+    def add_entry(self, subject: str, starts_at: str, duration_min: int | None = None) -> str:
+        """Put an entry in the occupant's own calendar: a write, so no confirmation (FR-58)."""
+        if not subject.strip() or not starts_at.strip():
+            raise ActionRefused("an entry needs a title and a start time")
+        arguments: dict = {"subject": subject.strip(), "starts_at": starts_at.strip()}
+        if duration_min:
+            arguments["duration_min"] = int(duration_min)
+        return self._send("schedule_event", arguments)
+
+    def book(self, kind: str, destination: str, depart_on: str, origin: str = "", nights: int | None = None) -> str:
+        """Ask for a booking. It is a commit: the executor holds it for a yes (FR-54)."""
+        if kind not in ("flight", "hotel"):
+            raise ActionRefused("a booking is a flight or a hotel")
+        if not destination.strip() or not depart_on.strip():
+            raise ActionRefused("a booking needs a destination and a date")
+        arguments: dict = {"kind": kind, "destination": destination.strip(), "depart_on": depart_on.strip()}
+        if kind == "flight" and origin.strip():
+            arguments["origin"] = origin.strip()
+        if kind == "hotel" and nights:
+            arguments["nights"] = int(nights)
+        return self._send("book_travel", arguments)
+
+    def send_mail(self, to: str, subject: str, body: str) -> str:
+        """Write a mail. A commit like a booking: held for a yes, and only ever a mock."""
+        if not to.strip():
+            raise ActionRefused("say who the mail is for")
+        if not body.strip() and not subject.strip():
+            raise ActionRefused("the mail is empty")
+        return self._send("send_mail", {"to": to.strip(), "subject": subject.strip(), "body": body.strip()})
+
+    def _send(self, tool: str, arguments: dict) -> str:
+        invocation = self._invoke(tool, arguments)
+        self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
+        return invocation.invocation_id
+
     def remove_entry(self, subject: str, starts_at: str) -> str:
         """Delete one entry: the occupant's own calendar, so no confirmation."""
         if not subject.strip():

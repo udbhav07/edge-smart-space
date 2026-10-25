@@ -26,8 +26,10 @@ from src.common.schemas import (
     Mode,
     ModeState,
     PreferenceHint,
+    SensorReading,
     SpeechActivity,
     SpeechStatus,
+    Unit,
     ValidationVerdict,
     Verdict,
     ReasonCode,
@@ -91,7 +93,7 @@ class TestWhatItShows:
         """A MAINTAIN accepted every 5 s is not something a person needs to see."""
         state, _, _, clock = console
         verdict = ValidationVerdict(ts=clock.now(), proposed={"kind": "MAINTAIN"}, verdict=Verdict.ACCEPTED, reason=ReasonCode.NONE, applied={"kind": "MAINTAIN"})
-        assert _feed(state, topics.AUDIT_VALIDATION, verdict) == []
+        assert [event["type"] for event in _feed(state, topics.AUDIT_VALIDATION, verdict)] == ["mqtt"]
 
     def test_a_mode_change_is_announced(self, console):
         state, _, _, clock = console
@@ -112,7 +114,7 @@ class TestWhatItShows:
         state, _, _, clock = console
         for value in (24.0, 24.2):
             _feed(state, topics.ESTIMATE_THERMAL, ThermalEstimate(ts=clock.now(), t_in=value, t_pred=value, residual=0.0, residual_sigma=0.1, model_confidence=0.9, adaptation=AdaptationState.ACTIVE))
-        assert [point["t_in"] for point in state.snapshot()["history"]] == [24.0, 24.2]
+        assert [value for _, value in state.snapshot()["series"]["t_in"]] == [24.0, 24.2]
 
     def test_speech_status_is_kept(self, console):
         state, _, _, clock = console
@@ -152,7 +154,8 @@ class TestWhatItShows:
 
     def test_a_malformed_message_is_ignored(self, console):
         state, _, _, _ = console
-        assert state.accept(topics.SYSTEM_MODE.pattern, b"{not json") == []
+        assert [event["type"] for event in state.accept(topics.SYSTEM_MODE.pattern, b"{not json")] == ["mqtt"]
+        assert state.snapshot()["room"]["mode"] is None
 
 
 class TestWhatItCanDo:
@@ -262,3 +265,94 @@ def test_the_console_imports_only_the_common_contracts():
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("src."):
                 assert node.module.startswith(("src.common", "src.console")), f"{path.name} imports {node.module}"
+
+
+class TestTheDashboard:
+    """The pages beyond the conversation: board, series, bookings, mail."""
+
+    def test_every_message_reaches_the_board(self, console):
+        state, _, _, clock = console
+        state.accept("space/sensor/temp_01/state", b'{"anything": 1}')
+        state.accept("space/sensor/temp_01/state", b'{"anything": 2}')
+        row = next(row for row in state.snapshot()["topics"] if row["topic"] == "space/sensor/temp_01/state")
+        assert row["count"] == 2 and row["payload"] == {"anything": 2}
+
+    def test_the_board_knows_what_is_retained(self, console):
+        state, _, _, _ = console
+        state.accept(topics.SYSTEM_MODE.pattern, b"{}")
+        state.accept(topics.AUDIT_VALIDATION.pattern, b"{}")
+        retained = {row["topic"]: row["retained"] for row in state.snapshot()["topics"]}
+        assert retained == {topics.SYSTEM_MODE.pattern: True, topics.AUDIT_VALIDATION.pattern: False}
+
+    def test_the_board_measures_a_rate(self, console):
+        state, _, _, clock = console
+        for _ in range(7):
+            state.accept("space/estimate/thermal", b"{}")
+            clock.advance(5.0)
+        row = state.snapshot()["topics"][0]
+        assert 11.0 < row["per_minute"] < 13.0
+
+    def test_a_withdrawn_topic_leaves_the_board(self, console):
+        state, _, _, _ = console
+        state.accept("space/fault/f1", b"{}")
+        state.accept("space/fault/f1", b"")
+        assert state.snapshot()["topics"] == []
+
+    def test_readings_become_a_series(self, console):
+        state, _, _, clock = console
+        reading = SensorReading(ts=clock.now(), sensor_id="hum_01", value=48.0, unit=Unit.PERCENT_RH)
+        _feed(state, topics.SENSOR_STATE, reading, sensor_id="hum_01")
+        assert state.snapshot()["series"]["hum_01"][-1][1] == 48.0
+
+    def test_a_series_is_bounded(self, console):
+        state, _, _, clock = console
+        for value in range(CONFIG.console.history_kept + 10):
+            _feed(state, topics.SENSOR_STATE, SensorReading(ts=clock.now() + value, sensor_id="hum_01", value=float(value % 90), unit=Unit.PERCENT_RH), sensor_id="hum_01")
+        assert len(state.snapshot()["series"]["hum_01"]) == CONFIG.console.history_kept
+
+    def test_a_confirmed_booking_is_kept(self, console):
+        state, _, _, clock = console
+        invocation = ToolInvocation(ts=clock.now(), invocation_id="b9", tool="book_travel", arguments={"kind": "flight", "destination": "Goa", "depart_on": "2026-10-31", "origin": "Hyderabad"}, requester=ToolRequester.CONSOLE, expires_ts=clock.now() + 60)
+        _feed(state, topics.ASSIST_PROPOSED, invocation)
+        _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id="b9", tool="book_travel", status=ToolStatus.OK, provider="mock_travel", simulated=True, message="Mock booking MOCK-0007 recorded.", detail={"reference": "MOCK-0007", "kind": "flight", "destination": "Goa"}))
+        booking = state.snapshot()["bookings"][-1]
+        assert booking["reference"] == "MOCK-0007" and booking["origin"] == "Hyderabad"
+        assert state.snapshot()["inbox"][-1]["sender"] == "Bookings"
+
+    def test_a_sent_mail_is_kept(self, console):
+        state, _, _, clock = console
+        _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id="m1", tool="send_mail", status=ToolStatus.OK, provider="mock_mail", simulated=True, message="Mock email MAIL-0001", detail={"reference": "MAIL-0001", "to": "Anu", "subject": "Late", "body": "Ten minutes."}))
+        assert state.snapshot()["sent"][-1]["to"] == "Anu"
+
+    def test_a_diagnosis_lands_in_the_inbox(self, console):
+        from src.common.schemas import DiagnosisConfidence, FaultDiagnosis, Hypothesis
+        state, _, _, clock = console
+        diagnosis = FaultDiagnosis(ts=clock.now(), fault_id="f1", primary_hypothesis=Hypothesis.SENSOR_DROPOUT, confidence=DiagnosisConfidence.HIGH, recommended_mode=Mode.DEGRADED_SENSOR, user_message="The thermometer went quiet.")
+        _feed(state, topics.DIAGNOSIS, diagnosis, fault_id="f1")
+        assert state.snapshot()["inbox"][-1]["body"] == "The thermometer went quiet."
+
+    def test_an_entry_is_a_write_from_the_console(self, console):
+        _, actions, transport, _ = console
+        actions.add_entry("Dentist", "2026-10-28T17:00:00", 30)
+        sent = ToolInvocation.model_validate_json(transport.published[-1][1])
+        assert sent.tool == "schedule_event" and sent.requester is ToolRequester.CONSOLE and sent.arguments["duration_min"] == 30
+
+    def test_a_booking_request_goes_to_the_executor_not_a_provider(self, console):
+        _, actions, transport, _ = console
+        actions.book("hotel", "Pune", "2026-10-31", nights=2)
+        assert transport.published[-1][0] == topics.ASSIST_PROPOSED.pattern
+
+    def test_an_unknown_booking_kind_is_refused(self, console):
+        _, actions, _, _ = console
+        with pytest.raises(ActionRefused):
+            actions.book("train", "Pune", "2026-10-31")
+
+    def test_mail_needs_a_recipient(self, console):
+        _, actions, _, _ = console
+        with pytest.raises(ActionRefused):
+            actions.send_mail("  ", "hi", "body")
+
+    def test_mail_goes_to_the_executor_as_a_commit(self, console):
+        _, actions, transport, _ = console
+        actions.send_mail("Anu", "Late", "Ten minutes late.")
+        assert ToolInvocation.model_validate_json(transport.published[-1][1]).tool == "send_mail"

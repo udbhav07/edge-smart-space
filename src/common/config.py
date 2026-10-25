@@ -966,7 +966,7 @@ class ConsoleConfig(_Section):
     activity_kept: int = Field(default=120, gt=0, description="Agent steps the console keeps")
     calendar_days: int = Field(default=7, gt=0, description="How far ahead the calendar view looks")
     history_kept: int = Field(
-        default=240, gt=0, description="Temperature estimates kept for the chart; 240 is 20 min at 5 s"
+        default=360, gt=0, description="Points kept per charted series; 360 is 30 min at 5 s"
     )
     operator_controls: bool = Field(
         default=True,

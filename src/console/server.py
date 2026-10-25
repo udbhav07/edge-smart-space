@@ -145,6 +145,26 @@ class RemoveRequest(BaseModel):
     starts_at: str = ""
 
 
+class EntryRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    starts_at: str = Field(min_length=1, max_length=40)
+    duration_min: int | None = Field(default=None, gt=0, le=1440)
+
+
+class BookingRequest(BaseModel):
+    kind: str
+    destination: str = Field(min_length=1, max_length=120)
+    depart_on: str = Field(min_length=1, max_length=40)
+    origin: str = ""
+    nights: int | None = Field(default=None, gt=0, le=60)
+
+
+class MailRequest(BaseModel):
+    to: str = Field(min_length=1, max_length=200)
+    subject: str = Field(default="", max_length=200)
+    body: str = Field(default="", max_length=4000)
+
+
 class ResetRequest(BaseModel):
     reason: str = ""
 
@@ -210,6 +230,18 @@ def create_app(state: ConsoleState, actions: ConsoleActions, hub: Hub, link: Lin
     @app.post("/api/calendar/remove")
     async def post_calendar_remove(request: RemoveRequest) -> JSONResponse:
         return act(actions.remove_entry, request.subject, request.starts_at)
+
+    @app.post("/api/calendar/add")
+    async def post_calendar_add(request: EntryRequest) -> JSONResponse:
+        return act(actions.add_entry, request.subject, request.starts_at, request.duration_min)
+
+    @app.post("/api/bookings")
+    async def post_booking(request: BookingRequest) -> JSONResponse:
+        return act(actions.book, request.kind, request.destination, request.depart_on, request.origin, request.nights)
+
+    @app.post("/api/mail")
+    async def post_mail(request: MailRequest) -> JSONResponse:
+        return act(actions.send_mail, request.to, request.subject, request.body)
 
     @app.post("/api/operator/reset")
     async def post_reset(request: ResetRequest) -> JSONResponse:

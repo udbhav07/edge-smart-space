@@ -61,6 +61,23 @@ _TYPED_KEPT = 32
 
 Event = dict[str, Any]
 
+#: Topics the board remembers. Fault ids are unique per occurrence, so the
+#: table would otherwise grow by one entry for every fault ever raised.
+_TOPICS_KEPT = 400
+#: Arrivals kept per topic to measure its rate.
+_ARRIVALS_KEPT = 60
+#: Longest payload text kept per topic; a board shows it, it does not archive it.
+_PAYLOAD_KEPT = 4000
+#: Bookings, mails and inbox messages kept.
+_RECORDS_KEPT = 100
+
+#: Every declared topic, so the board can say whether one is retained.
+_SPECS = tuple(value for value in vars(topics).values() if isinstance(value, topics.TopicSpec))
+
+#: Series charted from the estimate and the coefficients (section 5.2).
+_THERMAL_SERIES = ("t_in", "t_pred", "residual", "residual_sigma", "model_confidence")
+_COEFFICIENT_SERIES = ("a1", "a2", "a3", "a4", "trace_p")
+
 
 def _dump(message) -> dict[str, Any]:
     return message.model_dump(mode="json", by_alias=True)
@@ -93,7 +110,13 @@ class ConsoleState:
         self._injections: dict[str, dict] = {}
         self._conversation: deque[dict] = deque(maxlen=config.conversation_kept)
         self._activity: deque[dict] = deque(maxlen=config.activity_kept)
-        self._history: deque[dict] = deque(maxlen=config.history_kept)
+        #: Named series for the charts: one per sensor, the estimate and
+        #: the coefficients, each a bounded run of [ts, value] pairs.
+        self._series: dict[str, deque] = {}
+        self._topics: OrderedDict[str, dict] = OrderedDict()
+        self._bookings: deque[dict] = deque(maxlen=_RECORDS_KEPT)
+        self._sent: deque[dict] = deque(maxlen=_RECORDS_KEPT)
+        self._inbox: deque[dict] = deque(maxlen=_RECORDS_KEPT)
         self._waiting: OrderedDict[str, dict] = OrderedDict()
         self._invocations: OrderedDict[str, ToolInvocation] = OrderedDict()
         self._calendar: dict = {"entries": [], "as_of": None, "note": ""}
@@ -150,7 +173,11 @@ class ConsoleState:
                 "tariff": room.tariff,
             },
             "speech": room.speech,
-            "history": list(self._history),
+            "series": {key: list(points) for key, points in self._series.items()},
+            "topics": [_board_row(entry) for entry in self._topics.values()],
+            "bookings": list(self._bookings),
+            "sent": list(self._sent),
+            "inbox": list(self._inbox),
             "faults": list(self._faults.values()),
             "diagnoses": self._diagnoses,
             "profiles": list(self._profiles.values()),
@@ -165,6 +192,10 @@ class ConsoleState:
 
     def accept(self, topic: str, payload: bytes) -> list[Event]:
         """Fold one message in; returns the events to push."""
+        board = self._on_board(topic, payload)
+        return board + self._handle(topic, payload)
+
+    def _handle(self, topic: str, payload: bytes) -> list[Event]:
         for pattern, schema, handler in self._handlers:
             if not topic_matches(pattern, topic):
                 continue
@@ -204,7 +235,7 @@ class ConsoleState:
 
     def _on_reading(self, _topic, reading: SensorReading):
         self._room.sensors[reading.sensor_id] = _dump(reading)
-        return [self._event("sensor", _dump(reading))]
+        return [self._event("sensor", _dump(reading)), self._point(reading.sensor_id, reading.ts, reading.value)]
 
     def _on_health(self, _topic, health: SensorHealth):
         self._room.health[health.sensor_id] = _dump(health)
@@ -212,13 +243,15 @@ class ConsoleState:
 
     def _on_thermal(self, _topic, estimate: ThermalEstimate):
         self._room.thermal = _dump(estimate)
-        point = {"ts": estimate.ts, "t_in": estimate.t_in, "t_pred": estimate.t_pred}
-        self._history.append(point)
-        return [self._event("thermal", self._room.thermal), self._event("point", point)]
+        return [self._event("thermal", self._room.thermal)] + [
+            self._point(name, estimate.ts, getattr(estimate, name)) for name in _THERMAL_SERIES
+        ]
 
     def _on_coefficients(self, _topic, coefficients: Coefficients):
         self._room.coefficients = _dump(coefficients)
-        return [self._event("coefficients", self._room.coefficients)]
+        return [self._event("coefficients", self._room.coefficients)] + [
+            self._point(name, coefficients.ts, getattr(coefficients, name)) for name in _COEFFICIENT_SERIES
+        ]
 
     def _on_actuator(self, _topic, state: ActuatorState):
         self._room.actuator = _dump(state)
@@ -232,6 +265,7 @@ class ConsoleState:
             tone = "good" if state.mode.value == "NORMAL" else "alert"
             events.append(self._step("mode", f"Mode {before} → {state.mode.value}: {state.reason}", tone=tone))
             events.append(self._say("system", f"The room is now in {state.mode.value.replace('_', ' ').lower()} mode: {state.reason}.", tone=tone))
+            events.append(self._mail_in("Room", f"Now {state.mode.value.replace('_', ' ').lower()}", state.reason or "No reason given.", "mode", tone))
         return events
 
     def _on_goal(self, _topic, goal: Goal):
@@ -244,7 +278,11 @@ class ConsoleState:
 
     def _on_tracking(self, _topic, tracking: TrackingState):
         self._room.tracking = _dump(tracking)
-        return [self._event("tracking", self._room.tracking)]
+        return [
+            self._event("tracking", self._room.tracking),
+            self._point("held_c", tracking.ts, tracking.tracked_c),
+            self._point("asked_c", tracking.ts, tracking.setpoint_c),
+        ]
 
     def _on_tariff(self, _topic, tariff: TariffState):
         self._room.tariff = _dump(tariff)
@@ -270,6 +308,7 @@ class ConsoleState:
         events = [self._event("diagnoses", self._diagnoses)]
         if new:
             events.append(self._say("system", diagnosis.user_message, tone="alert", fault_id=diagnosis.fault_id))
+            events.append(self._mail_in("Fault diagnosis", diagnosis.primary_hypothesis.value.replace("_", " ").capitalize(), diagnosis.user_message, "fault", "alert"))
         return events
 
     def _withdrawn(self, topic: str) -> list[Event]:
@@ -364,6 +403,11 @@ class ConsoleState:
         events.append(self._step("result", f"{result.tool}: {result.status.value.replace('_', ' ').lower()}", detail=result.message, tone=tone, ref=result.invocation_id))
         if result.tool in ("schedule_event", "cancel_event", "move_event") and result.status is ToolStatus.OK:
             events.append(self._event("calendar_stale", True))
+            events.append(self._mail_in("Calendar", result.tool.replace("_", " ").capitalize(), result.message, "calendar", "good"))
+        if result.status is ToolStatus.OK and result.tool == "book_travel":
+            events.extend(self._booked(result))
+        if result.status is ToolStatus.OK and result.tool == "send_mail":
+            events.extend(self._mailed(result))
         return events
 
     def _on_catalogue(self, _topic, catalogue: ToolCatalogue):
@@ -389,6 +433,77 @@ class ConsoleState:
     def _on_reasoning(self, _topic, record: ReasoningRecord):
         calls = f", tools: {', '.join(record.tool_calls)}" if record.tool_calls else ""
         return [self._step("model", f"{record.caller.value.capitalize()} thought for {record.latency_s:.1f} s", detail=f"{record.trigger}; {record.prompt_tokens + record.completion_tokens} tokens{calls}; {record.verdict}")]
+
+    # --- bookings and mail ----------------------------------------------------
+
+    def _booked(self, result: ToolResult) -> list[Event]:
+        invocation = self._invocations.get(result.invocation_id)
+        arguments = dict(invocation.arguments) if invocation is not None else {}
+        record = {
+            "reference": str(result.detail.get("reference", "")),
+            "kind": str(result.detail.get("kind", arguments.get("kind", ""))),
+            "destination": str(result.detail.get("destination", arguments.get("destination", ""))),
+            "origin": str(arguments.get("origin") or ""),
+            "depart_on": str(arguments.get("depart_on", "")),
+            "nights": arguments.get("nights"),
+            "ts": result.ts,
+            "message": result.message,
+        }
+        self._bookings.append(record)
+        return [
+            self._event("bookings", list(self._bookings)),
+            self._mail_in("Bookings", f"{record['reference']} confirmed", result.message, "booking", "good"),
+        ]
+
+    def _mailed(self, result: ToolResult) -> list[Event]:
+        record = {
+            "reference": str(result.detail.get("reference", "")),
+            "to": str(result.detail.get("to", "")),
+            "subject": str(result.detail.get("subject", "")),
+            "body": str(result.detail.get("body", "")),
+            "ts": result.ts,
+        }
+        self._sent.append(record)
+        return [self._event("sent", list(self._sent))]
+
+    def _mail_in(self, sender: str, subject: str, body: str, kind: str, tone: str = "neutral") -> Event:
+        item = {"id": self._next_id(), "ts": self._clock.now(), "sender": sender, "subject": subject, "body": body, "kind": kind, "tone": tone}
+        self._inbox.append(item)
+        return {"type": "inbox", "data": item}
+
+    # --- the MQTT board --------------------------------------------------------
+
+    def _on_board(self, topic: str, payload: bytes) -> list[Event]:
+        now = self._clock.now()
+        if not payload:
+            self._topics.pop(topic, None)
+            return [{"type": "mqtt", "data": {"topic": topic, "ts": now, "withdrawn": True}}]
+        text = payload.decode(PAYLOAD_ENCODING, errors="replace")[:_PAYLOAD_KEPT]
+        try:
+            body: Any = json.loads(text)
+        except ValueError:
+            body = text
+        entry = self._topics.pop(topic, None) or {
+            "topic": topic,
+            "count": 0,
+            "first_ts": now,
+            "retained": _retained(topic),
+            "arrivals": deque(maxlen=_ARRIVALS_KEPT),
+        }
+        entry["count"] += 1
+        entry["last_ts"] = now
+        entry["payload"] = body
+        entry["arrivals"].append(now)
+        self._topics[topic] = entry
+        while len(self._topics) > _TOPICS_KEPT:
+            self._topics.popitem(last=False)
+        return [{"type": "mqtt", "data": {"topic": topic, "ts": now, "payload": body, "count": entry["count"], "retained": entry["retained"]}}]
+
+    def _point(self, key: str, ts: float, value: float) -> Event:
+        series = self._series.setdefault(key, deque(maxlen=self._config.history_kept))
+        point = [round(ts, 3), value]
+        series.append(point)
+        return {"type": "series", "data": {"key": key, "point": point}}
 
     # --- event helpers -----------------------------------------------------
 
@@ -439,5 +554,26 @@ def _calendar_from(result: ToolResult, now: float) -> dict:
     return {"entries": entries, "as_of": now, "note": "" if entries else "Nothing in the calendar."}
 
 
+def _board_row(entry: dict) -> dict:
+    """A topic as the board shows it: arrivals reduced to a rate per minute."""
+    arrivals = entry["arrivals"]
+    span = arrivals[-1] - arrivals[0] if len(arrivals) > 1 else 0.0
+    rate = (len(arrivals) - 1) * 60.0 / span if span > 0 else 0.0
+    row = {key: value for key, value in entry.items() if key != "arrivals"}
+    row["per_minute"] = round(rate, 1)
+    return row
+
+
+def _retained(topic: str) -> bool:
+    """Whether the topic contract retains it; unknown topics are not."""
+    return any(topic_matches(spec.wildcard(), topic) and spec.retain for spec in _SPECS)
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, deque):
+        return list(value)
+    raise TypeError(f"not serialisable: {type(value).__name__}")
+
+
 def encode(event: Event) -> str:
-    return json.dumps(event, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(event, separators=(",", ":"), ensure_ascii=False, default=_jsonable)
