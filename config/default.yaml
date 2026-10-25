@@ -245,7 +245,7 @@ speech:
   # FR-50: the room's words are transcribed, though audio is still never kept
   # or published. wake_word restores capture-after-the-wake-word only.
   listen_mode: continuous
-  ambient_min_words: 4           # shorter overheard speech is dropped
+  ambient_min_words: 4           # fewer distinct words is dropped (noise reads as "No. No. No.")
   ambient_preroll_ms: 300        # keeps the first word of unaddressed speech
   voiceprints_path: state/voiceprints.json
   # Measured on synthetic voices: 88 % of household utterances recognised,

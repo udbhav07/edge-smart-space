@@ -519,8 +519,9 @@ class SpeechConfig(_Section):
     ambient_min_words: int = Field(
         default=4,
         gt=0,
-        description="Overheard speech shorter than this is dropped unpublished: "
-        "too little to hold a plan or a fact, and most of it is noise",
+        description="Overheard speech with fewer distinct words than this is "
+        "dropped unpublished: too little to hold a plan or a fact, and most of "
+        "it is noise -- Whisper hears room noise as one word repeated",
     )
     ambient_preroll_ms: int = Field(
         default=300,

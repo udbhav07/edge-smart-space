@@ -188,7 +188,10 @@ class SpeechPipeline:
         state to be kept for whoever connects next (FR-76).
         """
         transcript = self._transcriber.transcribe(frames)
-        if not transcript or len(transcript.split()) < self._config.ambient_min_words:
+        # Distinct words, not words: live, room noise came back from Whisper
+        # as "No. No. No. No." -- four words, one of them, and nothing said.
+        distinct = {word.strip(".,!?;:'\"").lower() for word in (transcript or "").split()} - {""}
+        if len(distinct) < self._config.ambient_min_words:
             return None
         LOGGER.info("overheard %d words", len(transcript.split()))
         duration_s = len(frames) * self._config.chunk_samples / self._config.sample_rate_hz

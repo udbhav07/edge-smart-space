@@ -580,3 +580,8 @@ class TestListeningContinuously:
     def test_in_wake_word_mode_nothing_is_overheard(self, config):
         pipeline, _ = _listening(config, SimClock())
         assert _feed(pipeline, SPEECH, SPEECH, SILENCE) == []
+
+    def test_noise_transcribed_as_one_word_repeated_is_dropped(self, continuous):
+        """Live: room noise came back from Whisper as "No. No. No. No."."""
+        pipeline, _ = _listening(continuous, SimClock(), text="No. No. No. No.")
+        assert _feed(pipeline, SPEECH, SILENCE) == []
