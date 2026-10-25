@@ -1,4 +1,4 @@
-import { CalendarDays, Cpu, Gauge, LayoutDashboard, Mail, MessageSquare, Network, Plane, ShieldAlert, type LucideIcon } from "lucide-react";
+import { BookOpen, CalendarDays, Cpu, Gauge, LayoutDashboard, Library, Mail, MessageSquare, Network, Plane, ShieldAlert, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   to: string;
@@ -26,6 +26,13 @@ export const NAV: { group: string; items: NavItem[] }[] = [
       { to: "/calendar", label: "Calendar", icon: CalendarDays },
       { to: "/bookings", label: "Bookings", icon: Plane },
       { to: "/mail", label: "Mail", icon: Mail },
+    ],
+  },
+  {
+    group: "Learn",
+    items: [
+      { to: "/architecture", label: "How it works", icon: BookOpen },
+      { to: "/topics", label: "Topic guide", icon: Library },
     ],
   },
 ];

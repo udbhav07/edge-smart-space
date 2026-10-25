@@ -1,34 +1,10 @@
-import { ArrowUpRight, Cpu } from "lucide-react";
+import { ArrowUpRight, BookOpen, Cpu } from "lucide-react";
 import { Link } from "react-router-dom";
 import { ago, cn } from "@/lib/format";
 import { SERVICES, judge, rateOf, topicsOf } from "@/lib/services";
-import type { TopicRow } from "@/lib/types";
+import { rendererFor, safely } from "@/lib/renderers";
 import { useConsole, useNow } from "@/lib/useConsole";
 import { Card, Label, PageHeader, Pill } from "@/components/ui";
-
-/** The most telling field of a payload, in a few words. */
-function summarise(row: TopicRow): string {
-  const payload = row.payload as Record<string, unknown> | null;
-  if (!payload || typeof payload !== "object") return String(row.payload ?? "").slice(0, 80);
-  const pick = (...keys: string[]) => keys.filter((key) => key in payload).map((key) => `${key} ${format(payload[key])}`).join(" · ");
-  if ("sensor_id" in payload && "value" in payload) return pick("value", "unit", "quality");
-  if ("t_in" in payload) return pick("t_in", "t_pred", "residual", "adaptation");
-  if ("a1" in payload) return pick("a1", "a2", "a3", "a4");
-  if ("verdict" in payload) return pick("verdict", "reason");
-  if ("mode" in payload && "reason" in payload) return pick("mode", "reason");
-  if ("kind" in payload && "actuator_id" in payload) return pick("kind", "ack");
-  if ("activity" in payload) return pick("activity", "microphone");
-  if ("caller" in payload) return pick("caller", "trigger", "latency_s");
-  if ("tool" in payload && "status" in payload) return pick("tool", "status");
-  if ("reply" in payload) return pick("reply");
-  return Object.keys(payload).slice(0, 4).join(", ");
-}
-
-function format(value: unknown): string {
-  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(Math.abs(value) < 1 ? 4 : 2);
-  if (typeof value === "string") return value.length > 40 ? `${value.slice(0, 40)}…` : value;
-  return JSON.stringify(value)?.slice(0, 40) ?? "";
-}
 
 export function Services() {
   const { state } = useConsole();
@@ -38,7 +14,7 @@ export function Services() {
     <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-8">
       <PageHeader
         title="Services"
-        subtitle="Each process and what it is producing right now. A service is judged by its own output against its own cadence: a tick-rate service that has gone quiet is silent, one that speaks only on change is not."
+        subtitle="Each process and what it is producing right now. How they fit together is on How it works. A service is judged by its own output against its own cadence: a tick-rate service that has gone quiet is silent, one that speaks only on change is not."
       />
       <div className="grid gap-4 lg:grid-cols-2">
         {SERVICES.map((service) => {
@@ -55,6 +31,7 @@ export function Services() {
                     <span className="ml-auto"><Pill health={judged.health}>{judged.word}</Pill></span>
                   </div>
                   <p className="mt-0.5 text-[12.5px] text-muted">{service.role}</p>
+                  <Link to={`/architecture#svc-${service.id}`} className="mt-1 inline-flex items-center gap-1 text-[12px] text-glacier hover:underline"><BookOpen className="h-3 w-3" /> How it fits in</Link>
                 </div>
               </div>
               <div className="grid grid-cols-3 gap-px border-y hairline bg-[rgb(var(--line)/var(--line-alpha))]">
@@ -77,7 +54,7 @@ export function Services() {
                       <span className="flex items-center gap-1 font-mono text-[11.5px] text-muted tabular">
                         {rateOf(row, now).toFixed(1)}/min <ArrowUpRight className="h-3 w-3 opacity-0 group-hover:opacity-100" />
                       </span>
-                      <span className="col-span-2 truncate text-[12px] text-muted">{summarise(row)}</span>
+                      <span className="col-span-2 truncate text-[12px]">{safely(() => rendererFor(row.topic).summary(row.payload as Record<string, unknown>, row.topic), null)}</span>
                     </Link>
                   </li>
                 ))}

@@ -1,6 +1,7 @@
-import { Braces, Network, Pause, Play, Search } from "lucide-react";
+import { BookOpen, Braces, Network, Pause, Play, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+import { TopicAbout } from "@/components/TopicAbout";
 import { ago, clockSeconds, cn } from "@/lib/format";
 import { iconFor, rendererFor, safely } from "@/lib/renderers";
 import { matches, producerOf, rateOf } from "@/lib/services";
@@ -46,6 +47,8 @@ export function Mqtt() {
   const [query, setQuery] = useState("");
   const [paused, setPaused] = useState<BoardMessage[] | null>(null);
   const [raw, setRaw] = useState(false);
+  // Open or closed, the explanation stays as it was while you move between topics.
+  const [about, setAbout] = useState(false);
   const selected = params.get("topic");
   const match = useMemo(() => filterBy(query), [query]);
 
@@ -67,6 +70,7 @@ export function Mqtt() {
         actions={
           <>
             <span className="text-[12.5px] text-muted tabular">{state.topics.length} topics · {total.toLocaleString()} messages</span>
+            <Link to="/topics" className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium text-muted hover:bg-raised hover:text-fg"><BookOpen className="h-3.5 w-3.5" /> What the topics mean</Link>
             <Button icon={paused ? Play : Pause} onClick={() => setPaused(paused ? null : tail)}>{paused ? "Resume" : "Pause"}</Button>
           </>
         }
@@ -118,12 +122,13 @@ export function Mqtt() {
           )}
         >
           {selectedRow ? (
-            <div className="grid gap-4">
+            <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted">
                 <span className="font-mono text-fg/80">{selectedRow.topic}</span>
                 <span>from {producerOf(selectedRow.topic)?.name ?? "unknown"}</span>
                 {selectedRow.retained && <span className="rounded bg-glacier/10 px-1.5 text-[10.5px] font-medium text-glacier">retained</span>}
               </div>
+              <TopicAbout topic={selectedRow.topic} open={about} onToggle={() => setAbout(!about)} />
               {raw || selectedRow.payload === undefined || selectedRow.payload === null
                 ? <Json value={selectedRow.payload} />
                 : safely(() => rendererFor(selectedRow.topic).detail(selectedRow.payload as Record<string, unknown>, selectedRow.topic, now), <Json value={selectedRow.payload} />)}

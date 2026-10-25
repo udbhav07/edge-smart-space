@@ -17,6 +17,9 @@ const Chat = page(() => import("./pages/Chat"), "Chat");
 const Calendar = page(() => import("./pages/Calendar"), "Calendar");
 const Bookings = page(() => import("./pages/Bookings"), "Bookings");
 const Mail = page(() => import("./pages/Mail"), "Mail");
+const Architecture = page(() => import("./pages/Architecture"), "Architecture");
+const Topics = page(() => import("./pages/Topics"), "Topics");
+const TopicGuide = page(() => import("./pages/Topics"), "TopicGuide");
 
 function Loading() {
   return <div className="px-8 py-10 text-[13px] text-muted">Loading…</div>;
@@ -36,6 +39,9 @@ export default function App() {
           <Route path="calendar" element={<Calendar />} />
           <Route path="bookings" element={<Bookings />} />
           <Route path="mail" element={<Mail />} />
+          <Route path="architecture" element={<Architecture />} />
+          <Route path="topics" element={<Topics />} />
+          <Route path="topics/:slug" element={<TopicGuide />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
