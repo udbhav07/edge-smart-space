@@ -145,6 +145,16 @@ class RemoveRequest(BaseModel):
     starts_at: str = ""
 
 
+class KeepRequest(BaseModel):
+    event_id: str = Field(min_length=1, max_length=40)
+
+
+class SettleRequest(BaseModel):
+    profile_id: str = Field(min_length=1, max_length=64)
+    fact: str = Field(min_length=1, max_length=400)
+    keep: bool
+
+
 class EntryRequest(BaseModel):
     subject: str = Field(min_length=1, max_length=200)
     starts_at: str = Field(min_length=1, max_length=40)
@@ -230,6 +240,14 @@ def create_app(state: ConsoleState, actions: ConsoleActions, hub: Hub, link: Lin
     @app.post("/api/calendar/remove")
     async def post_calendar_remove(request: RemoveRequest) -> JSONResponse:
         return act(actions.remove_entry, request.subject, request.starts_at)
+
+    @app.post("/api/calendar/keep")
+    async def post_calendar_keep(request: KeepRequest) -> JSONResponse:
+        return act(actions.keep_entry, request.event_id)
+
+    @app.post("/api/memory/settle")
+    async def post_memory_settle(request: SettleRequest) -> JSONResponse:
+        return act(actions.settle_fact, request.profile_id, request.fact, request.keep)
 
     @app.post("/api/calendar/add")
     async def post_calendar_add(request: EntryRequest) -> JSONResponse:

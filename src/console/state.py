@@ -363,6 +363,7 @@ class ConsoleState:
             "display_name": context.display_name,
             "facts": list(context.facts),
             "preferences": dict(context.preferences),
+            "suggestions": list(context.suggestions),
         }
         return [self._event("profiles", list(self._profiles.values()))]
 
@@ -404,9 +405,14 @@ class ConsoleState:
             events.append(self._say("assistant", result.message or f"{result.tool}: {result.status.value}", intent="service"))
         tone = "good" if result.status is ToolStatus.OK else "info" if result.status is ToolStatus.CONFIRMATION_REQUIRED else "alert"
         events.append(self._step("result", f"{result.tool}: {result.status.value.replace('_', ' ').lower()}", detail=result.message, tone=tone, ref=result.invocation_id))
-        if result.tool in ("schedule_event", "cancel_event", "move_event") and result.status is ToolStatus.OK:
+        if result.tool in ("schedule_event", "cancel_event", "move_event", "keep_event") and result.status is ToolStatus.OK:
             events.append(self._event("calendar_stale", True))
             events.append(self._mail_in("Calendar", result.tool.replace("_", " ").capitalize(), result.message, "calendar", "good"))
+        if result.tool == "pencil_event" and result.status is ToolStatus.OK and result.detail.get("added"):
+            # Overheard, not asked for (FR-77): said so in the inbox, so the
+            # occupant learns it is there and can keep or discard it.
+            events.append(self._event("calendar_stale", True))
+            events.append(self._mail_in("Calendar", "Pencilled in from conversation", result.message, "calendar", "info"))
         if result.status is ToolStatus.OK and result.tool == "book_travel":
             events.extend(self._booked(result))
         if result.status is ToolStatus.OK and result.tool == "send_mail":
@@ -557,11 +563,15 @@ def _calendar_from(result: ToolResult, now: float) -> dict:
     """The entries a get_events result lists, from its flat detail text."""
     if result.status is not ToolStatus.OK:
         return {"entries": [], "as_of": now, "note": result.message}
+    tentative = {event_id for event_id in str(result.detail.get("tentative_ids", "")).split(",") if event_id}
     entries = []
     for chunk in str(result.detail.get("entries", "")).split("; "):
         parts = chunk.split(" ", 2)
         if len(parts) == 3:
-            entries.append({"event_id": parts[0], "starts_at": parts[1], "subject": parts[2]})
+            entry = {"event_id": parts[0], "starts_at": parts[1], "subject": parts[2], "tentative": parts[0] in tentative}
+            if entry["tentative"]:
+                entry["heard"] = str(result.detail.get(f"heard_{parts[0]}", ""))
+            entries.append(entry)
     return {"entries": entries, "as_of": now, "note": "" if entries else "Nothing in the calendar."}
 
 

@@ -27,6 +27,7 @@ from src.common.schemas import (
     Mode,
     ModeState,
     PreferenceHint,
+    ProfileContext,
     SensorReading,
     SpeechActivity,
     SpeechStatus,
@@ -165,7 +166,7 @@ class TestWhatItShows:
         invocation_id = actions.refresh_calendar()
         result = ToolResult(ts=clock.now(), invocation_id=invocation_id, tool="get_events", status=ToolStatus.OK, provider="local_calendar", detail={"count": 1, "entries": "evt_1 2026-10-14T15:00:00 meeting with Anu"})
         _feed(state, topics.ASSIST_RESULT, result)
-        assert state.snapshot()["calendar"]["entries"] == [{"event_id": "evt_1", "starts_at": "2026-10-14T15:00:00", "subject": "meeting with Anu"}]
+        assert state.snapshot()["calendar"]["entries"] == [{"event_id": "evt_1", "starts_at": "2026-10-14T15:00:00", "subject": "meeting with Anu", "tentative": False}]
 
     def test_a_malformed_message_is_ignored(self, console):
         state, _, _, _ = console
@@ -384,3 +385,63 @@ class TestTheDashboard:
         _, actions, transport, _ = console
         actions.send_mail("Anu", "Late", "Ten minutes late.")
         assert ToolInvocation.model_validate_json(transport.published[-1][1]).tool == "send_mail"
+
+
+class TestOverheard:
+    """FR-77, FR-78: what was overheard is shown apart, and kept only on a word from here."""
+
+    def test_a_pencilled_entry_is_shown_as_tentative_with_what_was_heard(self, console):
+        state, actions, _, clock = console
+        invocation_id = actions.refresh_calendar()
+        detail = {
+            "count": 2,
+            "entries": "ev_0001 2026-10-14T15:00 review; ev_0002 2026-10-15T16:00 dentist",
+            "tentative_ids": "ev_0002",
+            "heard_ev_0002": "dentist on thursday at four",
+        }
+        _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id=invocation_id, tool="get_events", status=ToolStatus.OK, provider="local_calendar", detail=detail))
+        firm, pencilled = state.snapshot()["calendar"]["entries"]
+        assert firm["tentative"] is False and "heard" not in firm
+        assert pencilled["tentative"] is True and pencilled["heard"] == "dentist on thursday at four"
+
+    def test_a_pencilled_entry_is_announced_and_refreshes_the_calendar(self, console):
+        state, _, _, clock = console
+        result = ToolResult(ts=clock.now(), invocation_id="amb_1", tool="pencil_event", status=ToolStatus.OK, provider="local_calendar", message="Pencilled in dentist at 16:00 on Thursday 15 October, tentatively.", detail={"event_id": "ev_0002", "added": True})
+        types = [event["type"] for event in _feed(state, topics.ASSIST_RESULT, result)]
+        assert "calendar_stale" in types and "inbox" in types
+
+    def test_a_repeat_mention_is_not_announced(self, console):
+        state, _, _, clock = console
+        result = ToolResult(ts=clock.now(), invocation_id="amb_2", tool="pencil_event", status=ToolStatus.OK, provider="local_calendar", detail={"event_id": "ev_0002", "added": False})
+        assert "inbox" not in [event["type"] for event in _feed(state, topics.ASSIST_RESULT, result)]
+
+    def test_a_profiles_suggestions_are_shown(self, console):
+        state, _, _, clock = console
+        _feed(state, topics.CONTEXT_PROFILE, ProfileContext(ts=clock.now(), profile_id="ravi", display_name="Ravi", suggestions=("Hates the cold.",)), profile_id="ravi")
+        (profile,) = [p for p in state.snapshot()["profiles"] if p["profile_id"] == "ravi"]
+        assert profile["suggestions"] == ["Hates the cold."]
+
+    def test_keeping_an_entry_publishes_keep_event(self, console):
+        _, actions, transport, _ = console
+        actions.keep_entry("ev_0002")
+        invocation = ToolInvocation.model_validate_json(transport.published[-1][1])
+        assert invocation.tool == "keep_event" and invocation.arguments["event_id"] == "ev_0002"
+
+    def test_settling_a_suggestion_publishes_settle_fact(self, console):
+        _, actions, transport, _ = console
+        actions.settle_fact("ravi", "Hates the cold.", keep=False)
+        invocation = ToolInvocation.model_validate_json(transport.published[-1][1])
+        assert invocation.tool == "settle_fact" and invocation.arguments == {"profile_id": "ravi", "fact": "Hates the cold.", "keep": False}
+
+    def test_an_empty_keep_is_refused(self, console):
+        _, actions, _, _ = console
+        with pytest.raises(ActionRefused):
+            actions.keep_entry(" ")
+
+    def test_both_are_reachable_over_http(self, console):
+        state, actions, transport, _ = console
+        lock = threading.Lock()
+        hub = Hub()
+        http = TestClient(create_app(state, actions, hub, Link(state, hub, lock, Blackboard(CONFIG.mqtt, transport)), lock))
+        assert http.post("/api/calendar/keep", json={"event_id": "ev_0002"}).json()["ok"] is True
+        assert http.post("/api/memory/settle", json={"profile_id": "ravi", "fact": "Likes tea.", "keep": True}).json()["ok"] is True

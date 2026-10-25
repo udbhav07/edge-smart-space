@@ -172,6 +172,21 @@ class ConsoleActions:
         self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
         return invocation.invocation_id
 
+    def keep_entry(self, event_id: str) -> str:
+        """Make an entry pencilled in from conversation a firm one (FR-77)."""
+        if not event_id.strip():
+            raise ActionRefused("say which entry to keep")
+        return self._send("keep_event", {"event_id": event_id.strip()})
+
+    def settle_fact(self, profile_id: str, fact: str, keep: bool) -> str:
+        """Keep or dismiss a fact overheard about someone (FR-78).
+
+        The console is where the person says so; it decides nothing itself.
+        """
+        if not profile_id.strip() or not fact.strip():
+            raise ActionRefused("say whose suggestion, and which")
+        return self._send("settle_fact", {"profile_id": profile_id.strip(), "fact": fact.strip(), "keep": bool(keep)})
+
     def _invoke(self, tool: str, arguments: dict) -> ToolInvocation:
         now = self._clock.now()
         return ToolInvocation(
