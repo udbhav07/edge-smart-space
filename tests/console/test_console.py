@@ -95,6 +95,20 @@ class TestWhatItShows:
         verdict = ValidationVerdict(ts=clock.now(), proposed={"kind": "MAINTAIN"}, verdict=Verdict.ACCEPTED, reason=ReasonCode.NONE, applied={"kind": "MAINTAIN"})
         assert [event["type"] for event in _feed(state, topics.AUDIT_VALIDATION, verdict)] == ["mqtt"]
 
+    def test_a_reasserted_command_is_not_a_new_decision(self, console):
+        """COOL restated every 60 s flooded the decision log."""
+        state, _, _, clock = console
+        verdict = ValidationVerdict(ts=clock.now(), proposed={"kind": "COOL"}, verdict=Verdict.ACCEPTED, reason=ReasonCode.NONE, applied={"kind": "COOL"})
+        _feed(state, topics.AUDIT_VALIDATION, verdict)
+        _feed(state, topics.AUDIT_VALIDATION, verdict)
+        assert [step["text"] for step in state.snapshot()["activity"]] == ["Air conditioner: COOL"]
+
+    def test_a_change_of_command_is_shown_as_one(self, console):
+        state, _, _, clock = console
+        for kind in ("COOL", "OFF"):
+            _feed(state, topics.AUDIT_VALIDATION, ValidationVerdict(ts=clock.now(), proposed={"kind": kind}, verdict=Verdict.ACCEPTED, reason=ReasonCode.NONE, applied={"kind": kind}))
+        assert state.snapshot()["activity"][-1]["text"] == "Air conditioner: COOL → OFF"
+
     def test_a_mode_change_is_announced(self, console):
         state, _, _, clock = console
         _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.NORMAL, since_ts=clock.now()))

@@ -127,6 +127,9 @@ class ConsoleState:
         self._typed: deque[str] = deque(maxlen=_TYPED_KEPT)
         self._set_here: deque[str] = deque(maxlen=_TYPED_KEPT)
         self._sequence = 0
+        #: The last command kind shown, so a re-assertion of the state in
+        #: force -- every 60 s, by design (R-02) -- is not shown as a decision.
+        self._commanded: str | None = None
         self._handlers: tuple[tuple[str, type, Callable], ...] = (
             (topics.SENSOR_STATE.wildcard(), SensorReading, self._on_reading),
             (topics.SENSOR_HEALTH.wildcard(), SensorHealth, self._on_health),
@@ -421,7 +424,11 @@ class ConsoleState:
         if kind in _RESTATEMENTS and verdict.verdict is Verdict.ACCEPTED:
             return []
         if kind and verdict.verdict is Verdict.ACCEPTED:
-            return [self._step("command", f"Air conditioner: {kind}", tone="info")]
+            if kind == self._commanded:
+                return []
+            before, self._commanded = self._commanded, kind
+            change = f"{before} → {kind}" if before else kind
+            return [self._step("command", f"Air conditioner: {change}", tone="info")]
         proposed = verdict.proposed.get("setpoint_c", kind)
         applied = verdict.applied.get("setpoint_c", verdict.applied.get("kind", ""))
         tone = "good" if verdict.verdict is Verdict.ACCEPTED else "warn"
