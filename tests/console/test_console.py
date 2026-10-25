@@ -31,6 +31,7 @@ from src.common.schemas import (
     SensorReading,
     SpeechActivity,
     SpeechStatus,
+    ThermalEstimate,
     Unit,
     ValidationVerdict,
     Verdict,
@@ -445,3 +446,33 @@ class TestOverheard:
         http = TestClient(create_app(state, actions, hub, Link(state, hub, lock, Blackboard(CONFIG.mqtt, transport)), lock))
         assert http.post("/api/calendar/keep", json={"event_id": "ev_0002"}).json()["ok"] is True
         assert http.post("/api/memory/settle", json={"profile_id": "ravi", "fact": "Likes tea.", "keep": True}).json()["ok"] is True
+
+
+class TestStaleHistory:
+    """S-07: a retained estimate from before a restart was charted as a climb from 24 to 29 C."""
+
+    def test_a_stale_retained_estimate_is_not_charted(self, console):
+        state, _, _, clock = console
+        old = ThermalEstimate(ts=clock.now() - 120.0, t_in=24.0, t_pred=24.0, residual=0.0, residual_sigma=0.1, model_confidence=0.9, adaptation="active")
+        _feed(state, topics.ESTIMATE_THERMAL, old)
+        assert "t_in" not in state.snapshot()["series"]
+
+    def test_it_still_shows_as_the_latest_value(self, console):
+        state, _, _, clock = console
+        old = ThermalEstimate(ts=clock.now() - 120.0, t_in=24.0, t_pred=24.0, residual=0.0, residual_sigma=0.1, model_confidence=0.9, adaptation="active")
+        _feed(state, topics.ESTIMATE_THERMAL, old)
+        assert state.snapshot()["room"]["thermal"]["t_in"] == 24.0
+
+    def test_a_current_estimate_is_charted(self, console):
+        state, _, _, clock = console
+        now = ThermalEstimate(ts=clock.now(), t_in=29.0, t_pred=29.0, residual=0.0, residual_sigma=0.1, model_confidence=0.9, adaptation="active")
+        _feed(state, topics.ESTIMATE_THERMAL, now)
+        assert state.snapshot()["series"]["t_in"][-1][1] == 29.0
+
+    def test_an_old_setpoint_still_draws_its_step(self, console):
+        """On-change series keep their history: the chart extends the last step."""
+        from src.common.schemas import TrackingState
+
+        state, _, _, clock = console
+        _feed(state, topics.CONTROL_TRACKING, TrackingState(ts=clock.now() - 600.0, setpoint_c=24.0, tracked_c=24.0, band="normal"))
+        assert state.snapshot()["series"]["held_c"][-1][1] == 24.0

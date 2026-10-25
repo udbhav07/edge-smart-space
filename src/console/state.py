@@ -70,6 +70,9 @@ _ARRIVALS_KEPT = 60
 _PAYLOAD_KEPT = 32000
 #: Bookings, mails and inbox messages kept.
 _RECORDS_KEPT = 100
+#: A point of a periodic series older than this on arrival is history from
+#: before this console was listening, not a reading (S-07).
+_STALE_POINT_S = 60.0
 
 #: Every declared topic, so the board can say whether one is retained.
 _SPECS = tuple(value for value in vars(topics).values() if isinstance(value, topics.TopicSpec))
@@ -238,7 +241,7 @@ class ConsoleState:
 
     def _on_reading(self, _topic, reading: SensorReading):
         self._room.sensors[reading.sensor_id] = _dump(reading)
-        return [self._event("sensor", _dump(reading)), self._point(reading.sensor_id, reading.ts, reading.value)]
+        return [self._event("sensor", _dump(reading)), *self._live_point(reading.sensor_id, reading.ts, reading.value)]
 
     def _on_health(self, _topic, health: SensorHealth):
         self._room.health[health.sensor_id] = _dump(health)
@@ -247,13 +250,13 @@ class ConsoleState:
     def _on_thermal(self, _topic, estimate: ThermalEstimate):
         self._room.thermal = _dump(estimate)
         return [self._event("thermal", self._room.thermal)] + [
-            self._point(name, estimate.ts, getattr(estimate, name)) for name in _THERMAL_SERIES
+            point for name in _THERMAL_SERIES for point in self._live_point(name, estimate.ts, getattr(estimate, name))
         ]
 
     def _on_coefficients(self, _topic, coefficients: Coefficients):
         self._room.coefficients = _dump(coefficients)
         return [self._event("coefficients", self._room.coefficients)] + [
-            self._point(name, coefficients.ts, getattr(coefficients, name)) for name in _COEFFICIENT_SERIES
+            point for name in _COEFFICIENT_SERIES for point in self._live_point(name, coefficients.ts, getattr(coefficients, name))
         ]
 
     def _on_actuator(self, _topic, state: ActuatorState):
@@ -515,6 +518,18 @@ class ConsoleState:
         while len(self._topics) > _TOPICS_KEPT:
             self._topics.popitem(last=False)
         return [{"type": "mqtt", "data": {"topic": topic, "ts": now, "payload": body, "count": entry["count"], "retained": entry["retained"]}}]
+
+    def _live_point(self, key: str, ts: float, value: float) -> list[Event]:
+        """A point of a series published every few seconds, if it is current.
+
+        A retained estimate from before a restart arrives first and stale:
+        charted, it drew a smooth climb from the old room to the new one --
+        24 to 29 C "in two minutes" -- that never happened (S-07). The latest
+        value still shows in the tiles, with its age; only the chart skips it.
+        """
+        if self._clock.now() - ts > _STALE_POINT_S:
+            return []
+        return [self._point(key, ts, value)]
 
     def _point(self, key: str, ts: float, value: float) -> Event:
         series = self._series.setdefault(key, deque(maxlen=self._config.history_kept))

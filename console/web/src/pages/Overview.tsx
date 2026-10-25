@@ -37,7 +37,7 @@ export function Overview() {
           icon={Thermometer}
           value={celsius(indoor)}
           health={health("temp_01")}
-          note={indoorFaulted ? <span className="text-ember">from the model: sensor faulted</span> : `holding ${celsius(room.tracking?.tracked_c)}`}
+          note={indoorFaulted ? <span className="text-ember">from the model: sensor faulted</span> : towards(indoor, room.tracking?.tracked_c)}
         />
         <Stat label="Humidity" icon={Droplets} value={room.sensors.hum_01 ? Math.round(room.sensors.hum_01.value) : "--"} unit="%RH" health={health("hum_01")} note={room.sensors.hum_01 ? ago(room.sensors.hum_01.ts, now) : "waiting"} />
         <Stat label="Outside" icon={Sun} value={celsius(room.sensors.outdoor_01?.value)} health={health("outdoor_01")} note="every 60 s" />
@@ -115,6 +115,15 @@ export function Overview() {
       </div>
     </div>
   );
+}
+
+/** Whether the room is at its setpoint or still on its way (S-07): "holding
+ * 24°" beside a room at 29° read as the product letting it overheat. */
+function towards(indoor: number | undefined, held: number | undefined): string {
+  if (indoor === undefined || held === undefined) return `holding ${celsius(held)}`;
+  if (indoor - held > 1) return `cooling toward ${celsius(held)}`;
+  if (held - indoor > 1) return `warming toward ${celsius(held)}`;
+  return `holding ${celsius(held)}`;
 }
 
 /** A step series published only on change, drawn up to now. */
