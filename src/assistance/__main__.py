@@ -40,6 +40,8 @@ from src.common.tools import (
     PENCIL_EVENT,
     REMEMBER,
     SCHEDULE_EVENT,
+    SETTLE_FACT,
+    SUGGEST_FACT,
     ToolRegistry,
 )
 
@@ -69,6 +71,8 @@ def build_registry(config: Config, clock: Clock) -> ToolRegistry:
     memory = ProfileMemory(build_store(config, clock))
     registry.bind(REMEMBER.name, memory)
     registry.bind(FORGET.name, memory)
+    registry.bind(SUGGEST_FACT.name, memory)
+    registry.bind(SETTLE_FACT.name, memory)
     return registry
 
 

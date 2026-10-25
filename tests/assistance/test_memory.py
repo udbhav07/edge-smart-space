@@ -287,3 +287,113 @@ class TestRememberingAPreference:
         store.remember("ravi", "Is vegetarian.")
         outcome = ProfileMemory(store).invoke("forget", {"profile_id": "ravi", "about": "vegetarian"})
         assert outcome.message == "Forgotten: Is vegetarian."
+
+
+class TestSessions:
+    """Each person's conversation is their own, and outlives a restart."""
+
+    def test_two_people_never_see_each_others_conversation(self, store, ravi):
+        store.create("anu", "Anu")
+        store.record_turn("ravi", "put the review at three", "Added it.")
+        store.record_turn("anu", "what is on today", "Nothing.")
+        assert [turn.said for turn in store.recent("ravi")] == ["put the review at three"]
+        assert [turn.said for turn in store.recent("anu")] == ["what is on today"]
+
+    def test_a_guest_never_sees_a_known_persons_conversation(self, store, ravi):
+        store.record_turn("ravi", "my flight is on friday", "Noted.")
+        assert store.recent(GUEST_PROFILE_ID) == ()
+
+    def test_a_conversation_survives_a_restart(self, store, config, clock, ravi):
+        store.record_turn("ravi", "put the review at three", "Added it.")
+        assert ProfileStore(config, clock, utc_offset_h=5.5).recent("ravi")[0].said == "put the review at three"
+
+    def test_ending_one_conversation_leaves_anothers(self, store, ravi):
+        store.create("anu", "Anu")
+        store.record_turn("ravi", "hi", "hello")
+        store.record_turn("anu", "hi", "hello")
+        store.clear_recent("ravi")
+        assert store.recent("ravi") == () and len(store.recent("anu")) == 1
+
+    def test_a_turn_within_the_window_keeps_the_whole_session_alive(self, store, clock, config, ravi):
+        """Expiry is per exchange: an old one goes, a recent one stays."""
+        store.record_turn("ravi", "first", "ok")
+        clock.advance(config.short_term_ttl_s - 10.0)
+        store.record_turn("ravi", "second", "ok")
+        clock.advance(20.0)
+        assert [turn.said for turn in store.recent("ravi")] == ["second"]
+
+
+class TestSuggestions:
+    """FR-78: an overheard fact waits for the person; nothing is kept unasked."""
+
+    def test_a_suggestion_waits_apart_from_the_facts(self, store, ravi):
+        store.suggest("ravi", "Hates the room below 23.")
+        profile = store.load("ravi")
+        assert profile.suggestions == ("Hates the room below 23.",) and profile.facts == ()
+
+    def test_it_is_written_in_the_file_under_its_own_heading(self, store, config, ravi):
+        store.suggest("ravi", "Hates the room below 23.")
+        text = (Path(config.directory) / "ravi.md").read_text(encoding="utf-8")
+        assert "## Suggested (overheard)" in text and "- Hates the room below 23." in text
+
+    def test_a_profile_with_nothing_waiting_has_no_such_heading(self, store, config, ravi):
+        store.remember("ravi", "vegetarian")
+        assert "Suggested" not in (Path(config.directory) / "ravi.md").read_text(encoding="utf-8")
+
+    def test_it_survives_a_new_store(self, store, config, clock, ravi):
+        store.suggest("ravi", "Flies to Goa often.")
+        assert ProfileStore(config, clock, utc_offset_h=5.5).load("ravi").suggestions == ("Flies to Goa often.",)
+
+    def test_something_already_kept_is_not_offered(self, store, ravi):
+        store.remember("ravi", "vegetarian")
+        _, added = store.suggest("ravi", "Vegetarian")
+        assert not added and store.load("ravi").suggestions == ()
+
+    def test_something_already_waiting_is_not_offered_twice(self, store, ravi):
+        store.suggest("ravi", "Likes tea.")
+        _, added = store.suggest("ravi", "likes tea.")
+        assert not added and len(store.load("ravi").suggestions) == 1
+
+    def test_waiting_suggestions_are_bounded(self, store, config, ravi):
+        for index in range(config.max_facts):
+            store.suggest("ravi", f"fact {index}")
+        with pytest.raises(ProfileLimitError):
+            store.suggest("ravi", "one too many")
+
+    def test_kept_it_becomes_a_fact(self, store, ravi):
+        store.suggest("ravi", "Likes tea.")
+        profile = store.settle("ravi", "Likes tea.", keep=True)
+        assert profile.facts == ("Likes tea.",) and profile.suggestions == ()
+
+    def test_dismissed_it_is_gone(self, store, ravi):
+        store.suggest("ravi", "Likes tea.")
+        profile = store.settle("ravi", "Likes tea.", keep=False)
+        assert profile.facts == () and profile.suggestions == ()
+
+    def test_settling_something_not_waiting_is_refused(self, store, ravi):
+        with pytest.raises(ProfileError):
+            store.settle("ravi", "Likes tea.", keep=True)
+
+    def test_a_keep_that_would_overfill_memory_leaves_it_waiting(self, store, config, ravi):
+        for index in range(config.max_facts):
+            store.remember("ravi", f"fact {index}")
+        store.suggest("ravi", "Likes tea.")
+        with pytest.raises(ProfileLimitError):
+            store.settle("ravi", "Likes tea.", keep=True)
+        assert store.load("ravi").suggestions == ("Likes tea.",)
+
+    def test_the_context_carries_them_apart_from_the_facts(self, store, ravi):
+        store.remember("ravi", "vegetarian")
+        store.suggest("ravi", "Likes tea.")
+        context = store.context("ravi")
+        assert context.facts == ("vegetarian",) and context.suggestions == ("Likes tea.",)
+
+    def test_a_hand_written_suggestions_heading_is_read(self):
+        profile = parse_profile("ravi", "# Ravi\n\n## suggested (overheard)\n\n- Likes tea.\n")
+        assert profile.suggestions == ("Likes tea.",)
+
+    def test_rendering_and_parsing_round_trip(self, store, ravi):
+        store.remember("ravi", "vegetarian")
+        store.suggest("ravi", "Likes tea.")
+        profile = store.load("ravi")
+        assert parse_profile("ravi", render_profile(profile)).suggestions == ("Likes tea.",)

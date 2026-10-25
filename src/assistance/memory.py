@@ -56,6 +56,9 @@ _JSON_SUFFIX = ".json"
 
 _PREFERENCES = "Preferences"
 _FACTS = "Facts"
+#: Facts overheard and not yet kept (FR-78): in the file, so a person sees
+#: what the room thinks it heard, but apart from what it remembers.
+_SUGGESTED = "Suggested (overheard)"
 _ID_KEY = "profile_id"
 _CREATED_KEY = "created"
 
@@ -94,6 +97,8 @@ class Profile:
     created: str = ""
     preferences: Mapping[str, str] = field(default_factory=dict)
     facts: tuple[str, ...] = ()
+    #: Overheard, waiting for the person to keep or dismiss (FR-78).
+    suggestions: tuple[str, ...] = ()
     #: Sections a person added by hand, kept verbatim so a write never
     #: deletes what somebody else wrote.
     other_sections: str = ""
@@ -208,6 +213,52 @@ class ProfileStore:
         updated = _replaced(profile, facts=(*profile.facts, line))
         self._save(updated)
         return updated, True
+
+    def suggest(self, profile_id: str, fact: str) -> tuple[Profile, bool]:
+        """Hold an overheard fact for the person to decide on (FR-78).
+
+        Returns the profile and whether it was new: something already kept,
+        or already waiting, is not offered twice.
+
+        :raises ProfileError: no such profile, an empty or too-long fact, or
+            as many suggestions waiting as facts may be kept.
+        """
+        profile = self.load(profile_id)
+        line = clean_text(fact, self._config.max_fact_chars)
+        known = (*profile.facts, *profile.suggestions)
+        if line.casefold() in (existing.casefold() for existing in known):
+            return profile, False
+        if len(profile.suggestions) >= self._config.max_facts:
+            raise ProfileLimitError(
+                f"{self._config.max_facts} suggestions are already waiting"
+            )
+        updated = _replaced(profile, suggestions=(*profile.suggestions, line))
+        self._save(updated)
+        return updated, True
+
+    def settle(self, profile_id: str, fact: str, keep: bool) -> Profile:
+        """Keep a suggestion as a fact, or dismiss it; either way it stops waiting.
+
+        :raises ProfileError: nothing like it is waiting, or keeping it would
+            exceed the facts kept -- checked before anything changes, so a
+            refused keep leaves the suggestion where it was.
+        """
+        profile = self.load(profile_id)
+        wanted = " ".join(fact.split()).casefold()
+        match = next((s for s in profile.suggestions if s.casefold() == wanted), None)
+        if match is None:
+            raise ProfileError("nothing like that is waiting to be kept")
+        waiting = tuple(s for s in profile.suggestions if s is not match)
+        facts = profile.facts
+        if keep and match.casefold() not in (f.casefold() for f in facts):
+            if len(facts) >= self._config.max_facts:
+                raise ProfileLimitError(
+                    f"{self._config.max_facts} facts are already kept; forget one first"
+                )
+            facts = (*facts, match)
+        updated = _replaced(profile, facts=facts, suggestions=waiting)
+        self._save(updated)
+        return updated
 
     def forget(self, profile_id: str, about: str) -> tuple[Profile, tuple[str, ...]]:
         """Remove every fact mentioning ``about``. Returns what was removed."""
@@ -325,6 +376,7 @@ class ProfileStore:
             preferences=profile.preferences,
             facts=profile.facts,
             recent=recent,
+            suggestions=profile.suggestions,
         )
 
     # --- files ----------------------------------------------------------
@@ -366,6 +418,7 @@ def _replaced(profile: Profile, **changes) -> Profile:
         "created": profile.created,
         "preferences": profile.preferences,
         "facts": profile.facts,
+        "suggestions": profile.suggestions,
         "other_sections": profile.other_sections,
     }
     fields.update(changes)
@@ -392,6 +445,11 @@ def render_profile(profile: Profile) -> str:
     ]
     lines += ["", f"## {_FACTS}", ""]
     lines += [f"- {fact}" for fact in profile.facts] or ["_Nothing remembered yet._"]
+    if profile.suggestions:
+        # Only when something is waiting, so a profile nobody overheard reads
+        # exactly as it always has.
+        lines += ["", f"## {_SUGGESTED}", "", "_Overheard; kept only if they say so._", ""]
+        lines += [f"- {suggestion}" for suggestion in profile.suggestions]
     text = "\n".join(lines) + "\n"
     if profile.other_sections.strip():
         text += "\n" + profile.other_sections.strip() + "\n"
@@ -417,6 +475,7 @@ def parse_profile(profile_id: str, text: str) -> Profile:
     created = ""
     preferences: dict[str, str] = {}
     facts: list[str] = []
+    suggestions: list[str] = []
     other: list[str] = []
     unread: list[str] = []
     section: str | None = None
@@ -446,6 +505,9 @@ def parse_profile(profile_id: str, text: str) -> Profile:
         if section == _FACTS:
             facts.append(item)
             continue
+        if section == _SUGGESTED:
+            suggestions.append(item)
+            continue
         pair = _KEY_VALUE.match(item)
         if section == _PREFERENCES:
             if pair is None:
@@ -470,12 +532,13 @@ def parse_profile(profile_id: str, text: str) -> Profile:
         created=created,
         preferences=preferences,
         facts=tuple(facts),
+        suggestions=tuple(suggestions),
         other_sections="\n".join(other),
         unread=tuple(unread),
     )
 
 
-_KNOWN_SECTIONS = (_PREFERENCES, _FACTS)
+_KNOWN_SECTIONS = (_PREFERENCES, _FACTS, _SUGGESTED)
 _SECTION_BY_NAME = {name.casefold(): name for name in _KNOWN_SECTIONS}
 _PLACEHOLDER = re.compile(r"^_.*_$")
 

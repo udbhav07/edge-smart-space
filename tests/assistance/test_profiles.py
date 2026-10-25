@@ -151,3 +151,32 @@ class TestPublishing:
         room.clock.advance(config.profiles.publish_interval_s)
         room.keeper.tick()
         assert len(room.transport.published) > published
+
+
+class TestSuggestionsThroughTheGates:
+    """FR-78: overheard, offered, and kept only on the person's word."""
+
+    def test_a_suggestion_is_held_not_remembered(self, room):
+        result = room.invoke("suggest_fact", profile_id="ravi", fact="Hates the cold.", heard="I hate the cold")
+        assert result.status is ToolStatus.OK
+        assert room.store.load("ravi").facts == () and room.store.load("ravi").suggestions == ("Hates the cold.",)
+
+    def test_it_reaches_the_blackboard_as_a_suggestion(self, room):
+        room.invoke("suggest_fact", profile_id="ravi", fact="Hates the cold.")
+        context = room.context("ravi")
+        assert context.suggestions == ("Hates the cold.",) and context.facts == ()
+
+    def test_nothing_overheard_from_a_guest_is_held(self, room):
+        result = room.invoke("suggest_fact", profile_id=GUEST_PROFILE_ID, fact="Hates the cold.")
+        assert result.status is ToolStatus.FAILED
+
+    def test_kept_it_is_remembered_and_published(self, room):
+        room.invoke("suggest_fact", profile_id="ravi", fact="Hates the cold.")
+        result = room.invoke("settle_fact", profile_id="ravi", fact="Hates the cold.", keep=True)
+        assert result.status is ToolStatus.OK
+        assert room.context("ravi").facts == ("Hates the cold.",) and room.context("ravi").suggestions == ()
+
+    def test_dismissed_it_is_gone_from_the_blackboard(self, room):
+        room.invoke("suggest_fact", profile_id="ravi", fact="Hates the cold.")
+        room.invoke("settle_fact", profile_id="ravi", fact="Hates the cold.", keep=False)
+        assert room.context("ravi").suggestions == () and room.context("ravi").facts == ()

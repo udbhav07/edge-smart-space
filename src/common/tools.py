@@ -919,8 +919,8 @@ ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
 )
 
 #: Tools that only make sense for a recognised person. A guest has no
-#: long-term memory to keep anything in.
-PROFILE_TOOLS = frozenset({REMEMBER.name, FORGET.name})
+#: long-term memory to keep anything in, nor to offer anything for.
+PROFILE_TOOLS = frozenset({REMEMBER.name, FORGET.name, SUGGEST_FACT.name, SETTLE_FACT.name})
 
 
 # --- Registry --------------------------------------------------------------

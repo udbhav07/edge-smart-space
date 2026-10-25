@@ -18,7 +18,14 @@ from collections.abc import Mapping
 
 from src.assistance.memory import ProfileNotFoundError, ProfileStore
 from src.common.schemas import GUEST_PROFILE_ID
-from src.common.tools import FORGET, REMEMBER, ArgumentValue, ProviderOutcome
+from src.common.tools import (
+    FORGET,
+    REMEMBER,
+    SETTLE_FACT,
+    SUGGEST_FACT,
+    ArgumentValue,
+    ProviderOutcome,
+)
 
 PROVIDER_NAME = "profile_memory"
 
@@ -70,6 +77,10 @@ class ProfileMemory:
                 return self._remember(profile_id, str(arguments["fact"]))
             if tool == FORGET.name:
                 return self._forget(profile_id, str(arguments["about"]))
+            if tool == SUGGEST_FACT.name:
+                return self._suggest(profile_id, str(arguments["fact"]))
+            if tool == SETTLE_FACT.name:
+                return self._settle(profile_id, str(arguments["fact"]), bool(arguments["keep"]))
         except ProfileNotFoundError as exc:
             # Said to the occupant, so in their terms (U-19).
             raise ValueError(
@@ -106,6 +117,27 @@ class ProfileMemory:
         return ProviderOutcome(
             message=f"I'll remember you like the room at {celsius} degrees, {profile.display_name}.",
             detail={PROFILE_DETAIL_KEY: profile_id, "preference": COMFORT_PREFERENCE, "value": celsius},
+        )
+
+    def _suggest(self, profile_id: str, fact: str) -> ProviderOutcome:
+        """An overheard fact, held until the person decides (FR-78)."""
+        profile, added = self._store.suggest(profile_id, fact)
+        message = (
+            f"Offered to {profile.display_name} to keep: {profile.suggestions[-1]}"
+            if added
+            else "That is already kept or already waiting."
+        )
+        return ProviderOutcome(
+            message=message,
+            detail={PROFILE_DETAIL_KEY: profile_id, "added": added, "waiting": len(profile.suggestions)},
+        )
+
+    def _settle(self, profile_id: str, fact: str, keep: bool) -> ProviderOutcome:
+        profile = self._store.settle(profile_id, fact, keep)
+        message = f"I'll remember that, {profile.display_name}." if keep else "Dismissed; it is not kept."
+        return ProviderOutcome(
+            message=message,
+            detail={PROFILE_DETAIL_KEY: profile_id, "kept": keep, "waiting": len(profile.suggestions)},
         )
 
     def _forget(self, profile_id: str, about: str) -> ProviderOutcome:
