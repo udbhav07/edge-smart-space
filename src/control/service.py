@@ -174,6 +174,11 @@ class ControlService:
         Never a command: what reaches the plant is whatever the validator
         admits of the setpoint derived here, exactly as for any proposer.
         """
+        if hint.release:
+            # "Back to automatic" (FR-81): the hold ends and the default is
+            # proposed through the gate at once.
+            self._adopt(self._goal_manager.release(self._config.controller.default_setpoint_c, self._mode))
+            return
         goal = self._goal_manager.from_preference(hint, self.setpoint_c, self._mode)
         if goal is None:
             return

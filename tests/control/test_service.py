@@ -494,3 +494,31 @@ class TestPursuingAPreference:
             clock.advance(5.0)
             service.tick()
         assert service.setpoint_c == 20.0
+
+
+class TestBackToAutomatic:
+    """FR-81: the occupant hands the temperature back."""
+
+    def _release(self, blackboard, clock):
+        hint = PreferenceHint(ts=clock.now(), comfort="unchanged", subject="temperature", release=True, transcript="back to automatic")
+        blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
+
+    def test_the_default_comes_back_through_the_gate(self, wired, clock, config):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=22.0)
+        self._release(blackboard, clock)
+        assert service.setpoint_c == config.controller.default_setpoint_c
+        assert transport.verdicts()[-1].proposed["source"] == "default"
+
+    def test_the_supervisor_may_plan_again(self, wired, clock):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=22.0)
+        self._release(blackboard, clock)
+        _send_goal(blackboard, clock, 25.0)
+        assert service.setpoint_c == 25.0
+
+    def test_cooling_off_is_bounded_by_the_gate(self, wired, clock, config):
+        service, transport, blackboard = wired
+        hint = PreferenceHint(ts=clock.now(), comfort="unchanged", subject="temperature", target_c=config.console.cooling_off_c, hold_s=3 * 3600.0, transcript="cooling off for three hours")
+        blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
+        assert transport.verdicts()[-1].applied["setpoint_c"] <= config.validator.setpoint_bounds_c.high

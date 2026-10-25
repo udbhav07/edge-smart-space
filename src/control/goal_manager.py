@@ -55,6 +55,9 @@ class GoalManager:
         self._config = config
         self._clock = clock
         self._preference_at_s: float | None = None
+        #: How long the latest preference holds; the configured hold unless
+        #: the occupant chose one (FR-81).
+        self._hold_s = config.preference_hold_s
         self._pursuing: Goal | None = None
         self._last_pursued_s: float | None = None
 
@@ -64,7 +67,7 @@ class GoalManager:
         if self._preference_at_s is None:
             return False
         elapsed = self._clock.monotonic() - self._preference_at_s
-        return elapsed < self._config.preference_hold_s
+        return elapsed < self._hold_s
 
     def from_preference(
         self, hint: PreferenceHint, setpoint_in_force_c: float, mode: Mode
@@ -83,6 +86,7 @@ class GoalManager:
             return None
         now = self._clock.now()
         self._preference_at_s = self._clock.monotonic()
+        self._hold_s = hint.hold_s or self._config.preference_hold_s
         goal = Goal(
             ts=now,
             source=GoalSource.PREFERENCE,
@@ -94,6 +98,28 @@ class GoalManager:
         self._pursuing = goal
         self._last_pursued_s = self._clock.monotonic()
         return goal
+
+    def release(self, default_setpoint_c: float, mode: Mode) -> Goal:
+        """Hand the temperature back to the system (FR-81).
+
+        The occupant's preference stops holding and stops being pursued, and
+        the default is proposed at once -- through the gate, like any goal --
+        so the room does not sit at the last request until the supervisor's
+        next cycle. The supervisor may then plan again.
+        """
+        self._preference_at_s = None
+        self._hold_s = self._config.preference_hold_s
+        self._pursuing = None
+        self._last_pursued_s = None
+        now = self._clock.now()
+        return Goal(
+            ts=now,
+            source=GoalSource.DEFAULT,
+            setpoint_c=default_setpoint_c,
+            mode=mode,
+            rationale="back to automatic, at the occupant's request",
+            expires_ts=now + self._config.preference_ttl_s,
+        )
 
     @property
     def pursuing(self) -> Goal | None:

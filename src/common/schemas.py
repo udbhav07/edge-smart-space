@@ -594,6 +594,13 @@ class PreferenceHint(TimestampedMessage):
         description="Hand the temperature back: the occupant's preference stops "
         "holding and the room returns to automatic (FR-81)",
     )
+    hold_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=86400.0,
+        description="How long this preference outranks the supervisor, if not the "
+        "configured hold: 'cooling off for three hours' (FR-81)",
+    )
 
     @model_validator(mode="after")
     def _nothing_actionable_carries_no_request(self) -> PreferenceHint:
