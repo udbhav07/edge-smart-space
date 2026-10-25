@@ -637,3 +637,43 @@ class TestFollowUpsTheWordsDecide:
         reply = room.say("actually make it half past two", profile_id="ravi")
         assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:00"]
         assert reply.reply == "Which entry do you mean?"
+
+
+class TestNeverFineDuringAFault:
+    """S-13, live: "Everything seems fine, just a note that the temperature sensor isn't working"."""
+
+    def test_a_faulted_room_is_not_called_fine(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat(saying("Everything seems fine, just a note that the sensor is off.")))
+        TestRepliesTellTheTruthAboutTheRoom()._mode(room, Mode.DEGRADED_SENSOR, ("f_temp01_stuck_1",))
+        reply = room.say("is everything ok?", intent=Intent.QUESTION, subject="room")
+        assert "fine" not in reply.reply.lower()
+        assert reply.reply.startswith("The system is")
+
+    def test_a_healthy_room_may_be_called_fine(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat(saying("Everything is fine.")))
+        TestRepliesTellTheTruthAboutTheRoom()._mode(room, Mode.NORMAL)
+        assert room.say("is everything ok?", intent=Intent.QUESTION, subject="room").reply == "Everything is fine."
+
+
+class TestWhichNextWeek:
+    """S-11, live: 'next Monday' said on a Sunday became tomorrow, unremarked."""
+
+    def test_next_weekday_within_two_days_says_so(self, config):
+        chat = ScriptedChat(calling(call("book_travel", kind="flight", destination="Delhi", depart_on="2026-09-27T09:00:00")))
+        room = Room(config, chat)
+        reply = room.say("book me a flight to Delhi next Sunday")
+        assert "that's tomorrow" in reply.reply and "week after" in reply.reply
+
+    def test_a_weekday_without_next_says_nothing_more(self, config):
+        chat = ScriptedChat(calling(call("book_travel", kind="flight", destination="Delhi", depart_on="2026-09-27T09:00:00")))
+        room = Room(config, chat)
+        assert "week after" not in room.say("book me a flight to Delhi on Sunday").reply
+
+    def test_next_weekday_further_out_says_nothing_more(self, config):
+        chat = ScriptedChat(calling(call("book_travel", kind="flight", destination="Delhi", depart_on="2026-10-01T09:00:00")))
+        room = Room(config, chat)
+        assert "week after" not in room.say("book me a flight to Delhi next Thursday").reply

@@ -53,6 +53,7 @@ from src.common.schemas import (
     ProfileContext,
     GoalSource,
     Intent,
+    Mode,
     PreferenceHint,
     ReasonCode,
     ReasoningCaller,
@@ -606,6 +607,13 @@ class Assistant:
             LOGGER.warning("reply claimed an action no tool performed: %r", reply_text[:120])
             self._corrections.append("a claimed action with no tool behind it was withheld")
             reply_text = _NOTHING_DONE
+        if self._room.mode not in (None, Mode.NORMAL) and _ALL_FINE.search(reply_text):
+            # Live, during a sensor fault: "Everything seems fine, just a
+            # note that the temperature sensor isn't working". An active
+            # fault is never "fine"; the status is said as it is (S-13).
+            LOGGER.info("reply called a faulted room fine: %r", reply_text[:120])
+            self._corrections.append("'everything is fine' during a fault replaced by the status")
+            reply_text = self._room.status()
         if _REMINDER.search(utterance.lower()) and any(
             result.status is ToolStatus.OK and result.tool == "schedule_event" for result in results
         ):
@@ -656,6 +664,24 @@ class Assistant:
     def _today(self):
         return local_time(self._clock.now(), self._utc_offset_h).date()
 
+    def _which_week(self, utterance: str, moment: datetime) -> str:
+        """"Next Monday", said the day before, may mean the week after (S-11).
+
+        The date is resolved as the coming one, and a booking says which
+        day it is; within two days of today it also says so plainly, so the
+        occupant can catch the other reading before saying yes.
+        """
+        if not _NEXT_WEEKDAY.search(utterance or ""):
+            return ""
+        ahead = (moment.date() - self._today()).days
+        if ahead == 0:
+            return " (that's today; say if you meant the week after)"
+        if ahead == 1:
+            return " (that's tomorrow; say if you meant the week after)"
+        if ahead == 2:
+            return " (that's the day after tomorrow; say if you meant the week after)"
+        return ""
+
     def _ask_to_confirm(self, result: ToolResult) -> str:
         """The question put before a booking, written from its own arguments.
 
@@ -692,6 +718,7 @@ class Assistant:
             try:
                 moment = datetime.fromisoformat(str(departs)).replace(tzinfo=None)
                 when = f" on {moment:%A} {moment.day} {moment:%B}"
+                when += self._which_week(invocation.rationale, moment)
             except ValueError:
                 when = f" on {departs}"
         return (
@@ -899,6 +926,16 @@ class Assistant:
         )
         self._blackboard.publish(topics.AUDIT_REASONING, record)
 
+
+#: A reply calling the room fine (S-13).
+_ALL_FINE = re.compile(
+    r"\b(everything|all)\s+(is|seems|looks|appears)\s+(to\s+be\s+)?(fine|ok|okay|good|well|alright|normal)\b"
+    r"|\ball\s+good\b",
+    re.IGNORECASE,
+)
+
+#: "Next Monday": ambiguous between the coming one and the week after's (S-11).
+_NEXT_WEEKDAY = re.compile(r"\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.IGNORECASE)
 
 #: "Move it", "cancel that": a follow-up about the entry just discussed.
 _PRONOUN = re.compile(r"\b(it|that|this one|that one)\b", re.IGNORECASE)
