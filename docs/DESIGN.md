@@ -226,6 +226,9 @@ feature safe to ship at all.
 | FR-73 | An invocation whose arguments do not satisfy the declared parameter list shall be refused before any provider is reached, and the refusal shall be published with the parameter at fault. | M | T |
 | FR-74 | A tool declared `commit` shall be executed only after explicit occupant confirmation (FR-54). A tool declared `read` or `write` shall be executed on the reasoning layer's own authority. The gate shall follow the declaration, so that a tool added later is covered by having declared what it does. | M | D |
 | FR-75 | Every invocation and every outcome shall be published to the blackboard, refusals and provider failures included. | M | T |
+| FR-76 | When configured to listen continuously, the system shall transcribe every utterance on-device. An utterance not addressed with the wake word shall be published as ambient speech, shall never be answered or acted on as a request, and shall be used only as FR-77 and FR-78 allow. No audio shall be kept or published (FR-51 holds); ambient transcripts shall not be retained on the blackboard. Revises FR-50, which continues to govern the `wake_word` mode. | S | T |
+| FR-77 | A plan overheard in ambient speech — a meeting, an appointment, a trip — shall be pencilled into the local calendar without confirmation, marked tentative and shown as distinct from a firm entry, with the words that suggested it. The occupant shall be able to keep it, making it firm, or discard it. No booking or other commit tool shall be invoked from ambient speech. | S | T |
+| FR-78 | A fact overheard about a recognised person shall be held as a suggestion and remembered only if that person keeps it; a dismissed suggestion is deleted. Nothing overheard from a guest shall be held. | S | T |
 
 ### 3.7 Functional Requirements — Observability
 
@@ -1302,6 +1305,16 @@ difference between running on the GPU and having quietly dropped to the CPU is
 the difference between meeting NFR-04 and missing it, and §9.2 records that a
 silent fallback is the failure most likely to be mistaken for slow code.
 
+#### 5.8.4 Always listening: ambient speech (v1.14; FR-76 to FR-78)
+
+`speech.listen_mode: continuous` is the default. The voice-activity detector runs on every frame, not only after the wake word, and a short pre-roll (`ambient_preroll_ms`) keeps the first word. An utterance is **addressed** if the wake word fires before or during it; it then takes the FR-50 path unchanged and gets a reply. Otherwise it is **ambient**: transcribed, its speaker judged, and — if it holds at least `ambient_min_words` words — published on `space/context/ambient` and nowhere else. The audio is dropped on close in both cases (FR-51).
+
+This is a deliberate revision of FR-50's privacy position, not an erosion of it by threshold (§5.8.1): the room's words are now transcribed. What limits it is what happens next. Ambient speech is never answered and never reaches the assistant's tools. The reasoning layer's `AmbientMiner` (`src/reasoning/ambient.py`) keeps a short window of each voice's recent lines (`ambient.context_s`, `max_lines`) so a plan split across sentences reads as one, and makes one rate-limited, validated model call per line (`ambient.max_calls_per_min`; FR-44, FR-46) asking for plans and facts — nothing else. A plan becomes `pencil_event`, a fact `suggest_fact`; both are `write` tools with requester `ambient`, declared `offered_to_assistant: false` so no reply can call them, and refused by the assistant if a model names them anyway.
+
+**Plans are pencilled, not booked** (FR-77). The calendar keeps the entry with `tentative: true` and the words heard; a repeat mention of the same subject on the same day adds nothing. The console shows it hatched and labelled *model tentative*, with **Keep** (`keep_event`) and **Discard**. A trip overheard is a tentative entry, never a `book_travel`: committing to a third party still needs FR-54's yes.
+
+**Facts are offered, not remembered** (FR-78). A suggestion is held in the person's Markdown profile under *Suggested (overheard)* — legible and hand-editable like the rest — and published in `ProfileContext.suggestions`, which the assistant is not told as memory. `settle_fact` keeps it (it becomes a fact) or dismisses it (it is deleted). A guest has no long-term memory, so nothing overheard from a guest is held.
+
 ### 5.9 Key Sequences
 
 #### 5.9.1 Nominal Supervisory Cycle
@@ -1514,6 +1527,7 @@ startup, which NFR-06 forbids.
 | `space/context/reply` | pub | no | 1 | `AssistantReply` |
 | `space/context/profile/{profile_id}` | pub | yes | 1 | `ProfileContext` |
 | `space/context/utterance` | pub | no | 1 | `ConsoleUtterance` |
+| `space/context/ambient` | pub | no | 1 | `AmbientUtterance` |
 | `space/speech/status` | pub | yes | 1 | `SpeechStatus` |
 | `space/tariff/state` | pub | yes | 1 | `TariffState` |
 | `space/control/tracking` | pub | yes | 1 | `TrackingState` |
@@ -1912,6 +1926,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-50 to FR-55 | §5.8 | Demonstration |
 | FR-60 to FR-63 | §4.4, §6.1 | Inspection + E7 |
 | FR-70 to FR-75 | §5.7.6, §6.1, §6.2 | Unit + demonstration |
+| FR-76 to FR-78 | §5.8.4, §6.1 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

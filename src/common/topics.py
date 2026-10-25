@@ -189,6 +189,12 @@ CONTEXT_REPLY = TopicSpec("space/context/reply", Qos.AT_LEAST_ONCE, retain=False
 #: Not retained: an utterance is said once.
 CONTEXT_UTTERANCE = TopicSpec("space/context/utterance", Qos.AT_LEAST_ONCE, retain=False)
 
+#: Something said in the room without the wake word, heard while listening
+#: continuously (FR-76). Mined for plans and facts, never answered. Not
+#: retained: it is speech, not state, and keeping it would keep a transcript
+#: of the room for anyone who connects later.
+CONTEXT_AMBIENT = TopicSpec("space/context/ambient", Qos.AT_LEAST_ONCE, retain=False)
+
 #: What the speech pipeline is doing -- waiting for the wake word, listening,
 #: transcribing -- restated on a heartbeat so a silent pipeline is seen to be
 #: gone. Retained, so the console shows it the moment it connects.

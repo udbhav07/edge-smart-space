@@ -508,3 +508,24 @@ class TestMail:
         reply = Room(config, chat).say("email Anu that I'm running ten minutes late")
         assert "mock email to Anu" in reply.reply and "nothing is actually sent" in reply.reply
         assert reply.awaiting_confirmation
+
+
+class TestOverheardToolsAreNotTheAssistants:
+    """FR-77, FR-78: pencilling and settling belong to overheard speech and the console."""
+
+    def test_they_are_never_offered(self, config):
+        chat = ScriptedChat(saying("ok"))
+        room = Room(config, chat)
+        room.say("what is on Thursday")
+        offered = {tool["function"]["name"] for tool in chat.requests[0][1]}
+        assert offered.isdisjoint({"pencil_event", "keep_event", "suggest_fact", "settle_fact"})
+
+    def test_one_named_anyway_is_refused_before_the_executor(self, config):
+        chat = ScriptedChat(
+            calling(call("pencil_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            saying("I couldn't."),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        assert room.calendar() == []
+        assert not [i for i in room.published(topics.ASSIST_PROPOSED, ToolInvocation) if i.tool == "pencil_event"]

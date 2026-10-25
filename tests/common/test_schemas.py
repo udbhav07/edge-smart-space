@@ -583,3 +583,36 @@ class TestConsoleMessages:
         from src.common.schemas import SpeechActivity, SpeechStatus
         with pytest.raises(ValueError):
             SpeechStatus(ts=1.0, activity=SpeechActivity.WAITING, heartbeat_s=0.0)
+
+
+class TestAmbientUtterance:
+    """FR-76: what continuous listening publishes, and only that."""
+
+    def test_carries_words_and_a_voice(self):
+        from src.common.schemas import AmbientUtterance
+
+        heard = AmbientUtterance(ts=1.0, transcript="dentist on thursday at four", profile_id="ravi")
+        assert heard.transcript.startswith("dentist") and heard.profile_id == "ravi"
+
+    def test_a_guest_has_no_profile(self):
+        from src.common.schemas import AmbientUtterance
+
+        assert AmbientUtterance(ts=1.0, transcript="hello there").profile_id == ""
+
+    def test_empty_speech_is_refused(self):
+        from src.common.schemas import AmbientUtterance
+
+        with pytest.raises(ValidationError):
+            AmbientUtterance(ts=1.0, transcript="")
+
+    def test_status_says_whether_the_room_listens_continuously(self):
+        from src.common.schemas import ListenMode, SpeechActivity, SpeechStatus
+
+        status = SpeechStatus(ts=1.0, activity=SpeechActivity.WAITING, heartbeat_s=15.0, listen_mode=ListenMode.CONTINUOUS)
+        assert status.listen_mode is ListenMode.CONTINUOUS
+
+    def test_a_profile_carries_its_suggestions_apart_from_its_facts(self):
+        from src.common.schemas import ProfileContext
+
+        context = ProfileContext(ts=1.0, profile_id="ravi", facts=("Likes tea.",), suggestions=("Hates the cold.",))
+        assert context.suggestions == ("Hates the cold.",) and "Hates the cold." not in context.facts

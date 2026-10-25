@@ -699,3 +699,42 @@ class TestSystemSuppliedParameters:
         from src.common.tools import FORGET, REMEMBER, ToolEffect
 
         assert REMEMBER.effect is ToolEffect.WRITE and FORGET.effect is ToolEffect.WRITE
+
+
+class TestOverheardTools:
+    """FR-77, FR-78: what overheard speech may do, and that a reply may not."""
+
+    def test_they_are_declared(self):
+        from src.common.tools import KEEP_EVENT, PENCIL_EVENT, SETTLE_FACT, SUGGEST_FACT
+
+        assert {PENCIL_EVENT, KEEP_EVENT, SUGGEST_FACT, SETTLE_FACT} <= set(ASSISTANCE_TOOLS)
+
+    def test_none_is_offered_to_the_assistant(self):
+        from src.common.tools import KEEP_EVENT, PENCIL_EVENT, SETTLE_FACT, SUGGEST_FACT
+
+        assert not any(spec.offered_to_assistant for spec in (PENCIL_EVENT, KEEP_EVENT, SUGGEST_FACT, SETTLE_FACT))
+
+    def test_every_other_tool_still_is(self):
+        hidden = {"pencil_event", "keep_event", "suggest_fact", "settle_fact"}
+        assert all(spec.offered_to_assistant for spec in ASSISTANCE_TOOLS if spec.name not in hidden)
+
+    def test_they_write_and_never_commit(self):
+        """A plan overheard is pencilled, never booked (FR-77)."""
+        from src.common.tools import KEEP_EVENT, PENCIL_EVENT, SETTLE_FACT, SUGGEST_FACT
+
+        for spec in (PENCIL_EVENT, KEEP_EVENT, SUGGEST_FACT, SETTLE_FACT):
+            assert spec.effect is ToolEffect.WRITE and not spec.requires_confirmation
+
+    def test_whose_suggestion_it_is_comes_from_the_voice(self):
+        from src.common.tools import SUGGEST_FACT
+
+        assert "profile_id" not in SUGGEST_FACT.as_schema()["function"]["parameters"]["properties"]
+
+    def test_settling_takes_a_yes_or_no(self):
+        from src.common.tools import SETTLE_FACT
+
+        accepted = SETTLE_FACT.validate_arguments({"profile_id": "ravi", "fact": "Likes tea.", "keep": True})
+        assert accepted["keep"] is True
+
+    def test_overheard_speech_is_a_requester_of_its_own(self):
+        assert ToolRequester.AMBIENT.value == "ambient"

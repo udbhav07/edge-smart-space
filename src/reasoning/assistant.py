@@ -337,12 +337,13 @@ class Assistant:
         return "\n".join(parts)
 
     def _tools_for(self, hint: PreferenceHint) -> tuple[dict[str, object], ...]:
-        """The surface this speaker is offered: memory tools for a person only."""
+        """The surface this speaker is offered: memory tools for a person only,
+        and never the tools that only overheard speech or the console use."""
         recognised = self._recognised(hint) is not None
         return tuple(
             spec.as_schema()
             for name, spec in self._specs.items()
-            if recognised or name not in PROFILE_TOOLS
+            if spec.offered_to_assistant and (recognised or name not in PROFILE_TOOLS)
         )
 
     def _memory_asked(self, hint: PreferenceHint, utterance: str) -> ToolCall | None:
@@ -625,6 +626,17 @@ class Assistant:
                 tool=call.name if call.name.isidentifier() else "unknown",
                 status=ToolStatus.BAD_ARGUMENTS,
                 message=f"the arguments were not readable: {call.malformed[:80]}",
+            )
+        spec = self._specs.get(call.name)
+        if spec is not None and not spec.offered_to_assistant:
+            # Named in bare JSON though never offered: pencilling or settling
+            # belongs to overheard speech and the console, not to a reply.
+            return ToolResult(
+                ts=now,
+                invocation_id=invocation_id,
+                tool=call.name,
+                status=ToolStatus.UNKNOWN_TOOL,
+                message=f"{call.name} is not available here",
             )
         arguments = {key: _flat(value) for key, value in call.arguments.items()}
         arguments = self._system_supplied(call.name, arguments, hint)

@@ -152,6 +152,8 @@ class ToolRequester(str, Enum):
     PERSONAL_CONTEXT = "personal_context"
     CONSOLE = "console"
     OPERATOR = "operator"
+    #: Speech overheard without the wake word (FR-76): no one asked.
+    AMBIENT = "ambient"
 
 
 # --- Errors ----------------------------------------------------------------
@@ -333,6 +335,13 @@ class ToolSpec(BaseModel):
     purpose: str = Field(min_length=1, description="What the model is told it does")
     effect: ToolEffect
     parameters: tuple[ToolParameter, ...] = ()
+    offered_to_assistant: bool = Field(
+        default=True,
+        description="Whether the conversational model may call it. The tools "
+        "behind overheard speech and the console's review buttons are run by "
+        "their own requesters only, so a reply can never pencil, keep or "
+        "settle anything (FR-77, FR-78)",
+    )
 
     @model_validator(mode="after")
     def _parameter_names_are_unique(self) -> ToolSpec:
@@ -795,6 +804,103 @@ FORGET = ToolSpec(
     ),
 )
 
+# --- Overheard speech (FR-76 to FR-78) -------------------------------------
+
+#: What was overheard, kept with what it caused so the person can see why.
+_HEARD_PARAMETER = ToolParameter(
+    name="heard",
+    type=ParameterType.STRING,
+    description="The words overheard that suggested it.",
+    required=False,
+)
+
+PENCIL_EVENT = ToolSpec(
+    name="pencil_event",
+    purpose=(
+        "Pencil a tentative entry into the occupant's calendar for a plan "
+        "overheard in conversation: a meeting, an appointment, a trip. It is "
+        "shown as tentative until they keep or discard it."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="starts_at",
+            type=ParameterType.TIMESTAMP,
+            description="When it starts, as an ISO-8601 local date and time.",
+        ),
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="Short title for the entry.",
+        ),
+        ToolParameter(
+            name="duration_min",
+            type=ParameterType.INTEGER,
+            description=f"How long it lasts, in minutes; {DEFAULT_EVENT_DURATION_MIN} if not said.",
+            required=False,
+        ),
+        _HEARD_PARAMETER,
+    ),
+    offered_to_assistant=False,
+)
+
+KEEP_EVENT = ToolSpec(
+    name="keep_event",
+    purpose="Make a tentative calendar entry a firm one: the occupant kept it.",
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="event_id",
+            type=ParameterType.STRING,
+            description="The entry's id, such as ev_0003.",
+        ),
+    ),
+    offered_to_assistant=False,
+)
+
+SUGGEST_FACT = ToolSpec(
+    name="suggest_fact",
+    purpose=(
+        "Offer a fact overheard about the person speaking for them to keep. "
+        "It is not remembered until they accept it."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        _PROFILE_PARAMETER,
+        ToolParameter(
+            name="fact",
+            type=ParameterType.STRING,
+            description="The fact, as one short sentence about them in the third person.",
+        ),
+        _HEARD_PARAMETER,
+    ),
+    offered_to_assistant=False,
+)
+
+SETTLE_FACT = ToolSpec(
+    name="settle_fact",
+    purpose="Keep or dismiss a fact that was offered for remembering.",
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="profile_id",
+            type=ParameterType.STRING,
+            description="Whose suggestion it is.",
+        ),
+        ToolParameter(
+            name="fact",
+            type=ParameterType.STRING,
+            description="The suggestion, exactly as offered.",
+        ),
+        ToolParameter(
+            name="keep",
+            type=ParameterType.BOOLEAN,
+            description="True to remember it, false to dismiss it.",
+        ),
+    ),
+    offered_to_assistant=False,
+)
+
 #: The declared assistance surface (section 5.7.6). Adding a tool is one
 #: entry here plus a provider binding, and touches nothing else (FR-72).
 ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
@@ -806,6 +912,10 @@ ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
     SEND_MAIL,
     REMEMBER,
     FORGET,
+    PENCIL_EVENT,
+    KEEP_EVENT,
+    SUGGEST_FACT,
+    SETTLE_FACT,
 )
 
 #: Tools that only make sense for a recognised person. A guest has no

@@ -239,6 +239,14 @@ speech:
   # FR-52. Who is speaking selects a personalisation profile and grants
   # nothing. Only the enrolled vectors are stored, never audio (FR-51).
   status_interval_s: 15.0        # heartbeat on space/speech/status
+  # FR-76. Always listening: every utterance is transcribed, and one that is
+  # not addressed with the wake word is ambient -- never answered, only mined
+  # for a plan to pencil in (FR-77) or a fact to offer (FR-78). This revises
+  # FR-50: the room's words are transcribed, though audio is still never kept
+  # or published. wake_word restores capture-after-the-wake-word only.
+  listen_mode: continuous
+  ambient_min_words: 4           # shorter overheard speech is dropped
+  ambient_preroll_ms: 300        # keeps the first word of unaddressed speech
   voiceprints_path: state/voiceprints.json
   # Measured on synthetic voices: 88 % of household utterances recognised,
   # 5 % of strangers mistaken, nobody taken for the wrong member. Being a
@@ -446,3 +454,12 @@ console:
   calendar_days: 7
   history_kept: 360             # points per charted series: 30 min at 5 s
   operator_controls: true       # fault injection and reset, for demonstration
+
+# FR-76 to FR-78. What the reasoning layer does with speech nobody addressed
+# to it: one bounded model call per overheard line, looking for a plan to
+# pencil into the calendar as tentative and a fact to offer for keeping.
+ambient:
+  context_s: 300.0              # earlier lines kept as context, so a plan split
+                                # across sentences reads as one
+  max_lines: 8                  # lines of context per voice
+  max_calls_per_min: 6          # leaves the server to the assistant and supervisor

@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.common.schemas import Unit
+from src.common.schemas import ListenMode, Unit
 
 #: Number of coefficients in the RC model (DESIGN.md section 5.2.1).
 COEFFICIENT_COUNT = 4
@@ -511,6 +511,23 @@ class SpeechConfig(_Section):
         description="How often the pipeline restates its status, so a console "
         "can tell it from a pipeline that has died, in s",
     )
+    listen_mode: ListenMode = Field(
+        default=ListenMode.CONTINUOUS,
+        description="continuous: every utterance is transcribed, and one without "
+        "the wake word is ambient (FR-76); wake_word: capture only after it (FR-50)",
+    )
+    ambient_min_words: int = Field(
+        default=4,
+        gt=0,
+        description="Overheard speech shorter than this is dropped unpublished: "
+        "too little to hold a plan or a fact, and most of it is noise",
+    )
+    ambient_preroll_ms: int = Field(
+        default=300,
+        ge=0,
+        description="Audio kept from just before speech is detected, so the first "
+        "word of an unaddressed utterance is not clipped; dropped otherwise (FR-51)",
+    )
     voiceprints_path: str = Field(
         default="state/voiceprints.json",
         description="Enrolled voiceprints: vectors only, never audio (FR-51)",
@@ -975,6 +992,24 @@ class ConsoleConfig(_Section):
     )
 
 
+class AmbientConfig(_Section):
+    """Mining overheard speech for plans and facts (FR-76 to FR-78)."""
+
+    context_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description="How long an overheard line stays as context for the next, "
+        "so a plan split across sentences is read as one, in s",
+    )
+    max_lines: int = Field(default=8, gt=0, description="Overheard lines kept as context per voice")
+    max_calls_per_min: int = Field(
+        default=6,
+        gt=0,
+        description="Model calls on overheard speech per minute; a busy room "
+        "must not starve the assistant and the supervisor of the server",
+    )
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -1001,6 +1036,7 @@ class Config(_Section):
     calibration: CalibrationConfig = CalibrationConfig()
     profiles: ProfilesConfig = ProfilesConfig()
     console: ConsoleConfig = ConsoleConfig()
+    ambient: AmbientConfig = AmbientConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

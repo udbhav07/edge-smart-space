@@ -697,6 +697,7 @@ class ReasoningCaller(str, Enum):
     SUPERVISOR = "supervisor"
     ASSISTANT = "assistant"
     DIAGNOSIS = "diagnosis"
+    AMBIENT = "ambient"
 
 
 class ReasoningRecord(TimestampedMessage):
@@ -772,11 +773,37 @@ class ConsoleUtterance(TimestampedMessage):
     )
 
 
+class AmbientUtterance(TimestampedMessage):
+    """Something said in the room that was not addressed to the assistant (FR-76).
+
+    Heard while listening continuously, without the wake word. It is never
+    answered and never acted on as a request: the reasoning layer only looks
+    in it for a plan to pencil into the calendar (FR-77) or a fact to offer
+    for remembering (FR-78). Audio is never published, only these words, and
+    the topic is not retained.
+    """
+
+    transcript: str = Field(min_length=1, max_length=1000)
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Whose voice it was, if recognised; empty for a guest (FR-52)",
+    )
+    duration_s: float = Field(default=0.0, ge=0.0, description="How long the speech ran")
+
+
+class ListenMode(str, Enum):
+    """When the speech pipeline captures (FR-50, FR-76)."""
+
+    WAKE_WORD = "wake_word"    # only after the wake word, as FR-50 first required
+    CONTINUOUS = "continuous"  # every utterance; unaddressed ones are ambient
+
+
 class SpeechActivity(str, Enum):
     """What the speech pipeline is doing (section 5.8)."""
 
-    WAITING = "waiting"            # for the wake word; nothing is captured
-    LISTENING = "listening"        # capture window open after the wake word
+    WAITING = "waiting"            # for the wake word, or for speech when continuous
+    LISTENING = "listening"        # capture window open
     TRANSCRIBING = "transcribing"  # utterance closed, Whisper running
     UNDERSTANDING = "understanding"  # transcript known, extraction running
 
@@ -793,6 +820,10 @@ class SpeechStatus(TimestampedMessage):
     microphone: str = Field(default="", description="The input device in use")
     wake_word: str = ""
     heartbeat_s: float = Field(gt=0.0, description="How often this is restated")
+    listen_mode: ListenMode = Field(
+        default=ListenMode.WAKE_WORD,
+        description="Whether the room is listening continuously (FR-76)",
+    )
 
 
 class ContextTurn(BlackboardMessage):
@@ -819,6 +850,11 @@ class ProfileContext(TimestampedMessage):
     )
     facts: tuple[str, ...] = Field(default=(), description="Long-term memory")
     recent: tuple[ContextTurn, ...] = Field(default=(), description="Short-term context")
+    suggestions: tuple[str, ...] = Field(
+        default=(),
+        description="Facts overheard and held until the person keeps or dismisses "
+        "them (FR-78); never told to the assistant as memory",
+    )
 
     @field_serializer("preferences")
     def _plain_preferences(self, preferences: Mapping[str, str]) -> dict[str, str]:

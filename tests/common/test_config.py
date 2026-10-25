@@ -269,3 +269,17 @@ class TestOverlays:
         site.write_text("extends: absent.yaml\n", encoding="utf-8")
         with pytest.raises(ConfigError):
             load_config(site)
+
+
+class TestAmbientListening:
+    """FR-76: always listening is the shipped default, and it is configuration."""
+
+    def test_the_room_listens_continuously_by_default(self):
+        from src.common.schemas import ListenMode
+
+        config = load_config(Path("config/default.yaml"))
+        assert config.speech.listen_mode is ListenMode.CONTINUOUS
+
+    def test_ambient_mining_is_bounded(self):
+        config = load_config(Path("config/default.yaml"))
+        assert config.ambient.max_calls_per_min > 0 and config.ambient.max_lines > 0
