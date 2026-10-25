@@ -5,61 +5,70 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Layout: a sidebar of pages, one scrolling content column per page.
-   Chart series take the validated categorical order: blue, orange, aqua. */
+/* An Apple-style system, light first like apple.com: a #f5f5f7 page, white
+   cards that float on soft shadows rather than borders, #1d1d1f text and the
+   system blue for anything interactive. Dark follows the system, in Apple's
+   own dark palette. Status colours are Apple's, darkened in light mode so
+   text in them keeps its contrast. Chart series keep the validated order. */
 :root {
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
-  --ink: 8 10 14;
-  --surface: 15 18 24;
-  --raised: 22 27 35;
-  --line: 255 255 255;
-  --fg: 230 235 241;
-  --muted: 137 148 163;
-  --glacier: 124 231 214;
-  --ember: 245 176 96;
-  --alert: 255 122 110;
-  --good: 111 217 154;
-  --line-alpha: 0.07;
-  color-scheme: dark;
+  --series-1: #0071e3;
+  --series-2: #e8590c;
+  --series-3: #1a9e5c;
+  --ink: 245 245 247;
+  --surface: 255 255 255;
+  --raised: 240 240 243;
+  --line: 0 0 0;
+  --fg: 29 29 31;
+  --muted: 110 110 115;
+  --glacier: 0 113 227;
+  --ember: 199 90 0;
+  --alert: 215 0 21;
+  --good: 36 138 61;
+  --line-alpha: 0.08;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 6px 24px rgb(0 0 0 / 0.05);
+  --card-border: transparent;
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --series-1: #2a78d6;
-    --series-2: #eb6834;
-    --series-3: #1baf7a;
-    --ink: 244 246 248;
-    --surface: 255 255 255;
-    --raised: 238 242 246;
-    --line: 15 23 42;
-    --fg: 17 24 33;
-    --muted: 95 106 121;
-    --glacier: 13 148 136;
-    --ember: 194 120 20;
-    --alert: 205 55 45;
-    --good: 22 140 80;
-    --line-alpha: 0.09;
-    color-scheme: light;
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --series-1: #0a84ff;
+    --series-2: #ff9f0a;
+    --series-3: #30d158;
+    --ink: 0 0 0;
+    --surface: 28 28 30;
+    --raised: 44 44 46;
+    --line: 255 255 255;
+    --fg: 245 245 247;
+    --muted: 152 152 157;
+    --glacier: 10 132 255;
+    --ember: 255 159 10;
+    --alert: 255 69 58;
+    --good: 48 209 88;
+    --line-alpha: 0.1;
+    --shadow: none;
+    --card-border: rgb(255 255 255 / 0.06);
+    color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
-  --ink: 8 10 14;
-  --surface: 15 18 24;
-  --raised: 22 27 35;
+  --series-1: #0a84ff;
+  --series-2: #ff9f0a;
+  --series-3: #30d158;
+  --ink: 0 0 0;
+  --surface: 28 28 30;
+  --raised: 44 44 46;
   --line: 255 255 255;
-  --fg: 230 235 241;
-  --muted: 137 148 163;
-  --glacier: 124 231 214;
-  --ember: 245 176 96;
-  --alert: 255 122 110;
-  --good: 111 217 154;
-  --line-alpha: 0.07;
+  --fg: 245 245 247;
+  --muted: 152 152 157;
+  --glacier: 10 132 255;
+  --ember: 255 159 10;
+  --alert: 255 69 58;
+  --good: 48 209 88;
+  --line-alpha: 0.1;
+  --shadow: none;
+  --card-border: rgb(255 255 255 / 0.06);
   color-scheme: dark;
 }
 
@@ -69,30 +78,38 @@ body {
   margin: 0;
   background: rgb(var(--ink));
   color: rgb(var(--fg));
-  font-family: "Geist Variable", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  /* SF Pro on Apple devices, Segoe UI Variable on Windows; Geist, bundled,
+     where neither exists. Nothing is fetched (NFR-06). */
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Geist Variable", system-ui, sans-serif;
   font-size: 15px;
-  line-height: 1.55;
+  line-height: 1.5;
+  letter-spacing: -0.011em;
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "ss01", "cv11";
 }
 
-/* The room's light: a faint wash behind everything, cool by default. */
-.atmosphere {
-  background:
-    radial-gradient(1200px 600px at 50% -10%, rgb(var(--glacier) / 0.07), transparent 60%),
-    radial-gradient(800px 500px at 100% 100%, rgb(var(--ember) / 0.035), transparent 60%),
-    rgb(var(--ink));
+/* Flat, quiet, Apple: the page is one calm grey. */
+.atmosphere { background: rgb(var(--ink)); }
+
+/* A card floats on a soft shadow in light mode and on a faint edge in dark. */
+.card {
+  background: rgb(var(--surface));
+  border: 1px solid var(--card-border);
+  box-shadow: var(--shadow);
 }
+
+/* Apple's display type: big, heavy, tightly tracked. */
+.display { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", "Geist Variable", system-ui, sans-serif; letter-spacing: -0.025em; }
 
 .hairline { border-color: rgb(var(--line) / var(--line-alpha)); }
 .hairline-b { border-bottom: 1px solid rgb(var(--line) / var(--line-alpha)); }
 .hairline-t { border-top: 1px solid rgb(var(--line) / var(--line-alpha)); }
 .hairline-l { border-left: 1px solid rgb(var(--line) / var(--line-alpha)); }
 
+/* Vibrancy: the frosted bars of macOS and apple.com. */
 .glass {
-  background: rgb(var(--surface) / 0.72);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  background: rgb(var(--ink) / 0.72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
 
 .tabular { font-variant-numeric: tabular-nums; }
@@ -110,7 +127,7 @@ body {
 .scroll-thin::-webkit-scrollbar { width: 8px; }
 .scroll-thin::-webkit-scrollbar-thumb { background: rgb(var(--line) / 0.12); border-radius: 8px; }
 
-:focus-visible { outline: 2px solid rgb(var(--glacier) / 0.8); outline-offset: 2px; border-radius: 6px; }
+:focus-visible { outline: 3px solid rgb(var(--glacier) / 0.45); outline-offset: 2px; border-radius: 10px; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

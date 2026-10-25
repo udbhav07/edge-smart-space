@@ -88,7 +88,7 @@ function ComfortDial({ current, held, onSet }: { current: number | null; held: n
           </p>
           <Popover.Close
             onClick={() => onSet(value)}
-            className="mt-3 w-full rounded-lg bg-glacier py-1.5 text-[13px] font-medium text-[rgb(var(--ink))] hover:brightness-110"
+            className="mt-3 w-full rounded-lg bg-glacier py-1.5 text-[13px] font-medium text-white hover:brightness-110"
           >
             Set {value.toFixed(1)}°
           </Popover.Close>

@@ -4,8 +4,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Geist Variable"', "ui-sans-serif", "system-ui", "Segoe UI", "sans-serif"],
-        mono: ['"Geist Mono Variable"', "ui-monospace", "Cascadia Mono", "Consolas", "monospace"],
+        sans: ["-apple-system", "BlinkMacSystemFont", '"SF Pro Text"', '"Segoe UI Variable Text"', '"Segoe UI"', '"Geist Variable"', "system-ui", "sans-serif"],
+        mono: ['"SF Mono"', "ui-monospace", '"Cascadia Mono"', '"Geist Mono Variable"', "Consolas", "monospace"],
       },
       colors: {
         ink: "rgb(var(--ink) / <alpha-value>)",

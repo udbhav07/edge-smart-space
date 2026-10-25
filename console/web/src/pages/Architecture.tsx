@@ -154,7 +154,7 @@ function ServiceSection({ id }: { id: Actor }) {
   const { health, word, last } = useHealth(id);
   const { produces, consumes } = topicsOfActor(id);
   return (
-    <section id={`svc-${id}`} className="scroll-mt-20 rounded-2xl border hairline bg-surface/80 p-5">
+    <section id={`svc-${id}`} className="scroll-mt-20 card rounded-[22px] p-5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <h3 className="text-[16px] font-semibold text-fg">{ACTOR_NAMES[id]}</h3>
         {spec && <span className="text-[12px] text-muted">{spec.layer}</span>}
@@ -259,7 +259,7 @@ export function Architecture() {
         <h2 className="mb-3 text-[18px] font-semibold text-fg">Design rules</h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {PRINCIPLES.map(({ icon: Icon, title, text }) => (
-            <div key={title} className="rounded-2xl border hairline bg-surface/80 p-4">
+            <div key={title} className="card rounded-[22px] p-4">
               <Icon className="h-4 w-4 text-glacier" />
               <div className="mt-2 text-[14px] font-medium text-fg">{title}</div>
               <p className="mt-1 text-[13px] leading-relaxed text-fg/75">{text}</p>

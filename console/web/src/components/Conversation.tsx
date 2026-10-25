@@ -173,7 +173,7 @@ function ConfirmCard({ waiting, onAnswer }: { waiting: Waiting; onAnswer: (id: s
         <button
           disabled={busy !== null}
           onClick={() => answer(true)}
-          className="rounded-lg bg-glacier px-3.5 py-1.5 text-[13px] font-medium text-[rgb(var(--ink))] hover:brightness-110 disabled:opacity-50"
+          className="rounded-lg bg-glacier px-3.5 py-1.5 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-50"
         >
           {busy === "yes" ? "Confirming…" : "Confirm"}
         </button>

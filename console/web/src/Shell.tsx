@@ -19,17 +19,17 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const badge: Record<string, number> = { "/bookings": waiting, "/faults": faults };
   const voice = speechAlive(state?.speech ?? null, now);
   return (
-    <nav className="flex h-full flex-col gap-6 px-3 py-4" aria-label="Pages">
-      <div className="flex items-center gap-2.5 px-2">
-        <Orb presence={link === "offline" ? "offline" : "idle"} size={28} />
+    <nav className="flex h-full flex-col gap-6 px-3 py-5" aria-label="Pages">
+      <div className="flex items-center gap-3 px-2.5">
+        <Orb presence={link === "offline" ? "offline" : "idle"} size={30} />
         <div className="leading-tight">
-          <div className="text-[14px] font-semibold tracking-tight text-fg">Smart Space</div>
-          <div className="text-[11.5px] text-muted">Room 1 · edge node</div>
+          <div className="display text-[17px] font-semibold text-fg">Smart Space</div>
+          <div className="text-[12px] text-muted">Room 1 · edge node</div>
         </div>
       </div>
       {NAV.map((section) => (
         <div key={section.group} className="grid gap-0.5">
-          <div className="px-2.5 pb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted/80">{section.group}</div>
+          <div className="px-3 pb-1 text-[12px] font-semibold text-muted">{section.group}</div>
           {section.items.map((item) => {
             const Icon = item.icon;
             const count = item.to === "/mail" ? unreadMail : badge[item.to] ?? 0;
@@ -41,15 +41,15 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 onClick={onNavigate}
                 className={({ isActive }) =>
                   cn(
-                    "group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13.5px] transition",
-                    isActive ? "bg-raised text-fg" : "text-muted hover:bg-raised/60 hover:text-fg",
+                    "group flex items-center gap-3 rounded-[10px] px-3 py-[7px] text-[14px] transition",
+                    isActive ? "bg-glacier text-white shadow-sm" : "text-fg/85 hover:bg-line/[0.05]",
                   )
                 }
               >
                 <Icon className="h-4 w-4" />
                 {item.label}
                 {count > 0 && (
-                  <span className={cn("ml-auto rounded-full px-1.5 text-[11px] font-medium tabular", item.to === "/faults" ? "bg-alert/15 text-alert" : "bg-glacier/15 text-glacier")}>
+                  <span className={cn("ml-auto min-w-[20px] rounded-full px-1.5 text-center text-[11px] font-semibold tabular", item.to === "/faults" ? "bg-alert text-white" : "bg-line/[0.08] text-fg/80")}>
                     {count}
                   </span>
                 )}
@@ -58,7 +58,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           })}
         </div>
       ))}
-      <div className="mt-auto grid gap-2 rounded-xl border hairline p-3 text-[12px]">
+      <div className="card mt-auto grid gap-2 rounded-2xl p-3.5 text-[12px]">
         <div className="flex items-center gap-2 text-muted">
           {link === "offline" ? <WifiOff className="h-3.5 w-3.5 text-alert" /> : <Wifi className={cn("h-3.5 w-3.5", link === "live" ? "text-good" : "text-ember")} />}
           {link === "live" ? "Live updates" : link === "polling" ? "Reconnecting · polling" : link === "offline" ? "Console offline" : "Connecting…"}
@@ -84,14 +84,14 @@ function Topbar({ onMenu, onPalette }: { onMenu: () => void; onPalette: () => vo
   const location = useLocation();
   const title = NAV.flatMap((section) => section.items).find((item) => (item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to)))?.label ?? "";
   return (
-    <header className="hairline-b glass sticky top-0 z-30 flex items-center gap-3 px-4 py-2.5 sm:px-6">
+    <header className="hairline-b glass sticky top-0 z-30 flex items-center gap-3 px-4 py-3 sm:px-8">
       <button onClick={onMenu} className="rounded-lg p-1.5 text-muted hover:bg-raised hover:text-fg lg:hidden" aria-label="Open the menu">
         <Menu className="h-5 w-5" />
       </button>
       <span className="text-[13.5px] font-medium text-fg lg:hidden">{title}</span>
       <div className="ml-auto flex items-center gap-2">
         {room && (
-          <span className="hidden items-center gap-2 rounded-full border hairline px-3 py-1 text-[12.5px] sm:flex">
+          <span className="hidden items-center gap-2 rounded-full bg-surface px-3.5 py-1.5 text-[13px] shadow-sm sm:flex">
             <span className="text-muted">Room</span>
             <span className="font-mono text-fg tabular">{celsius(indoor)}</span>
             <span className="text-muted">holding</span>
@@ -99,12 +99,12 @@ function Topbar({ onMenu, onPalette }: { onMenu: () => void; onPalette: () => vo
           </span>
         )}
         {mode && (
-          <span className={cn("flex items-center gap-1.5 rounded-full px-3 py-1 text-[12.5px] font-medium", mode === "NORMAL" ? "bg-good/10 text-good" : "bg-ember/10 text-ember")}>
+          <span className={cn("flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[13px] font-medium", mode === "NORMAL" ? "bg-good/10 text-good" : "bg-ember/10 text-ember")}>
             <span className={cn("h-1.5 w-1.5 rounded-full", mode === "NORMAL" ? "bg-good" : "animate-pulse bg-ember")} />
             {modeLabel[mode]}
           </span>
         )}
-        <button onClick={onPalette} className="flex items-center gap-1.5 rounded-lg border hairline px-2.5 py-1 text-[12px] text-muted hover:text-fg" aria-label="Commands">
+        <button onClick={onPalette} className="flex items-center gap-1.5 rounded-full bg-surface px-3 py-1.5 text-[12px] text-muted shadow-sm hover:text-fg" aria-label="Commands">
           <CommandIcon className="h-3.5 w-3.5" /> K
         </button>
       </div>
@@ -136,13 +136,13 @@ export function Shell() {
 
   return (
     <div className="atmosphere flex h-full">
-      <aside className="hidden w-[248px] shrink-0 border-r hairline lg:block">
+      <aside className="glass hidden w-[256px] shrink-0 border-r hairline lg:block">
         <Sidebar />
       </aside>
       {menu && (
         <div className="fixed inset-0 z-40 lg:hidden">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setMenu(false)} />
-          <div className="absolute inset-y-0 left-0 w-[264px] bg-surface shadow-2xl">
+          <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => setMenu(false)} />
+          <div className="absolute inset-y-0 left-0 w-[272px] bg-ink shadow-2xl">
             <button onClick={() => setMenu(false)} className="absolute right-3 top-3 rounded-lg p-1.5 text-muted hover:bg-raised" aria-label="Close the menu"><X className="h-4 w-4" /></button>
             <Sidebar onNavigate={() => setMenu(false)} />
           </div>
@@ -168,7 +168,7 @@ export function Shell() {
           reset: () => void guard(api.reset("checked from the console"), "Reset sent"),
         }}
       />
-      <Toaster theme="system" position="bottom-right" toastOptions={{ className: "!bg-surface !text-fg !border-[rgb(var(--line)/0.08)]" }} />
+      <Toaster theme="system" position="bottom-right" toastOptions={{ className: "!bg-surface !text-fg !border-[rgb(var(--line)/0.08)] !rounded-2xl !shadow-lg" }} />
     </div>
   );
 }

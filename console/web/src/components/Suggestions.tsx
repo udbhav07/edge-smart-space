@@ -47,7 +47,7 @@ export function Suggestions({ profiles }: { profiles: Profile[] }) {
                 <button
                   disabled={busy === key}
                   onClick={() => void settle(profile, fact, true, key)}
-                  className="inline-flex items-center gap-1 rounded-lg bg-glacier px-2.5 py-1 text-[12px] font-medium text-[rgb(var(--ink))] hover:brightness-110 disabled:opacity-50"
+                  className="inline-flex items-center gap-1 rounded-lg bg-glacier px-2.5 py-1 text-[12px] font-medium text-white hover:brightness-110 disabled:opacity-50"
                 >
                   <Check className="h-3.5 w-3.5" /> Keep
                 </button>

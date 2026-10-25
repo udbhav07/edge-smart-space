@@ -48,7 +48,7 @@ export function Topics() {
                 const last = rows.reduce<number | null>((latest, row) => (latest === null || row.last_ts > latest ? row.last_ts : latest), null);
                 const Icon = iconFor(doc.pattern.replace(/\+/g, "temp_01"));
                 return (
-                  <Link key={doc.slug} to={`/topics/${doc.slug}`} className="group rounded-2xl border hairline bg-surface/80 p-4 transition-colors hover:border-glacier/40">
+                  <Link key={doc.slug} to={`/topics/${doc.slug}`} className="group card rounded-[22px] p-4 transition-colors hover:border-glacier/40">
                     <div className="flex items-start gap-3">
                       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-raised text-glacier"><Icon className="h-4 w-4" /></span>
                       <div className="min-w-0 flex-1">
