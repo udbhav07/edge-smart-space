@@ -6,6 +6,27 @@
 
 **How the console was driven.** Each console action was made through the same HTTP calls its buttons make (`/api/say`, `/api/calendar/*`, `/api/bookings/{id}`, `/api/mail`, `/api/memory/settle`, `/api/operator/*`), and results were read from `/api/state`. That kept the timings honest. All 11 pages were also opened in a browser and looked at, at desktop and phone width. The scripts and raw transcripts are listed under "Evidence" at the end.
 
+## Status, 2026-10-26
+
+Every finding is addressed on `fix/live-run-defects`; `git log --grep S-02` shows the work for any one. Each was then replayed live, as the customer did, on a clean restart (`sla_verify.py`, in the evidence folder). Notes give what was seen live.
+
+| ID | Status | Commits | Live re-check |
+|---|---|---|---|
+| S-01 | Fixed | 9d0f88f | About 30 min with the microphone live: no new tentative entries; only the four deliberate test plans remain. Overheard speech keeps only the segments Whisper is confident in, a looping transcript is dropped, and a plan needs a day or time said. |
+| S-02 | Fixed | 82f3808 | `tools.inject temp_01 drift 0.01` gave `D4_DRIFT on temp_01` at 450 s, `DEGRADED_SENSOR`, explained as drift; the AC stayed in service. The meter shows whether the unit ran, and humidity whether the room really warmed. E3 seeds 1–3: drift → D4, dead unit → D5; five healthy one-hour runs, no faults. |
+| S-03 | Fixed | 0c51c14, 397e540 | The first replay found two entries named "plumber" at 11:00, which made the move ask "which one?". Follow-ups now name the entry by id. Unit tests replay both live variants and the duplicate-name case. The room goal was unchanged in the replay (24.0 → 24.0). |
+| S-04 | Fixed | 0c51c14, 397e540 | As S-03: "cancel it" cancels the entry just put in. |
+| S-05 | Fixed | f135ff0 | After "forget that I'm vegetarian", "what do you know about me?" listed the profile as it stands, without "vegetarian". |
+| S-06 | Fixed | f135ff0 | A guest: "I don't know who you are, so I keep nothing about you." |
+| S-07 | Fixed, one open item | 767a39d | Stale retained points are no longer charted. The tile says "cooling toward 24.0°" while the room is above it. **Open:** after a restart the estimator's first published `t_in` was 23.2 °C with a current timestamp, while every raw reading was 29.0. It is one point (a 5 s jump, not a climb), and its source is not yet found. Nothing is retained on `space/sensor/+/state`. |
+| S-08 | Fixed | 0cbf137 | `space/system/mode` with 2 messages: 0.0/min, not 19.6. |
+| S-09 | Fixed | 0cbf137 | "A mock email to anu@example.com: Dinner". |
+| S-10 | Fixed | 0cbf137 | The inbox is kept in `state/console/inbox.json`, bounded at 100. |
+| S-11 | Fixed | 9c61d1d | "next Tuesday", said on Monday: "… on Tuesday 27 October (that's tomorrow; say if you meant the week after)". |
+| S-12 | Fixed | f135ff0 | Typed as Ravi: "(You're chatting as Ravi …)". |
+| S-13 | Fixed | 9c61d1d, a967a0a | The first replay read "The system is the temperature sensor is not working", which was broken grammar. It now reads "Not quite. The temperature sensor is not working, so the room is being controlled on an estimate. …" |
+| S-14 | Fixed | 0cbf137, a967a0a | The first replay's inbox note began "D5_ACTUATOR_NO_RESPONSE on ac". It now reads "The air conditioner isn't cooling the room, so it is on hold. When the air conditioner has been checked, press Reset on Faults & control." Overview shows the same while the hold lasts. |
+
 ## Verdict scale
 
 - **BREACH-High:** the product does the wrong thing to the room or the calendar, or tells the customer something false.
