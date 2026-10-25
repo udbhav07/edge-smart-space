@@ -677,3 +677,37 @@ class TestWhichNextWeek:
         chat = ScriptedChat(calling(call("book_travel", kind="flight", destination="Delhi", depart_on="2026-10-01T09:00:00")))
         room = Room(config, chat)
         assert "week after" not in room.say("book me a flight to Delhi next Thursday").reply
+
+
+class TestTwoEntriesNamedAlike:
+    """S-03 re-verified live: an earlier 'Plumber appointment' and a new 'plumber'
+    at the same time made 'actually make it half past eleven' and 'cancel it'
+    both answer 'which one?'."""
+
+    def _two_plumbers(self, config, *then):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-02T11:00:00", subject="Plumber appointment")),
+            calling(call("schedule_event", starts_at="2026-10-02T11:00:00", subject="plumber")),
+            *then,
+        )
+        room = Room(config, chat)
+        room.say("put the plumber appointment in on Friday at eleven", profile_id="anu")
+        room.say("put the plumber in my calendar on Friday at eleven")
+        return room
+
+    def test_the_follow_up_moves_the_one_just_put_in(self, config):
+        room = self._two_plumbers(config, saying("Which one?"))
+        room.say("actually make it half past eleven")
+        times = {event["subject"]: event["starts_at"] for event in room.calendar()}
+        assert times == {"Plumber appointment": "2026-10-02T11:00", "plumber": "2026-10-02T11:30"}
+
+    def test_cancel_it_cancels_the_one_just_put_in(self, config):
+        room = self._two_plumbers(config, saying("Which one?"))
+        room.say("cancel it")
+        assert [event["subject"] for event in room.calendar()] == ["Plumber appointment"]
+
+    def test_the_model_is_never_shown_the_entry_id(self, config):
+        chat = ScriptedChat(saying("ok"))
+        Room(config, chat).say("what is on Thursday")
+        tools = {t["function"]["name"]: t["function"]["parameters"]["properties"] for t in chat.requests[0][1]}
+        assert "event_id" not in tools["move_event"] and "event_id" not in tools["cancel_event"]

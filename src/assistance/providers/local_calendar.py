@@ -275,7 +275,7 @@ class LocalCalendar:
         )
 
     def _cancel(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
-        event = self._one_matching(str(arguments["subject"]), arguments.get("on"))
+        event = self._by_id(arguments.get("event_id")) or self._one_matching(str(arguments["subject"]), arguments.get("on"))
         self.remove(str(event["event_id"]))
         LOGGER.info("cancelled %s: %s", event["event_id"], event["subject"])
         return ProviderOutcome(
@@ -284,7 +284,7 @@ class LocalCalendar:
         )
 
     def _move(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
-        event = self._one_matching(str(arguments["subject"]), None)
+        event = self._by_id(arguments.get("event_id")) or self._one_matching(str(arguments["subject"]), None)
         starts = _parse(arguments["starts_at"])
         if arguments.get("keep_day"):
             # "Move it to four": the entry's own day, at the new time.
@@ -298,6 +298,12 @@ class LocalCalendar:
             message=f"Moved {event['subject']} to {describe_time(starts)}.",
             detail={"event_id": event["event_id"], "starts_at": event["starts_at"]},
         )
+
+    def _by_id(self, event_id: ArgumentValue | None) -> dict[str, str | int] | None:
+        """The entry with this id, when one is named and still exists (S-03)."""
+        if not event_id:
+            return None
+        return next((event for event in self._events if event["event_id"] == str(event_id)), None)
 
     def _one_matching(self, words: str, on: ArgumentValue | None) -> dict[str, str | int]:
         """The single entry the occupant meant, or a question back.

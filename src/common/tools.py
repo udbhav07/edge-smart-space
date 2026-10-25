@@ -642,6 +642,16 @@ GET_EVENTS = ToolSpec(
     ),
 )
 
+#: Which entry exactly, when the requester knows it (S-03): two entries named
+#: alike made "move it" ask "which one?". Filled in by the requester from the
+#: entry it last put in or moved, never by the model.
+_ENTRY_ID_PARAMETER = ToolParameter(
+    name="event_id",
+    type=ParameterType.STRING,
+    description="The entry's id, when known.",
+    required=False,
+    supplied_by_system=True,
+)
 CANCEL_EVENT = ToolSpec(
     name="cancel_event",
     purpose=(
@@ -661,6 +671,7 @@ CANCEL_EVENT = ToolSpec(
             description="When the entry is, if they said; omit otherwise.",
             required=False,
         ),
+        _ENTRY_ID_PARAMETER,
     ),
 )
 
@@ -692,6 +703,7 @@ MOVE_EVENT = ToolSpec(
             # never by the model, which wrote today's date for that live.
             supplied_by_system=True,
         ),
+        _ENTRY_ID_PARAMETER,
     ),
 )
 

@@ -291,3 +291,22 @@ class TestMovingWithinItsDay:
         _schedule(calendar, starts_at="2026-10-01T15:00:00", subject="design review")
         calendar.invoke("move_event", {"subject": "review", "starts_at": "2026-10-02T16:00:00"})
         assert calendar.events[0]["starts_at"] == "2026-10-02T16:00"
+
+
+class TestByEntryId:
+    def test_a_move_by_id_moves_that_entry_only(self, calendar):
+        _schedule(calendar, starts_at="2026-10-02T11:00:00", subject="Plumber appointment")
+        _schedule(calendar, starts_at="2026-10-02T11:00:00", subject="plumber")
+        calendar.invoke("move_event", {"subject": "plumber", "starts_at": "2026-10-02T11:30:00", "event_id": "ev_0002"})
+        assert {e["event_id"]: e["starts_at"] for e in calendar.events} == {"ev_0001": "2026-10-02T11:00", "ev_0002": "2026-10-02T11:30"}
+
+    def test_a_cancel_by_id_cancels_that_entry_only(self, calendar):
+        _schedule(calendar, starts_at="2026-10-02T11:00:00", subject="Plumber appointment")
+        _schedule(calendar, starts_at="2026-10-02T11:00:00", subject="plumber")
+        calendar.invoke("cancel_event", {"subject": "plumber", "event_id": "ev_0002"})
+        assert [e["event_id"] for e in calendar.events] == ["ev_0001"]
+
+    def test_an_id_no_longer_there_falls_back_to_the_words(self, calendar):
+        _schedule(calendar, starts_at="2026-10-02T11:00:00", subject="dentist")
+        calendar.invoke("cancel_event", {"subject": "dentist", "event_id": "ev_0099"})
+        assert calendar.events == ()

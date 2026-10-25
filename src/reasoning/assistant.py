@@ -237,7 +237,7 @@ class Assistant:
         self._profiles: dict[str, ProfileContext] = {}
         #: The entry each voice last put in or moved, so "move it" means that
         #: one. Bounded by the voices kept.
-        self._last_entry: dict[str, tuple[str, str]] = {}
+        self._last_entry: dict[str, tuple[str, str, str]] = {}
 
     # --- wiring -------------------------------------------------------
 
@@ -418,7 +418,7 @@ class Assistant:
         said = utterance.lower()
         if last is None or not _FOLLOW_UP.search(said) or named_days(said, self._today()):
             return None
-        subject, starts_at = last
+        subject, starts_at, _event_id = last
         if _CANCEL.search(said):
             return ToolCall(call_id="from-the-words", name="cancel_event", arguments={"subject": subject, "on": starts_at[:10]})
         when = time_said(said)
@@ -759,6 +759,7 @@ class Assistant:
             # date the model wrote -- today's, live -- is not used (FR-44).
             arguments["keep_day"] = True
         arguments = self._the_one_meant(call.name, arguments, utterance, hint)
+        arguments = self._exact_entry(call.name, arguments, hint)
         corrected = _onto_named_day(call.name, arguments, the_one_day(utterance, self._today()))
         corrected = self._from_now(call.name, corrected, utterance)
         if corrected != arguments:
@@ -794,7 +795,9 @@ class Assistant:
             starts_at = str(result.detail.get("starts_at") or corrected.get("starts_at") or "")
             self._last_entry.pop(voice, None)
             if starts_at:
-                self._last_entry[voice] = (str(corrected.get("subject", "")), starts_at)
+                self._last_entry[voice] = (
+                    str(corrected.get("subject", "")), starts_at, str(result.detail.get("event_id") or "")
+                )
             while len(self._last_entry) > _VOICES_REMEMBERED:
                 self._last_entry.pop(next(iter(self._last_entry)))
         elif result.status is ToolStatus.OK and tool == "cancel_event":
@@ -821,6 +824,19 @@ class Assistant:
             return arguments
         self._corrections.append(f"{tool} of 'it' moved to the entry last touched: {last}")
         return {**arguments, "subject": last}
+
+    def _exact_entry(self, tool: str, arguments: dict, hint: PreferenceHint) -> dict:
+        """Name the entry by id when it is the one this voice last touched (S-03).
+
+        Live, two entries called "plumber" at 11:00 made "actually make it
+        half past eleven" and "cancel it" both answer "which one?".
+        """
+        if tool not in ("move_event", "cancel_event"):
+            return arguments
+        entry = self._last_entry.get(hint.profile_id or GUEST_PROFILE_ID)
+        if entry is None or not entry[2] or str(arguments.get("subject", "")).lower() != entry[0].lower():
+            return arguments
+        return {**arguments, "event_id": entry[2]}
 
     def _not_in_the_past(self, tool: str, arguments: dict, utterance: str) -> tuple[dict, str]:
         """FR-44 against the clock: an entry or booking must not start in the past.
