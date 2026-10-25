@@ -1510,6 +1510,8 @@ startup, which NFR-06 forbids.
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
 | `space/context/reply` | pub | no | 1 | `AssistantReply` |
 | `space/context/profile/{profile_id}` | pub | yes | 1 | `ProfileContext` |
+| `space/context/utterance` | pub | no | 1 | `ConsoleUtterance` |
+| `space/speech/status` | pub | yes | 1 | `SpeechStatus` |
 | `space/tariff/state` | pub | yes | 1 | `TariffState` |
 | `space/control/tracking` | pub | yes | 1 | `TrackingState` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |

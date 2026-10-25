@@ -753,6 +753,48 @@ class AssistantReply(TimestampedMessage):
     )
 
 
+class ConsoleUtterance(TimestampedMessage):
+    """Something an occupant typed in the console (FR-56, FR-57).
+
+    It carries words, not a decision: the reasoning layer extracts a
+    preference from it with the same call it uses for speech, so a typed
+    request is gated exactly as a spoken one and the console can command
+    nothing.
+    """
+
+    utterance_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=500)
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Who chose to speak as whom in the console; personalises "
+        "the reply and grants nothing (FR-52)",
+    )
+
+
+class SpeechActivity(str, Enum):
+    """What the speech pipeline is doing (section 5.8)."""
+
+    WAITING = "waiting"            # for the wake word; nothing is captured
+    LISTENING = "listening"        # capture window open after the wake word
+    TRANSCRIBING = "transcribing"  # utterance closed, Whisper running
+    UNDERSTANDING = "understanding"  # transcript known, extraction running
+
+
+class SpeechStatus(TimestampedMessage):
+    """The speech pipeline's state, for a person watching (FR-60).
+
+    Published on every change and restated on a heartbeat, so a console can
+    tell a quiet pipeline from a dead one.
+    """
+
+    activity: SpeechActivity
+    heard: str = Field(default="", description="The transcript, once there is one")
+    microphone: str = Field(default="", description="The input device in use")
+    wake_word: str = ""
+    heartbeat_s: float = Field(gt=0.0, description="How often this is restated")
+
+
 class ContextTurn(BlackboardMessage):
     """One exchange, kept as short-term context."""
 

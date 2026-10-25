@@ -244,6 +244,8 @@ DOCUMENTED_TOPICS = frozenset(
         "space/context/preference",
         "space/context/reply",
         "space/context/profile/{profile_id}",
+        "space/context/utterance",
+        "space/speech/status",
         "space/tariff/state",
         "space/control/tracking",
         "space/assist/proposed",

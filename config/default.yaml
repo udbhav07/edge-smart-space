@@ -238,6 +238,7 @@ speech:
   command_timeout_s: 15.0
   # FR-52. Who is speaking selects a personalisation profile and grants
   # nothing. Only the enrolled vectors are stored, never audio (FR-51).
+  status_interval_s: 15.0        # heartbeat on space/speech/status
   voiceprints_path: state/voiceprints.json
   # Measured on synthetic voices: 88 % of household utterances recognised,
   # 5 % of strangers mistaken, nobody taken for the wrong member. Being a
@@ -432,3 +433,15 @@ sim:
   outdoor_period_s: 86400.0
   outdoor_peak_hour: 15.0                   # Local; hottest mid-afternoon
   random_seed: 20260825
+
+# FR-56 to FR-58: the occupant's console, served by `python -m src.console`.
+# It has no authority: typed words go through the same extraction as speech,
+# the comfort setting is a preference the validator gates, and stopping it
+# changes nothing else. Local only: 127.0.0.1, or this node's LAN address.
+console:
+  host: 127.0.0.1
+  port: 8077
+  conversation_kept: 80
+  activity_kept: 120
+  calendar_days: 7
+  operator_controls: true       # fault injection and reset, for demonstration

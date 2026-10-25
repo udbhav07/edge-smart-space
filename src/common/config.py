@@ -505,6 +505,12 @@ class SpeechConfig(_Section):
     command_timeout_s: float = Field(
         gt=0.0, description="Hard cap on one utterance (FR-50)"
     )
+    status_interval_s: float = Field(
+        default=15.0,
+        gt=0.0,
+        description="How often the pipeline restates its status, so a console "
+        "can tell it from a pipeline that has died, in s",
+    )
     voiceprints_path: str = Field(
         default="state/voiceprints.json",
         description="Enrolled voiceprints: vectors only, never audio (FR-51)",
@@ -941,6 +947,31 @@ class ProfilesConfig(_Section):
     )
 
 
+class ConsoleConfig(_Section):
+    """The occupant's local console (FR-56 to FR-58).
+
+    A blackboard client with no authority: everything it does is published
+    as speech or the operator tools would publish it, and the rest of the
+    system neither knows nor cares whether it is running.
+    """
+
+    host: str = Field(
+        default="127.0.0.1",
+        min_length=1,
+        description="Interface to listen on. 127.0.0.1 keeps it on this node; "
+        "the node's LAN address opens it to the room's network, never beyond (FR-56)",
+    )
+    port: int = Field(default=8077, gt=0, lt=65536)
+    conversation_kept: int = Field(default=80, gt=0, description="Exchanges the console keeps")
+    activity_kept: int = Field(default=120, gt=0, description="Agent steps the console keeps")
+    calendar_days: int = Field(default=7, gt=0, description="How far ahead the calendar view looks")
+    operator_controls: bool = Field(
+        default=True,
+        description="Offer fault injection and reset in the console, for "
+        "demonstration (FR-31); off for an occupant-only console",
+    )
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -966,6 +997,7 @@ class Config(_Section):
     evaluation: EvaluationConfig = EvaluationConfig()
     calibration: CalibrationConfig = CalibrationConfig()
     profiles: ProfilesConfig = ProfilesConfig()
+    console: ConsoleConfig = ConsoleConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

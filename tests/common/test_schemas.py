@@ -554,3 +554,32 @@ class TestProfiles:
             recent=(ContextTurn(ts=1.0, said="hi", replied="hello"),),
         )
         assert ProfileContext.model_validate_json(context.model_dump_json()) == context
+
+
+class TestConsoleMessages:
+    """FR-56, FR-57: what the console and the speech pipeline publish."""
+
+    def test_an_utterance_carries_words_and_a_speaker(self):
+        from src.common.schemas import ConsoleUtterance
+        said = ConsoleUtterance(ts=1.0, utterance_id="u1", text="make it cooler", profile_id="ravi")
+        assert said.text == "make it cooler" and said.profile_id == "ravi"
+
+    def test_an_empty_utterance_is_refused(self):
+        from src.common.schemas import ConsoleUtterance
+        with pytest.raises(ValueError):
+            ConsoleUtterance(ts=1.0, utterance_id="u1", text="")
+
+    def test_an_unsafe_profile_id_is_refused(self):
+        from src.common.schemas import ConsoleUtterance
+        with pytest.raises(ValueError):
+            ConsoleUtterance(ts=1.0, utterance_id="u1", text="hi", profile_id="../etc")
+
+    def test_speech_status_states_its_heartbeat(self):
+        from src.common.schemas import SpeechActivity, SpeechStatus
+        status = SpeechStatus(ts=1.0, activity=SpeechActivity.LISTENING, heartbeat_s=15.0)
+        assert status.activity.value == "listening"
+
+    def test_a_status_without_a_heartbeat_is_refused(self):
+        from src.common.schemas import SpeechActivity, SpeechStatus
+        with pytest.raises(ValueError):
+            SpeechStatus(ts=1.0, activity=SpeechActivity.WAITING, heartbeat_s=0.0)

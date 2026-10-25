@@ -184,6 +184,16 @@ CONTEXT_PREFERENCE = TopicSpec(
 #: a reply is an answer to one question, not state.
 CONTEXT_REPLY = TopicSpec("space/context/reply", Qos.AT_LEAST_ONCE, retain=False)
 
+#: Something typed in the console, to be understood exactly as speech is
+#: (FR-57): the reasoning layer extracts a hint from it with the same call.
+#: Not retained: an utterance is said once.
+CONTEXT_UTTERANCE = TopicSpec("space/context/utterance", Qos.AT_LEAST_ONCE, retain=False)
+
+#: What the speech pipeline is doing -- waiting for the wake word, listening,
+#: transcribing -- restated on a heartbeat so a silent pipeline is seen to be
+#: gone. Retained, so the console shows it the moment it connects.
+SPEECH_STATUS = TopicSpec("space/speech/status", Qos.AT_LEAST_ONCE, retain=True)
+
 #: What is known about one person: long-term memory and recent conversation
 #: (FR-52). Retained, so a restarted assistant knows who it was talking to.
 CONTEXT_PROFILE = TopicSpec(
