@@ -578,6 +578,14 @@ class Assistant:
         if invocation is None:
             return "That needs your confirmation first, and nothing is booked yet."
         arguments = invocation.arguments
+        if invocation.tool == "send_mail":
+            recipient = str(arguments.get("to", "")).strip() or "someone"
+            subject = str(arguments.get("subject", "")).strip()
+            about = f" about “{subject}”" if subject else ""
+            return (
+                f"That would be a mock email to {recipient}{about}; nothing is "
+                f"actually sent. Nothing has gone yet. Shall I go ahead?"
+            )
         kind = str(arguments.get("kind", "booking"))
         destination = str(arguments.get("destination", "")).strip()
         origin = str(arguments.get("origin") or "").strip()

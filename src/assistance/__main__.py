@@ -22,6 +22,7 @@ from src.assistance.executor import AssistanceExecutor
 from src.assistance.memory import ProfileStore
 from src.assistance.profiles import ProfileKeeper
 from src.assistance.providers.local_calendar import LocalCalendar
+from src.assistance.providers.mock_mail import MockMail
 from src.assistance.providers.mock_travel import MockTravel
 from src.assistance.providers.profile_memory import ProfileMemory
 from src.common import topics
@@ -30,6 +31,7 @@ from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.tools import (
     BOOK_TRAVEL,
+    SEND_MAIL,
     CANCEL_EVENT,
     FORGET,
     GET_EVENTS,
@@ -59,6 +61,7 @@ def build_registry(config: Config, clock: Clock) -> ToolRegistry:
     registry.bind(CANCEL_EVENT.name, calendar)
     registry.bind(MOVE_EVENT.name, calendar)
     registry.bind(BOOK_TRAVEL.name, MockTravel())
+    registry.bind(SEND_MAIL.name, MockMail())
     memory = ProfileMemory(build_store(config, clock))
     registry.bind(REMEMBER.name, memory)
     registry.bind(FORGET.name, memory)

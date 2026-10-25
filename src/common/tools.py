@@ -718,6 +718,33 @@ BOOK_TRAVEL = ToolSpec(
     ),
 )
 
+SEND_MAIL = ToolSpec(
+    name="send_mail",
+    purpose=(
+        "Send an email for the occupant. You cannot complete this yourself: it "
+        "is put to the occupant for confirmation first. It reaches a mock "
+        "outbox and nothing is ever actually sent; say so when reporting back."
+    ),
+    effect=ToolEffect.COMMIT,
+    parameters=(
+        ToolParameter(
+            name="to",
+            type=ParameterType.STRING,
+            description="Who it is for: a name or an email address.",
+        ),
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="A short subject line.",
+        ),
+        ToolParameter(
+            name="body",
+            type=ParameterType.STRING,
+            description="The message itself, written as the occupant would send it.",
+        ),
+    ),
+)
+
 #: Whose memory a fact belongs to. Filled in from the recognised speaker by
 #: the requester; a model choosing it could write into someone else's.
 _PROFILE_PARAMETER = ToolParameter(
@@ -776,6 +803,7 @@ ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
     CANCEL_EVENT,
     MOVE_EVENT,
     BOOK_TRAVEL,
+    SEND_MAIL,
     REMEMBER,
     FORGET,
 )

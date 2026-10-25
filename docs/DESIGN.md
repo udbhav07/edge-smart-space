@@ -1082,6 +1082,7 @@ available in this design, so the field is required and has no default.
 | `schedule_event` | write | `starts_at`, `subject`, `duration_min?` | the local calendar (FR-58) |
 | `get_events` | read | `from_time`, `to_time` | the local calendar |
 | `book_travel` | commit | `kind`, `destination`, `depart_on`, `origin?`, `nights?` | the mock endpoint (FR-55) |
+| `send_mail` | commit | `to`, `subject`, `body` | a mock outbox; nothing is sent (FR-55, NFR-06) |
 
 Timestamps in a tool argument are ISO-8601 strings rather than the epoch
 seconds every message in §6.2 carries. The inconsistency is deliberate and is

@@ -499,3 +499,12 @@ class TestInSoManyMinutes:
         room = Room(config, chat)
         room.say("remind me to call mom in 10 minutes")
         assert room.calendar()[0]["starts_at"].startswith("2026-09-26T15:10")
+
+
+class TestMail:
+    def test_a_mail_is_put_to_the_occupant_as_a_mock(self, config):
+        """FR-54, FR-55: nothing is sent, and the question says so."""
+        chat = ScriptedChat(calling(call("send_mail", to="Anu", subject="Running late", body="Ten minutes late, sorry.")))
+        reply = Room(config, chat).say("email Anu that I'm running ten minutes late")
+        assert "mock email to Anu" in reply.reply and "nothing is actually sent" in reply.reply
+        assert reply.awaiting_confirmation
