@@ -279,3 +279,15 @@ class TestTentativeInListings:
         _schedule(calendar)
         detail = _window(calendar).detail
         assert detail["tentative_ids"] == "" and "(tentative)" not in _window(calendar).message
+
+
+class TestMovingWithinItsDay:
+    def test_keep_day_changes_only_the_time(self, calendar):
+        _schedule(calendar, starts_at="2026-10-01T15:00:00", subject="design review")
+        calendar.invoke("move_event", {"subject": "review", "starts_at": "2026-09-26T16:00:00", "keep_day": True})
+        assert calendar.events[0]["starts_at"] == "2026-10-01T16:00"
+
+    def test_without_it_the_date_written_is_used(self, calendar):
+        _schedule(calendar, starts_at="2026-10-01T15:00:00", subject="design review")
+        calendar.invoke("move_event", {"subject": "review", "starts_at": "2026-10-02T16:00:00"})
+        assert calendar.events[0]["starts_at"] == "2026-10-02T16:00"

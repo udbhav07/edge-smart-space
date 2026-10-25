@@ -683,6 +683,15 @@ MOVE_EVENT = ToolSpec(
             type=ParameterType.TIMESTAMP,
             description="The new start, as an ISO-8601 local date and time.",
         ),
+        ToolParameter(
+            name="keep_day",
+            type=ParameterType.BOOLEAN,
+            description="Keep the entry on its own day and change only the time.",
+            required=False,
+            # Decided from the words -- "move it to four" names no day -- and
+            # never by the model, which wrote today's date for that live.
+            supplied_by_system=True,
+        ),
     ),
 )
 

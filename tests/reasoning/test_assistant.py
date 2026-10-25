@@ -459,6 +459,36 @@ class TestCalendarCallsAreChecked:
         assert [event["starts_at"] for event in room.calendar()] == ["2026-10-01T16:00"]
         assert "Moved review" in reply.reply
 
+    def test_a_follow_up_naming_no_day_keeps_the_entrys_day(self, config):
+        """Live: 'tomorrow at three', then 'move it to four' -- the model wrote
+        today's date, and the move was refused as past."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("move_event", subject="review", starts_at="2026-09-26T16:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        reply = room.say("actually move it to four")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-01T16:00"]
+        assert "Moved review" in reply.reply
+
+    def test_a_move_naming_a_day_goes_to_that_day(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("move_event", subject="review", starts_at="2026-10-02T16:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        room.say("move the review to Friday at four")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-02T16:00"]
+
+    def test_the_model_is_never_shown_keep_day(self, config):
+        chat = ScriptedChat(saying("ok"))
+        room = Room(config, chat)
+        room.say("what is on Thursday")
+        (move,) = [t for t in chat.requests[0][1] if t["function"]["name"] == "move_event"]
+        assert "keep_day" not in move["function"]["parameters"]["properties"]
+
 
 class TestNoClaimWithoutATool:
     """Live: "cancel my meeting with the CEO" -- there was none -- was answered

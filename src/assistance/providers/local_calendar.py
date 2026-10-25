@@ -286,6 +286,9 @@ class LocalCalendar:
     def _move(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         event = self._one_matching(str(arguments["subject"]), None)
         starts = _parse(arguments["starts_at"])
+        if arguments.get("keep_day"):
+            # "Move it to four": the entry's own day, at the new time.
+            starts = datetime.combine(_parse(event["starts_at"]).date(), starts.time())
         duration_min = int(event.get("duration_min") or DEFAULT_EVENT_DURATION_MIN)
         event["starts_at"] = starts.isoformat(timespec="minutes")
         event["ends_at"] = (starts + timedelta(minutes=duration_min)).isoformat(timespec="minutes")

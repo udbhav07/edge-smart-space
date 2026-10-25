@@ -640,6 +640,10 @@ class Assistant:
             )
         arguments = {key: _flat(value) for key, value in call.arguments.items()}
         arguments = self._system_supplied(call.name, arguments, hint)
+        if call.name == "move_event" and not named_days(utterance, self._today()) and from_now(utterance) is None:
+            # "Move it to four" names no day: the entry keeps its own, and the
+            # date the model wrote -- today's, live -- is not used (FR-44).
+            arguments["keep_day"] = True
         corrected = _onto_named_day(call.name, arguments, the_one_day(utterance, self._today()))
         corrected = self._from_now(call.name, corrected, utterance)
         if corrected != arguments:
@@ -683,7 +687,8 @@ class Assistant:
         """
         name = _MOMENT_OF.get(tool)
         value = arguments.get(name) if name else None
-        if not isinstance(value, str):
+        if not isinstance(value, str) or arguments.get("keep_day"):
+            # Kept on its own day, the date written here is not the one used.
             return arguments, ""
         try:
             moment = datetime.fromisoformat(value).replace(tzinfo=None)
