@@ -226,6 +226,9 @@ class Assistant:
         #: What is true of the room, so a reply never claims otherwise.
         self._room = RoomState()
         self._profiles: dict[str, ProfileContext] = {}
+        #: The entry each voice last put in or moved, so "move it" means that
+        #: one. Bounded by the voices kept.
+        self._last_entry: dict[str, str] = {}
 
     # --- wiring -------------------------------------------------------
 
@@ -644,6 +647,7 @@ class Assistant:
             # "Move it to four" names no day: the entry keeps its own, and the
             # date the model wrote -- today's, live -- is not used (FR-44).
             arguments["keep_day"] = True
+        arguments = self._the_one_meant(call.name, arguments, utterance, hint)
         corrected = _onto_named_day(call.name, arguments, the_one_day(utterance, self._today()))
         corrected = self._from_now(call.name, corrected, utterance)
         if corrected != arguments:
@@ -673,7 +677,34 @@ class Assistant:
         )
         self._invocations_by_id[invocation_id] = invocation
         self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
-        return self._await_result(invocation)
+        result = self._await_result(invocation)
+        if result.status is ToolStatus.OK and tool in ("schedule_event", "move_event"):
+            voice = hint.profile_id or GUEST_PROFILE_ID
+            self._last_entry.pop(voice, None)
+            self._last_entry[voice] = str(corrected.get("subject", ""))
+            while len(self._last_entry) > _VOICES_REMEMBERED:
+                self._last_entry.pop(next(iter(self._last_entry)))
+        return result
+
+    def _the_one_meant(self, tool: str, arguments: dict, utterance: str, hint: PreferenceHint) -> dict:
+        """FR-44 for a pronoun: "move it" is the entry this voice last touched.
+
+        Live, "put the budget meeting in tomorrow at two" then "move it to
+        three" moved the design review from three turns back. When the words
+        say "it" or "that" and name none of the subject the model chose, the
+        subject is the last entry this voice put in or moved.
+        """
+        if tool not in ("move_event", "cancel_event") or not _PRONOUN.search(utterance):
+            return arguments
+        last = self._last_entry.get(hint.profile_id or GUEST_PROFILE_ID)
+        chosen = str(arguments.get("subject", ""))
+        said = utterance.lower()
+        if not last or chosen.lower() == last.lower():
+            return arguments
+        if any(word in said for word in chosen.lower().split() if len(word) > 2):
+            return arguments
+        self._corrections.append(f"{tool} of 'it' moved to the entry last touched: {last}")
+        return {**arguments, "subject": last}
 
     def _not_in_the_past(self, tool: str, arguments: dict, utterance: str) -> tuple[dict, str]:
         """FR-44 against the clock: an entry or booking must not start in the past.
@@ -778,6 +809,13 @@ class Assistant:
             completion_tokens=sum(turn.completion_tokens for turn in turns),
         )
         self._blackboard.publish(topics.AUDIT_REASONING, record)
+
+
+#: "Move it", "cancel that": a follow-up about the entry just discussed.
+_PRONOUN = re.compile(r"\b(it|that|this one|that one)\b", re.IGNORECASE)
+
+#: Voices whose last entry is remembered for "it".
+_VOICES_REMEMBERED = 16
 
 
 def _flat(value: object) -> bool | int | float | str | None:

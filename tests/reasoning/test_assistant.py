@@ -482,6 +482,33 @@ class TestCalendarCallsAreChecked:
         room.say("move the review to Friday at four")
         assert [event["starts_at"] for event in room.calendar()] == ["2026-10-02T16:00"]
 
+    def test_it_is_the_entry_last_put_in(self, config):
+        """Live: 'move it to three' moved the design review from three turns back."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="design review")),
+            calling(call("schedule_event", starts_at="2026-10-01T14:00:00", subject="budget meeting")),
+            calling(call("move_event", subject="design review", starts_at="2026-10-01T15:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the design review on Thursday at 3")
+        room.say("put the budget meeting on Thursday at 2")
+        room.say("actually move it to three")
+        moved = {event["subject"]: event["starts_at"] for event in room.calendar()}
+        assert moved == {"design review": "2026-10-01T15:00", "budget meeting": "2026-10-01T15:00"}
+
+    def test_a_subject_named_in_the_words_is_left_alone(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="design review")),
+            calling(call("schedule_event", starts_at="2026-10-01T14:00:00", subject="budget meeting")),
+            calling(call("move_event", subject="design review", starts_at="2026-10-01T17:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the design review on Thursday at 3")
+        room.say("put the budget meeting on Thursday at 2")
+        room.say("move the design review to five, it clashes")
+        moved = {event["subject"]: event["starts_at"] for event in room.calendar()}
+        assert moved["design review"] == "2026-10-01T17:00" and moved["budget meeting"] == "2026-10-01T14:00"
+
     def test_the_model_is_never_shown_keep_day(self, config):
         chat = ScriptedChat(saying("ok"))
         room = Room(config, chat)
