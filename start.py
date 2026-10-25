@@ -135,6 +135,11 @@ SERVICES = (
         description="Supervisor agent and assistant (needs the inference server)",
     ),
     Service(
+        name="console",
+        module="src.console",
+        description="Occupant console on the local network (FR-56); no authority",
+    ),
+    Service(
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",
