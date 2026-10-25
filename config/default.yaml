@@ -468,6 +468,7 @@ console:
   calendar_days: 7
   history_kept: 360             # points per charted series: 30 min at 5 s
   operator_controls: true       # fault injection and reset, for demonstration
+  inbox_path: state/console/inbox.json   # the inbox survives a restart (S-10)
 
 # FR-76 to FR-78. What the reasoning layer does with speech nobody addressed
 # to it: one bounded model call per overheard line, looking for a plan to

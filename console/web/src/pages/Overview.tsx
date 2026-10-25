@@ -59,6 +59,17 @@ export function Overview() {
           />
         </Card>
         <Card title="Active faults" icon={AlertTriangle} action={<Link to="/faults" className="flex items-center gap-1 text-[12px] text-muted hover:text-fg">Faults & control <ArrowRight className="h-3 w-3" /></Link>}>
+          {waitsOnAPerson(room.mode?.mode) && (
+            // The fault can be gone while the hold stays: only a person
+            // ends it, so the card says how (S-14).
+            <div className="mb-3 rounded-xl border border-ember/30 bg-ember/5 p-3 text-[13px]">
+              <div className="font-medium text-ember">{room.mode?.mode === "SAFE_HOLD" ? "Holding safe" : "Air conditioner on hold"}</div>
+              <p className="mt-1 text-fg/90">
+                {room.mode?.mode === "SAFE_HOLD" ? "Nothing is actuated until someone checks the room." : "It stays off until someone checks it."}{" "}
+                When that's done, press <Link to="/faults" className="font-medium text-glacier hover:underline">Reset on Faults & control</Link>.
+              </p>
+            </div>
+          )}
           {state.faults.length === 0 ? (
             <Empty icon={Gauge} title="No faults">Every detector is satisfied with what it sees.</Empty>
           ) : (
@@ -115,6 +126,11 @@ export function Overview() {
       </div>
     </div>
   );
+}
+
+/** Modes only a person's reset ends. */
+function waitsOnAPerson(mode: string | undefined): boolean {
+  return mode === "DEGRADED_ACTUATOR" || mode === "SAFE_HOLD";
 }
 
 /** Whether the room is at its setpoint or still on its way (S-07): "holding

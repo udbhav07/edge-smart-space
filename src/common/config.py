@@ -1034,6 +1034,11 @@ class ConsoleConfig(_Section):
         description="Offer fault injection and reset in the console, for "
         "demonstration (FR-31); off for an occupant-only console",
     )
+    inbox_path: str = Field(
+        default="state/console/inbox.json",
+        description="Where the inbox is kept across restarts (S-10); the room's "
+        "own notes to the occupant, bounded like everything else",
+    )
 
 
 class AmbientConfig(_Section):

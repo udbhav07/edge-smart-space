@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from src.common import topics
@@ -70,6 +72,16 @@ _ARRIVALS_KEPT = 60
 _PAYLOAD_KEPT = 32000
 #: Bookings, mails and inbox messages kept.
 _RECORDS_KEPT = 100
+#: Arrivals, and the time they must span, before a rate is worth stating (S-08).
+_RATE_MIN_ARRIVALS = 5
+_RATE_MIN_SPAN_S = 30.0
+
+#: What the occupant does next, for the modes that wait on a person (S-14).
+_NEXT_STEP = {
+    "DEGRADED_ACTUATOR": " When the air conditioner has been checked, press Reset on Faults & control.",
+    "SAFE_HOLD": " Nothing will be actuated until someone checks the room and presses Reset on Faults & control.",
+}
+
 #: A point of a periodic series older than this on arrival is history from
 #: before this console was listening, not a reading (S-07).
 _STALE_POINT_S = 60.0
@@ -103,9 +115,12 @@ class _Room:
 class ConsoleState:
     """The console's view of the room, rebuilt from the blackboard."""
 
-    def __init__(self, config: ConsoleConfig, clock: Clock) -> None:
+    def __init__(self, config: ConsoleConfig, clock: Clock, inbox_path: Path | None = None) -> None:
         self._config = config
         self._clock = clock
+        #: Where the inbox is kept across restarts; None keeps it in memory
+        #: only, which is what every test wants (S-10).
+        self._inbox_path = inbox_path
         self._room = _Room()
         self._faults: dict[str, dict] = {}
         self._diagnoses: dict[str, dict] = {}
@@ -119,7 +134,7 @@ class ConsoleState:
         self._topics: OrderedDict[str, dict] = OrderedDict()
         self._bookings: deque[dict] = deque(maxlen=_RECORDS_KEPT)
         self._sent: deque[dict] = deque(maxlen=_RECORDS_KEPT)
-        self._inbox: deque[dict] = deque(maxlen=_RECORDS_KEPT)
+        self._inbox: deque[dict] = deque(self._load_inbox(), maxlen=_RECORDS_KEPT)
         self._waiting: OrderedDict[str, dict] = OrderedDict()
         self._invocations: OrderedDict[str, ToolInvocation] = OrderedDict()
         self._calendar: dict = {"entries": [], "as_of": None, "note": ""}
@@ -270,8 +285,9 @@ class ConsoleState:
         if before is not None and before != state.mode.value:
             tone = "good" if state.mode.value == "NORMAL" else "alert"
             events.append(self._step("mode", f"Mode {before} → {state.mode.value}: {state.reason}", tone=tone))
-            events.append(self._say("system", f"The room is now in {state.mode.value.replace('_', ' ').lower()} mode: {state.reason}.", tone=tone))
-            events.append(self._mail_in("Room", f"Now {state.mode.value.replace('_', ' ').lower()}", state.reason or "No reason given.", "mode", tone))
+            next_step = _NEXT_STEP.get(state.mode.value, "")
+            events.append(self._say("system", f"The room is now in {state.mode.value.replace('_', ' ').lower()} mode: {state.reason}.{next_step}", tone=tone))
+            events.append(self._mail_in("Room", f"Now {state.mode.value.replace('_', ' ').lower()}", f"{state.reason or 'No reason given.'}{next_step}", "mode", tone))
         return events
 
     def _on_goal(self, _topic, goal: Goal):
@@ -483,9 +499,37 @@ class ConsoleState:
         return [self._event("sent", list(self._sent))]
 
     def _mail_in(self, sender: str, subject: str, body: str, kind: str, tone: str = "neutral") -> Event:
-        item = {"id": self._next_id(), "ts": self._clock.now(), "sender": sender, "subject": subject, "body": body, "kind": kind, "tone": tone}
+        now = self._clock.now()
+        # Unique across restarts, since the inbox now outlives one (S-10).
+        item = {"id": f"m{int(now * 1000)}_{self._next_id()}", "ts": now, "sender": sender, "subject": subject, "body": body, "kind": kind, "tone": tone}
         self._inbox.append(item)
+        self._save_inbox()
         return {"type": "inbox", "data": item}
+
+    def _load_inbox(self) -> list[dict]:
+        """The inbox as it was before a restart (S-10). Unreadable is empty."""
+        if self._inbox_path is None:
+            return []
+        try:
+            items = json.loads(self._inbox_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as exc:
+            LOGGER.warning("inbox at %s unreadable, starting empty: %s", self._inbox_path, exc)
+            return []
+        return [item for item in items if isinstance(item, dict) and "id" in item][-_RECORDS_KEPT:]
+
+    def _save_inbox(self) -> None:
+        if self._inbox_path is None:
+            return
+        try:
+            self._inbox_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._inbox_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(list(self._inbox)), encoding="utf-8")
+            os.replace(temporary, self._inbox_path)
+        except OSError as exc:
+            # The inbox is a courtesy; failing to keep it never stops the console.
+            LOGGER.warning("could not keep the inbox at %s: %s", self._inbox_path, exc)
 
     # --- the MQTT board --------------------------------------------------------
 
@@ -560,6 +604,11 @@ class ConsoleState:
 def _summary(invocation: ToolInvocation) -> str:
     """One line a person can say yes or no to."""
     arguments = invocation.arguments
+    if invocation.tool == "send_mail":
+        # Live: "A mock send_mail" (S-09).
+        to = str(arguments.get("to", "")).strip() or "someone"
+        subject = str(arguments.get("subject", "")).strip()
+        return f"A mock email to {to}" + (f": {subject}" if subject else "")
     kind = str(arguments.get("kind", invocation.tool))
     where = str(arguments.get("destination", "")).strip()
     origin = str(arguments.get("origin") or "").strip()
@@ -591,10 +640,15 @@ def _calendar_from(result: ToolResult, now: float) -> dict:
 
 
 def _board_row(entry: dict) -> dict:
-    """A topic as the board shows it: arrivals reduced to a rate per minute."""
+    """A topic as the board shows it: arrivals reduced to a rate per minute.
+
+    Only once there are enough to measure one: live, two messages a few
+    seconds apart showed a topic published on change as "19.6/min" (S-08).
+    """
     arrivals = entry["arrivals"]
     span = arrivals[-1] - arrivals[0] if len(arrivals) > 1 else 0.0
-    rate = (len(arrivals) - 1) * 60.0 / span if span > 0 else 0.0
+    measurable = len(arrivals) >= _RATE_MIN_ARRIVALS and span >= _RATE_MIN_SPAN_S
+    rate = (len(arrivals) - 1) * 60.0 / span if measurable else 0.0
     row = {key: value for key, value in entry.items() if key != "arrivals"}
     row["per_minute"] = round(rate, 1)
     return row

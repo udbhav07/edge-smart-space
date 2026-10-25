@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     clock = RealClock()
-    state = ConsoleState(config.console, clock)
+    state = ConsoleState(config.console, clock, inbox_path=Path(config.console.inbox_path))
     lock = threading.Lock()
     hub = Hub()
 

@@ -476,3 +476,51 @@ class TestStaleHistory:
         state, _, _, clock = console
         _feed(state, topics.CONTROL_TRACKING, TrackingState(ts=clock.now() - 600.0, setpoint_c=24.0, tracked_c=24.0, band="normal"))
         assert state.snapshot()["series"]["held_c"][-1][1] == 24.0
+
+
+class TestTheLowFindings:
+    """S-08, S-09, S-10, S-14 from the customer check of 2026-10-25."""
+
+    def test_two_messages_are_not_a_rate(self, console):
+        """S-08: two health messages seconds apart showed as 19.6/min."""
+        state, _, _, clock = console
+        state.accept(topics.SYSTEM_MODE.pattern, b"{}")
+        clock.advance(3.0)
+        state.accept(topics.SYSTEM_MODE.pattern, b"{}")
+        assert state.snapshot()["topics"][0]["per_minute"] == 0.0
+
+    def test_a_mail_waiting_says_who_it_is_for(self, console):
+        """S-09: the card read "A mock send_mail"."""
+        state, _, _, clock = console
+        invocation = ToolInvocation(ts=clock.now(), invocation_id="m1", tool="send_mail", arguments={"to": "anu@example.com", "subject": "Dinner", "body": "x"}, requester=ToolRequester.CONSOLE, expires_ts=clock.now() + 300)
+        _feed(state, topics.ASSIST_PROPOSED, invocation)
+        _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id="m1", tool="send_mail", status=ToolStatus.CONFIRMATION_REQUIRED))
+        assert state.snapshot()["waiting"][0]["summary"] == "A mock email to anu@example.com: Dinner"
+
+    def test_the_inbox_survives_a_restart(self, tmp_path):
+        """S-10: the inbox was empty after every restart."""
+        clock = SimClock()
+        path = tmp_path / "inbox.json"
+        first = ConsoleState(CONFIG.console, clock, inbox_path=path)
+        _feed(first, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.NORMAL, since_ts=clock.now()))
+        _feed(first, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.DEGRADED_SENSOR, since_ts=clock.now(), reason="sensor out"))
+        again = ConsoleState(CONFIG.console, clock, inbox_path=path)
+        assert [item["subject"] for item in again.snapshot()["inbox"]] == [item["subject"] for item in first.snapshot()["inbox"]] != []
+
+    def test_without_a_path_nothing_is_written(self, console, tmp_path):
+        state, _, _, clock = console
+        _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.NORMAL, since_ts=clock.now()))
+        _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.DEGRADED_SENSOR, since_ts=clock.now()))
+        assert list(tmp_path.iterdir()) == []
+
+    def test_an_unreadable_inbox_starts_empty(self, tmp_path):
+        path = tmp_path / "inbox.json"
+        path.write_text("{not json", encoding="utf-8")
+        assert ConsoleState(CONFIG.console, SimClock(), inbox_path=path).snapshot()["inbox"] == []
+
+    def test_a_hold_says_what_to_do_next(self, console):
+        """S-14: nothing told the customer to press Reset after the repair."""
+        state, _, _, clock = console
+        _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.NORMAL, since_ts=clock.now()))
+        _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.DEGRADED_ACTUATOR, since_ts=clock.now(), reason="the unit is not cooling"))
+        assert "press Reset on Faults & control" in state.snapshot()["inbox"][-1]["body"]

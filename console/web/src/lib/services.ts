@@ -128,9 +128,11 @@ export function judge(service: ServiceSpec, rows: TopicRow[], now: number): Serv
 /** Messages a minute, preferring what this browser has seen arrive. */
 export function rateOf(row: TopicRow, now: number): number {
   const arrivals = (row.arrivals ?? []).filter((ts) => now - ts < 120);
-  if (arrivals.length > 2) {
+  // Enough to measure, or none: two messages seconds apart once read as
+  // "19.6/min" for a topic published only on change (S-08).
+  if (arrivals.length >= 5) {
     const span = arrivals[arrivals.length - 1] - arrivals[0];
-    if (span > 0) return ((arrivals.length - 1) * 60) / span;
+    if (span >= 30) return ((arrivals.length - 1) * 60) / span;
   }
   return now - row.last_ts < 120 ? row.per_minute : 0;
 }
