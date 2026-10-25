@@ -18,7 +18,7 @@ Every finding is addressed on `fix/live-run-defects`; `git log --grep S-02` show
 | S-04 | Fixed | 0c51c14, 397e540 | As S-03: "cancel it" cancels the entry just put in. |
 | S-05 | Fixed | f135ff0 | After "forget that I'm vegetarian", "what do you know about me?" listed the profile as it stands, without "vegetarian". |
 | S-06 | Fixed | f135ff0 | A guest: "I don't know who you are, so I keep nothing about you." |
-| S-07 | Fixed, one open item | 767a39d | Stale retained points are no longer charted. The tile says "cooling toward 24.0°" while the room is above it. **Open:** after a restart the estimator's first published `t_in` was 23.2 °C with a current timestamp, while every raw reading was 29.0. It is one point (a 5 s jump, not a climb), and its source is not yet found. Nothing is retained on `space/sensor/+/state`. |
+| S-07 | Fixed | 767a39d, and the commit after it | The tile says "cooling toward 24.0°" while the room is above it. The first re-check still showed a climb from 23.2 °C, and its source is now found. It was the old run's last estimate, retained and only about 5 s old when the console restarted, charted beside a restarted simulator that puts the room back at 29 °C (a simulator artefact; a real room does not jump). The console now charts nothing published before it started listening. |
 | S-08 | Fixed | 0cbf137 | `space/system/mode` with 2 messages: 0.0/min, not 19.6. |
 | S-09 | Fixed | 0cbf137 | "A mock email to anu@example.com: Dinner". |
 | S-10 | Fixed | 0cbf137 | The inbox is kept in `state/console/inbox.json`, bounded at 100. |

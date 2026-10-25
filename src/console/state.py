@@ -130,6 +130,8 @@ class ConsoleState:
         #: Where the inbox is kept across restarts; None keeps it in memory
         #: only, which is what every test wants (S-10).
         self._inbox_path = inbox_path
+        #: Nothing published before this console was listening is charted.
+        self._started_ts = clock.now()
         self._room = _Room()
         self._faults: dict[str, dict] = {}
         self._diagnoses: dict[str, dict] = {}
@@ -581,7 +583,10 @@ class ConsoleState:
         24 to 29 C "in two minutes" -- that never happened (S-07). The latest
         value still shows in the tiles, with its age; only the chart skips it.
         """
-        if self._clock.now() - ts > _STALE_POINT_S:
+        if ts < self._started_ts or self._clock.now() - ts > _STALE_POINT_S:
+            # Re-verified live: the old run's last estimate, retained and
+            # only 5 s old when this console started, was charted beside a
+            # restarted simulator's room -- 23.2 to 28.9 C, drawn as a climb.
             return []
         return [self._point(key, ts, value)]
 

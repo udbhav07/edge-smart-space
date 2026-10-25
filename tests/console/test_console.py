@@ -533,3 +533,11 @@ def test_a_mode_note_is_written_for_a_person(console):
     _feed(state, topics.SYSTEM_MODE, ModeState(ts=clock.now(), mode=Mode.DEGRADED_ACTUATOR, since_ts=clock.now(), reason="D5_ACTUATOR_NO_RESPONSE on ac"))
     body = state.snapshot()["inbox"][-1]["body"]
     assert "D5_" not in body and body.startswith("The air conditioner isn't cooling the room")
+
+
+def test_a_retained_estimate_from_just_before_start_is_not_charted(console):
+    """S-07 re-verified live: only 5 s old, it still drew a climb from the old room."""
+    state, _, _, clock = console
+    clock.advance(10.0)
+    _feed(state, topics.ESTIMATE_THERMAL, ThermalEstimate(ts=clock.now() - 15.0, t_in=23.2, t_pred=23.2, residual=0.0, residual_sigma=0.1, model_confidence=0.9, adaptation="active"))
+    assert "t_in" not in state.snapshot()["series"]
