@@ -1,0 +1,117 @@
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Layout: one conversation column, a context panel that folds away. */
+:root {
+  --ink: 8 10 14;
+  --surface: 15 18 24;
+  --raised: 22 27 35;
+  --line: 255 255 255;
+  --fg: 230 235 241;
+  --muted: 137 148 163;
+  --glacier: 124 231 214;
+  --ember: 245 176 96;
+  --alert: 255 122 110;
+  --good: 111 217 154;
+  --line-alpha: 0.07;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --ink: 244 246 248;
+    --surface: 255 255 255;
+    --raised: 238 242 246;
+    --line: 15 23 42;
+    --fg: 17 24 33;
+    --muted: 95 106 121;
+    --glacier: 13 148 136;
+    --ember: 194 120 20;
+    --alert: 205 55 45;
+    --good: 22 140 80;
+    --line-alpha: 0.09;
+    color-scheme: light;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ink: 8 10 14;
+  --surface: 15 18 24;
+  --raised: 22 27 35;
+  --line: 255 255 255;
+  --fg: 230 235 241;
+  --muted: 137 148 163;
+  --glacier: 124 231 214;
+  --ember: 245 176 96;
+  --alert: 255 122 110;
+  --good: 111 217 154;
+  --line-alpha: 0.07;
+  color-scheme: dark;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: rgb(var(--ink));
+  color: rgb(var(--fg));
+  font-family: "Geist Variable", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "cv11";
+}
+
+/* The room's light: a faint wash behind everything, cool by default. */
+.atmosphere {
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgb(var(--glacier) / 0.07), transparent 60%),
+    radial-gradient(800px 500px at 100% 100%, rgb(var(--ember) / 0.035), transparent 60%),
+    rgb(var(--ink));
+}
+
+.hairline { border-color: rgb(var(--line) / var(--line-alpha)); }
+.hairline-b { border-bottom: 1px solid rgb(var(--line) / var(--line-alpha)); }
+.hairline-t { border-top: 1px solid rgb(var(--line) / var(--line-alpha)); }
+.hairline-l { border-left: 1px solid rgb(var(--line) / var(--line-alpha)); }
+
+.glass {
+  background: rgb(var(--surface) / 0.72);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+.shimmer-text {
+  background: linear-gradient(90deg, rgb(var(--muted)) 0%, rgb(var(--fg)) 50%, rgb(var(--muted)) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.4s linear infinite;
+}
+
+.scroll-thin { scrollbar-width: thin; scrollbar-color: rgb(var(--line) / 0.12) transparent; }
+.scroll-thin::-webkit-scrollbar { width: 8px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: rgb(var(--line) / 0.12); border-radius: 8px; }
+
+:focus-visible { outline: 2px solid rgb(var(--glacier) / 0.8); outline-offset: 2px; border-radius: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* cmdk */
+[cmdk-item][data-selected="true"] { background: rgb(var(--line) / 0.06); }
+[cmdk-group-heading] {
+  padding: 10px 12px 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(var(--muted));
+}

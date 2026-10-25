@@ -93,10 +93,13 @@ class ConsoleState:
         self._injections: dict[str, dict] = {}
         self._conversation: deque[dict] = deque(maxlen=config.conversation_kept)
         self._activity: deque[dict] = deque(maxlen=config.activity_kept)
+        self._history: deque[dict] = deque(maxlen=config.history_kept)
         self._waiting: OrderedDict[str, dict] = OrderedDict()
         self._invocations: OrderedDict[str, ToolInvocation] = OrderedDict()
         self._calendar: dict = {"entries": [], "as_of": None, "note": ""}
         self._calendar_requests: set[str] = set()
+        #: Bookings confirmed here, whose outcome the occupant is told.
+        self._confirmed: set[str] = set()
         self._catalogue: list[dict] = []
         self._typed: deque[str] = deque(maxlen=_TYPED_KEPT)
         self._set_here: deque[str] = deque(maxlen=_TYPED_KEPT)
@@ -147,6 +150,7 @@ class ConsoleState:
                 "tariff": room.tariff,
             },
             "speech": room.speech,
+            "history": list(self._history),
             "faults": list(self._faults.values()),
             "diagnoses": self._diagnoses,
             "profiles": list(self._profiles.values()),
@@ -192,6 +196,8 @@ class ConsoleState:
         entry = self._waiting.pop(invocation_id, None)
         if entry is None:
             return []
+        if outcome == "Confirmed":
+            self._confirmed.add(invocation_id)
         return [self._event("waiting", list(self._waiting.values())), self._step("booking", f"{outcome}: {entry['summary']}", tone="info")]
 
     # --- room ----------------------------------------------------------
@@ -206,7 +212,9 @@ class ConsoleState:
 
     def _on_thermal(self, _topic, estimate: ThermalEstimate):
         self._room.thermal = _dump(estimate)
-        return [self._event("thermal", self._room.thermal)]
+        point = {"ts": estimate.ts, "t_in": estimate.t_in, "t_pred": estimate.t_pred}
+        self._history.append(point)
+        return [self._event("thermal", self._room.thermal), self._event("point", point)]
 
     def _on_coefficients(self, _topic, coefficients: Coefficients):
         self._room.coefficients = _dump(coefficients)
@@ -347,6 +355,11 @@ class ConsoleState:
         elif result.invocation_id in self._waiting:
             self._waiting.pop(result.invocation_id)
             events.append(self._event("waiting", list(self._waiting.values())))
+        if result.invocation_id in self._confirmed and result.status is not ToolStatus.CONFIRMATION_REQUIRED:
+            # The answer to a yes given here: said in the conversation, not
+            # only in the trace, or the occupant never learns it was booked.
+            self._confirmed.discard(result.invocation_id)
+            events.append(self._say("assistant", result.message or f"{result.tool}: {result.status.value}", intent="service"))
         tone = "good" if result.status is ToolStatus.OK else "info" if result.status is ToolStatus.CONFIRMATION_REQUIRED else "alert"
         events.append(self._step("result", f"{result.tool}: {result.status.value.replace('_', ' ').lower()}", detail=result.message, tone=tone, ref=result.invocation_id))
         if result.tool in ("schedule_event", "cancel_event", "move_event") and result.status is ToolStatus.OK:
@@ -398,12 +411,20 @@ class ConsoleState:
 
 
 def _summary(invocation: ToolInvocation) -> str:
+    """One line a person can say yes or no to."""
     arguments = invocation.arguments
     kind = str(arguments.get("kind", invocation.tool))
     where = str(arguments.get("destination", "")).strip()
-    when = str(arguments.get("depart_on", "")).strip()
-    parts = [f"A mock {kind}"] + ([f"to {where}"] if where else []) + ([f"on {when[:10]}"] if when else [])
-    return " ".join(parts)
+    origin = str(arguments.get("origin") or "").strip()
+    when = str(arguments.get("depart_on", "")).strip()[:10]
+    nights = arguments.get("nights")
+    if kind == "hotel":
+        text = "A mock hotel" + (f" in {where}" if where else "")
+        if nights:
+            text += f", {nights} night{'s' if str(nights) != '1' else ''}"
+        return text + (f" from {when}" if when else "")
+    text = f"A mock {kind}" + (f" from {origin}" if origin else "") + (f" to {where}" if where else "")
+    return text + (f" on {when}" if when else "")
 
 
 def _calendar_from(result: ToolResult, now: float) -> dict:

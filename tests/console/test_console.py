@@ -106,6 +106,14 @@ class TestWhatItShows:
         state.accept(topics.FAULT.format(fault_id="f1"), b"")
         assert state.snapshot()["faults"] == []
 
+    def test_the_temperature_history_is_given_to_a_new_browser(self, console):
+        """A chart that starts empty on every page load shows nothing useful."""
+        from src.common.schemas import AdaptationState, ThermalEstimate
+        state, _, _, clock = console
+        for value in (24.0, 24.2):
+            _feed(state, topics.ESTIMATE_THERMAL, ThermalEstimate(ts=clock.now(), t_in=value, t_pred=value, residual=0.0, residual_sigma=0.1, model_confidence=0.9, adaptation=AdaptationState.ACTIVE))
+        assert [point["t_in"] for point in state.snapshot()["history"]] == [24.0, 24.2]
+
     def test_speech_status_is_kept(self, console):
         state, _, _, clock = console
         _feed(state, topics.SPEECH_STATUS, SpeechStatus(ts=clock.now(), activity=SpeechActivity.LISTENING, heartbeat_s=15.0))
@@ -117,6 +125,23 @@ class TestWhatItShows:
         _feed(state, topics.ASSIST_PROPOSED, invocation)
         _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id="b1", tool="book_travel", status=ToolStatus.CONFIRMATION_REQUIRED))
         assert state.snapshot()["waiting"][0]["summary"] == "A mock flight to Delhi"
+
+    def test_a_hotel_is_summarised_as_a_stay(self, console):
+        state, _, _, clock = console
+        invocation = ToolInvocation(ts=clock.now(), invocation_id="b2", tool="book_travel", arguments={"kind": "hotel", "destination": "Pune", "nights": 2, "depart_on": "2026-10-17"}, requester=ToolRequester.PERSONAL_CONTEXT, expires_ts=clock.now() + 60)
+        _feed(state, topics.ASSIST_PROPOSED, invocation)
+        _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id="b2", tool="book_travel", status=ToolStatus.CONFIRMATION_REQUIRED))
+        assert state.snapshot()["waiting"][0]["summary"] == "A mock hotel in Pune, 2 nights from 2026-10-17"
+
+    def test_a_confirmed_bookings_outcome_is_said(self, console):
+        """Without this the occupant said yes and never heard it was booked."""
+        state, actions, _, clock = console
+        invocation = ToolInvocation(ts=clock.now(), invocation_id="b3", tool="book_travel", arguments={"kind": "hotel", "destination": "Pune"}, requester=ToolRequester.PERSONAL_CONTEXT, expires_ts=clock.now() + 60)
+        _feed(state, topics.ASSIST_PROPOSED, invocation)
+        _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id="b3", tool="book_travel", status=ToolStatus.CONFIRMATION_REQUIRED))
+        actions.answer("b3", yes=True)
+        _feed(state, topics.ASSIST_RESULT, ToolResult(ts=clock.now(), invocation_id="b3", tool="book_travel", status=ToolStatus.OK, provider="mock_booking", message="Mock booking MOCK-0001 recorded."))
+        assert state.snapshot()["conversation"][-1]["text"] == "Mock booking MOCK-0001 recorded."
 
     def test_a_calendar_read_fills_the_calendar(self, console):
         state, actions, transport, clock = console
