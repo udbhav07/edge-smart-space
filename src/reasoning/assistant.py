@@ -151,8 +151,19 @@ _NO_TOOL_REPLY = "Sorry, I could not do that."
 #: A reply written as though something was done.
 _CLAIMS_DONE = re.compile(
     r"\b(cancell?ed|added|scheduled|rescheduled|booked|moved|removed|deleted|"
-    r"remembered|forgotten|reserved|put\s+(it|that)\s+in)\b",
+    r"remembered|forgotten|reserved|put\s+(it|that)\s+in)\b"
+    # A confirmation question is the system's to ask, from a real refusal;
+    # written by the model with nothing behind it, it promises a booking.
+    r"|\bshall\s+i\s+go\s+ahead\b|\bmock\s+booking\b",
     re.IGNORECASE,
+)
+
+_NO_TOOL_NUDGE = (
+    "You answered without calling a tool. If the occupant asked you to do "
+    "something -- book, schedule, cancel, move, remember -- call the tool now "
+    "with its arguments. Only the system asks for confirmation, after the "
+    "tool is called. If nothing was asked to be done, answer plainly and do "
+    "not describe anything as prepared or done."
 )
 _NOTHING_DONE = (
     "I haven't changed anything: I couldn't carry that out. "
@@ -445,6 +456,31 @@ class Assistant:
                     result = self._run(self._as_asked(call, asked), utterance, hint)
                     results.append(result)
                     messages.append(tool_message(call, _for_the_model(result)))
+            if (
+                hint.intent is Intent.SERVICE
+                and not results
+                and asked is None
+                and turns
+                and not turns[-1].tool_calls
+                and _CLAIMS_DONE.search(turns[-1].content)
+            ):
+                # Live: asked to book, the model wrote "That would be a mock
+                # booking ... Shall I go ahead?" and called nothing, copying
+                # the system's own confirmation prompt from earlier in the
+                # conversation. It is told so once, and given the chance to
+                # do what was asked (FR-44, FR-74).
+                LOGGER.info("service request answered without a tool; asking the model again")
+                self._corrections.append("a service request answered without a tool was asked again")
+                messages.append(assistant_message(turns[-1]))
+                messages.append({"role": "user", "content": _NO_TOOL_NUDGE})
+                turn = self._chat.complete(messages, self._tools_for(hint))
+                turns.append(turn)
+                if turn.tool_calls:
+                    messages.append(assistant_message(turn))
+                    for call in turn.tool_calls:
+                        result = self._run(call, utterance, hint)
+                        results.append(result)
+                        messages.append(tool_message(call, _for_the_model(result)))
             if asked is not None and not any(result.tool in PROFILE_TOOLS for result in results):
                 # The model said "I'll remember that" and called nothing:
                 # the words asked plainly, so the request is carried out

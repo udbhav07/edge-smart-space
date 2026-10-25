@@ -464,10 +464,24 @@ class TestNoClaimWithoutATool:
     """Live: "cancel my meeting with the CEO" -- there was none -- was answered
     "-cancelled the meeting with the CEO" with no tool called."""
 
-    def test_a_claimed_cancellation_is_withheld(self, config):
-        room = Room(config, ScriptedChat(saying("Cancelled the meeting with the CEO at 16:00.")))
+    def test_a_claim_repeated_after_the_nudge_is_withheld(self, config):
+        claim = "Cancelled the meeting with the CEO at 16:00."
+        room = Room(config, ScriptedChat(saying(claim), saying(claim)))
         reply = room.say("cancel my meeting with the CEO")
         assert "Cancelled" not in reply.reply and "haven't changed anything" in reply.reply
+
+    def test_a_fake_confirmation_question_is_nudged_into_a_real_call(self, config):
+        """Live: "That would be a mock booking ... Shall I go ahead?" with no tool."""
+        fake = "That would be a mock booking of a flight to Goa; no real reservation is made. Shall I go ahead?"
+        chat = ScriptedChat(saying(fake), calling(call("book_travel", kind="flight", destination="Goa", depart_on="2026-10-03")))
+        room = Room(config, chat)
+        reply = room.say("book a flight to Goa next Saturday")
+        assert reply.awaiting_confirmation, "a real invocation now waits for the occupant"
+
+    def test_an_honest_second_answer_is_used(self, config):
+        fake = "Shall I go ahead and book it?"
+        room = Room(config, ScriptedChat(saying(fake), saying("I need a destination to book a flight.")))
+        assert room.say("book me a flight").reply == "I need a destination to book a flight."
 
     def test_a_plain_answer_is_left_alone(self, config):
         room = Room(config, ScriptedChat(saying("Which day would you like it on?")))
