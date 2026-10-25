@@ -124,6 +124,21 @@ class SpeechPipeline:
             return None
         return self._listen(frame)
 
+    def pause(self) -> None:
+        """Drop whatever is being heard and wait afresh (FR-79, FR-82).
+
+        Called for every frame while the room is speaking or the occupant has
+        muted it: a window half-filled with the room's own voice must not be
+        transcribed, and a muted room must not keep the start of a sentence.
+        """
+        if self._state is PipelineState.LISTENING or self._buffer or self._preroll:
+            self._buffer = []
+            self._preroll.clear()
+            self._addressed = False
+            self._state = PipelineState.WAITING_FOR_WAKE_WORD
+            self._utterance.reset()
+            self._detector.reset()
+
     def _wake(self) -> None:
         LOGGER.info("wake word detected; opening capture window")
         self._detector.reset()

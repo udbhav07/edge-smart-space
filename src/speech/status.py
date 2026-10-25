@@ -23,12 +23,13 @@ class StatusPublisher:
     """Publishes the pipeline's activity, and restates it on a heartbeat."""
 
     def __init__(
-        self, config: SpeechConfig, clock: Clock, blackboard: Blackboard, microphone: str = ""
+        self, config: SpeechConfig, clock: Clock, blackboard: Blackboard, microphone: str = "", voice: str = ""
     ) -> None:
         self._config = config
         self._clock = clock
         self._blackboard = blackboard
         self._microphone = microphone
+        self._voice = voice
         self._activity = SpeechActivity.WAITING
         self._heard = ""
         self._last_published_s: float | None = None
@@ -59,6 +60,7 @@ class StatusPublisher:
             wake_word=self._config.wake_word,
             heartbeat_s=self._config.status_interval_s,
             listen_mode=self._config.listen_mode,
+            voice=self._voice,
         )
         try:
             self._blackboard.publish(topics.SPEECH_STATUS, status)

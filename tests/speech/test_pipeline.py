@@ -611,3 +611,20 @@ class TestHallucinationLoops:
         pipeline, _ = _listening(continuous, SimClock(), transcriber=Recording())
         _feed(pipeline, SPEECH, SILENCE)
         assert asked == [True]
+
+
+class TestPause:
+    """FR-79: a window half-filled with the room's own voice is dropped."""
+
+    def test_pausing_mid_utterance_drops_the_window(self, continuous):
+        pipeline, parts = _listening(continuous, SimClock())
+        _feed(pipeline, SPEECH, SPEECH)
+        pipeline.pause()
+        assert pipeline.buffered_frames == 0 and pipeline.state is PipelineState.WAITING_FOR_WAKE_WORD
+
+    def test_nothing_paused_is_transcribed_later(self, continuous):
+        pipeline, parts = _listening(continuous, SimClock())
+        _feed(pipeline, SPEECH, SPEECH)
+        pipeline.pause()
+        _feed(pipeline, SILENCE)
+        assert parts["transcriber"].calls == []

@@ -34,6 +34,21 @@ dev = [
 # because torch 2.5.1 has no wheel for Python 3.14: a developer on 3.14
 # installs the core only and the speech tests skip themselves. CI runs 3.11,
 # where the whole set installs and every test executes.
+# Speaking replies (FR-79). Piper is a neural voice run on this node; its
+# model is fetched once by setup_models.py. pyttsx3 is the system's own
+# voices, the fallback when Piper cannot load.
+voice = [
+    "piper-tts==1.8.0",
+    "pyttsx3==2.99",
+]
+
+# Google Calendar and Gmail after the occupant signs in (FR-84 to FR-86).
+google = [
+    "google-auth==2.57.1",
+    "google-auth-oauthlib==1.5.0",
+    "google-api-python-client==2.201.0",
+]
+
 speech = [
     "openwakeword==0.6.0",
     "faster-whisper==1.1.1",

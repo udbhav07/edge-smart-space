@@ -711,3 +711,15 @@ class TestTwoEntriesNamedAlike:
         Room(config, chat).say("what is on Thursday")
         tools = {t["function"]["name"]: t["function"]["parameters"]["properties"] for t in chat.requests[0][1]}
         assert "event_id" not in tools["move_event"] and "event_id" not in tools["cancel_event"]
+
+
+class TestRepliesSayHowTheyWereAsked:
+    """FR-79: a reply to a spoken request is marked to be said aloud."""
+
+    def test_a_spoken_request_gets_a_spoken_reply(self, config):
+        room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
+        assert room.say("what is on Thursday", intent=Intent.QUESTION).spoken is True
+
+    def test_a_typed_request_does_not(self, config):
+        room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
+        assert room.say("what is on Thursday", intent=Intent.QUESTION, typed=True).spoken is False

@@ -30,13 +30,14 @@ from src.common.config import Config, load_config
 from src.common.conversation import Conversations
 from src.common.device import resolve
 from src.common.mqtt_client import Blackboard, build_transport
-from src.common.schemas import AmbientUtterance
+from src.common.schemas import AmbientUtterance, AssistantReply, ModeState, SpeechActivity, SpeechSettings
 from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
 from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
 from src.speech.pipeline import SpeechPipeline
 from src.speech.speaker_profile import SpeakerIdentifier
 from src.speech.status import StatusPublisher
+from src.speech.voice import Voice, build_speaker
 from src.speech.wakeword import WakeWordDetector
 
 LOGGER = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ def run(
     blackboard: Blackboard,
     frames: int | None = None,
     status: StatusPublisher | None = None,
+    voice: Voice | None = None,
 ) -> int:
     """Pump audio frames through the pipeline until interrupted.
 
@@ -112,6 +114,15 @@ def run(
             continue
 
         processed += 1
+        held = _held(voice)
+        if held is not None:
+            # Speaking, or muted: the frame is dropped unheard (FR-79, FR-82).
+            pipeline.pause()
+            if status is not None and status.activity is not held:
+                status.changed(held)
+            continue
+        if status is not None and status.activity in (SpeechActivity.SPEAKING, SpeechActivity.MUTED):
+            status.changed(SpeechActivity.WAITING)
         try:
             hint = pipeline.accept(frame)
         except ReasoningUnavailableError as exc:
@@ -123,6 +134,17 @@ def run(
         if hint is not None:
             _publish(blackboard, hint)
     return processed
+
+
+def _held(voice: Voice | None) -> SpeechActivity | None:
+    """Why the microphone must be ignored right now, if it must."""
+    if voice is None:
+        return None
+    if not voice.settings.listening:
+        return SpeechActivity.MUTED
+    if voice.busy:
+        return SpeechActivity.SPEAKING
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -148,7 +170,19 @@ def main(argv: list[str] | None = None) -> int:
     capture = AudioCapture(config.speech, clock)
     conversations = Conversations()
     conversations.subscribe(blackboard)
-    status = StatusPublisher(config.speech, clock, blackboard, capture.microphone)
+    voice = Voice(
+        build_speaker(config.speech),
+        clock,
+        utc_offset_h=config.site.utc_offset_h,
+        tail_s=config.speech.speaking_tail_ms / 1000.0,
+    )
+    # Replies, the occupant's settings and changes of mode reach the voice;
+    # it says what they ask for on a thread of its own (FR-79).
+    blackboard.subscribe(topics.CONTEXT_REPLY, AssistantReply, voice.on_reply)
+    blackboard.subscribe(topics.SPEECH_SETTINGS, SpeechSettings, voice.on_settings)
+    blackboard.subscribe(topics.SYSTEM_MODE, ModeState, voice.on_mode)
+    voice.start()
+    status = StatusPublisher(config.speech, clock, blackboard, capture.microphone, voice=voice.engine)
     pipeline = build_pipeline(config, clock, capture, conversations, on_activity=status.changed)
 
     blackboard.start()
@@ -161,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         topics.CONTEXT_AMBIENT.pattern,
     )
     try:
-        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames, status=status)
+        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames, status=status, voice=voice)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:
