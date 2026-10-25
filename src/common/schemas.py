@@ -589,6 +589,11 @@ class PreferenceHint(TimestampedMessage):
         description="Typed in the console rather than spoken, so the reply says "
         "'chatting as' rather than 'recognised your voice' (S-12)",
     )
+    release: bool = Field(
+        default=False,
+        description="Hand the temperature back: the occupant's preference stops "
+        "holding and the room returns to automatic (FR-81)",
+    )
 
     @model_validator(mode="after")
     def _nothing_actionable_carries_no_request(self) -> PreferenceHint:
@@ -751,6 +756,10 @@ class AssistantReply(TimestampedMessage):
         description="Invocation id of a booking put to the occupant, if any "
         "(FR-54); empty when nothing is waiting",
     )
+    spoken: bool = Field(
+        default=False,
+        description="The request was spoken, so the reply is said aloud (FR-79)",
+    )
     profile_id: str = Field(
         default="",
         pattern=PROFILE_ID_PATTERN_OR_EMPTY,
@@ -811,6 +820,40 @@ class SpeechActivity(str, Enum):
     LISTENING = "listening"        # capture window open
     TRANSCRIBING = "transcribing"  # utterance closed, Whisper running
     UNDERSTANDING = "understanding"  # transcript known, extraction running
+    SPEAKING = "speaking"          # a reply is being said; the microphone is ignored (FR-79)
+    MUTED = "muted"                # the occupant turned listening off; nothing is captured (FR-88)
+
+
+class SpeechSettings(TimestampedMessage):
+    """How the occupant wants the room to listen and speak (FR-79, FR-88).
+
+    Set in the console and obeyed by the speech service. Muted means no
+    capture at all -- not capture that is then ignored.
+    """
+
+    listening: bool = Field(default=True, description="False mutes the microphone entirely")
+    speak_replies: bool = Field(default=True, description="Say replies to spoken requests aloud")
+    speak_typed: bool = Field(default=False, description="Also say replies to typed requests")
+    speak_alerts: bool = Field(default=True, description="Say a change of mode aloud")
+    volume: float = Field(default=0.8, ge=0.0, le=1.0)
+    quiet_from: str = Field(default="", pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$", description="HH:MM; empty for none")
+    quiet_to: str = Field(default="", pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$", description="HH:MM; empty for none")
+
+
+class GoogleStatus(TimestampedMessage):
+    """Whether a Google account is connected, and what is waiting to reach it.
+
+    Never a token or a secret: only what the occupant needs to see (FR-84).
+    """
+
+    configured: bool = Field(default=False, description="A client secret is in place")
+    connected: bool = Field(default=False, description="A usable token is held")
+    account: str = Field(default="", description="The connected address, if known")
+    outbox: int = Field(default=0, ge=0, description="Operations waiting to reach Google")
+    online: bool = Field(default=False, description="The last attempt reached Google")
+    last_sync_ts: float | None = Field(default=None, description="When the outbox last drained")
+    last_error: str = Field(default="", description="The last failure, in words")
+    needs_reconnect: bool = Field(default=False, description="Google refused the token; sign in again")
 
 
 class SpeechStatus(TimestampedMessage):
@@ -829,6 +872,7 @@ class SpeechStatus(TimestampedMessage):
         default=ListenMode.WAKE_WORD,
         description="Whether the room is listening continuously (FR-76)",
     )
+    voice: str = Field(default="", description="The engine replies are spoken with, empty for none (FR-79)")
 
 
 class ContextTurn(BlackboardMessage):

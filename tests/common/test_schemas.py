@@ -616,3 +616,41 @@ class TestAmbientUtterance:
 
         context = ProfileContext(ts=1.0, profile_id="ravi", facts=("Likes tea.",), suggestions=("Hates the cold.",))
         assert context.suggestions == ("Hates the cold.",) and "Hates the cold." not in context.facts
+
+
+class TestSpeakingAndGoogle:
+    """FR-79 to FR-86: the new messages carry what is needed and nothing secret."""
+
+    def test_settings_default_to_listening_and_speaking_replies(self):
+        from src.common.schemas import SpeechSettings
+
+        settings = SpeechSettings(ts=1.0)
+        assert settings.listening and settings.speak_replies and not settings.speak_typed
+
+    def test_quiet_hours_must_be_a_time(self):
+        from src.common.schemas import SpeechSettings
+
+        with pytest.raises(ValidationError):
+            SpeechSettings(ts=1.0, quiet_from="10pm")
+
+    def test_volume_is_bounded(self):
+        from src.common.schemas import SpeechSettings
+
+        with pytest.raises(ValidationError):
+            SpeechSettings(ts=1.0, volume=1.5)
+
+    def test_google_status_has_no_place_for_a_token(self):
+        from src.common.schemas import GoogleStatus
+
+        assert not any("token" in name or "secret" in name for name in GoogleStatus.model_fields)
+
+    def test_a_reply_can_say_it_was_spoken(self):
+        from src.common.schemas import AssistantReply, Intent
+
+        assert AssistantReply(ts=1.0, transcript="hi", intent=Intent.QUESTION, reply="Hello.", spoken=True).spoken
+
+    def test_a_hint_can_hand_the_temperature_back(self):
+        from src.common.schemas import Comfort, PreferenceHint
+
+        hint = PreferenceHint(ts=1.0, comfort=Comfort.UNCHANGED, subject="temperature", release=True)
+        assert hint.release

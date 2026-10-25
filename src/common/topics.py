@@ -195,6 +195,12 @@ CONTEXT_UTTERANCE = TopicSpec("space/context/utterance", Qos.AT_LEAST_ONCE, reta
 #: of the room for anyone who connects later.
 CONTEXT_AMBIENT = TopicSpec("space/context/ambient", Qos.AT_LEAST_ONCE, retain=False)
 
+#: How the occupant wants the room to listen and speak (FR-79, FR-88):
+#: listening or muted, which replies are spoken, how loud, quiet hours.
+#: Retained, so a restarted speech service resumes what was chosen -- a mute
+#: that a restart undid would be a privacy promise broken.
+SPEECH_SETTINGS = TopicSpec("space/speech/settings", Qos.AT_LEAST_ONCE, retain=True)
+
 #: What the speech pipeline is doing -- waiting for the wake word, listening,
 #: transcribing -- restated on a heartbeat so a silent pipeline is seen to be
 #: gone. Retained, so the console shows it the moment it connects.
@@ -224,6 +230,11 @@ ASSIST_RESULT = TopicSpec("space/assist/result", Qos.AT_LEAST_ONCE, retain=False
 #: The declared surface, retained so a late subscriber -- or an examiner --
 #: can read what the reasoning layer is allowed to ask for (FR-60, FR-70).
 ASSIST_CATALOGUE = TopicSpec("space/assist/catalogue", Qos.AT_LEAST_ONCE, retain=True)
+
+#: Whether a Google account is connected, and how much is waiting to reach
+#: it (FR-84 to FR-86). Retained, so the console shows it on connect. Never
+#: carries a token: those stay in a file only the assistance service reads.
+ASSIST_GOOGLE = TopicSpec("space/assist/google", Qos.AT_LEAST_ONCE, retain=True)
 
 #: An operator clearing SAFE_HOLD (section 5.6). Deliberately *not* retained:
 #: a retained reset would be redelivered on every reconnect and re-clear a hold

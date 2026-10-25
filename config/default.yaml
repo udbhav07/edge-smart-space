@@ -257,6 +257,13 @@ speech:
   # S-01. Live, room audio became nine junk calendar entries ("We are going home
   # We are going home ...", "Bye. Bye. Bye."). Overheard speech, and only
   # overheard speech, is held to Whisper's own hallucination thresholds.
+  # FR-79. Replies are spoken. Piper is a neural voice run here; its model is
+  # fetched once by setup_models.py. pyttsx3 (the system's voices) is the
+  # fallback if Piper cannot load; none keeps the room silent.
+  voice_engine: piper
+  voice_model_path: models/piper/en_US-lessac-medium.onnx
+  voice_length_scale: 1.0
+  speaking_tail_ms: 400          # the microphone ignores the room's own voice
   ambient_max_no_speech_prob: 0.6
   ambient_min_avg_logprob: -1.0
   ambient_max_compression_ratio: 2.4
@@ -469,6 +476,24 @@ console:
   history_kept: 360             # points per charted series: 30 min at 5 s
   operator_controls: true       # fault injection and reset, for demonstration
   inbox_path: state/console/inbox.json   # the inbox survives a restart (S-10)
+  presets_c: {Cool: 22.0, Comfort: 24.0, Sleep: 25.0, Eco: 26.0}   # Home's one-tap targets
+  cooling_off_c: 30.0           # 'cooling off' = the gate's upper bound, never beyond
+  price_per_kwh: {normal: 8.0, peak: 12.0}
+  currency: Rs
+
+# FR-84 to FR-86. Google Calendar and Gmail, once the occupant connects an
+# account in Settings. Until then nothing leaves this node (NFR-06).
+google:
+  client_secret_path: state/google/client_secret.json
+  token_path: state/google/token.json
+  outbox_path: state/google/outbox.json
+  outbox_max: 500
+  redirect_uri: http://127.0.0.1:8077/api/google/callback
+  calendar_id: primary
+  pull_interval_s: 300.0
+  pull_days: 14
+  retry_min_s: 10.0
+  retry_max_s: 600.0
 
 # FR-76 to FR-78. What the reasoning layer does with speech nobody addressed
 # to it: one bounded model call per overheard line, looking for a plan to

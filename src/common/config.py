@@ -547,6 +547,25 @@ class SpeechConfig(_Section):
         description="Audio kept from just before speech is detected, so the first "
         "word of an unaddressed utterance is not clipped; dropped otherwise (FR-51)",
     )
+    voice_engine: str = Field(
+        default="piper",
+        pattern=r"^(piper|pyttsx3|none)$",
+        description="What replies are spoken with (FR-79): piper, a neural voice "
+        "run on this node; pyttsx3, the system's own voices; none to stay silent",
+    )
+    voice_model_path: str = Field(
+        default="models/piper/en_US-lessac-medium.onnx",
+        description="The Piper voice, fetched once by setup_models.py; never at runtime (NFR-06)",
+    )
+    voice_length_scale: float = Field(
+        default=1.0, gt=0.0, description="Piper speaking pace; above 1 is slower"
+    )
+    speaking_tail_ms: int = Field(
+        default=400,
+        ge=0,
+        description="How long after speaking the microphone stays ignored, so the "
+        "room never hears its own voice as someone talking (FR-79)",
+    )
     ambient_max_no_speech_prob: float = Field(
         default=0.6,
         gt=0.0,
@@ -1034,11 +1053,58 @@ class ConsoleConfig(_Section):
         description="Offer fault injection and reset in the console, for "
         "demonstration (FR-31); off for an occupant-only console",
     )
+    presets_c: dict[str, float] = Field(
+        default_factory=lambda: {"Cool": 22.0, "Comfort": 24.0, "Sleep": 25.0, "Eco": 26.0},
+        description="One-tap targets on Home (FR-80); each still passes the safety gate",
+    )
+    cooling_off_c: float = Field(
+        default=30.0,
+        description="What 'cooling off' asks for: the gate's upper bound, so the room "
+        "is never left to rise past what the gate allows (FR-81)",
+    )
+    price_per_kwh: dict[str, float] = Field(
+        default_factory=lambda: {"normal": 8.0, "peak": 12.0},
+        description="Electricity price per kWh by tariff band, for Home's energy card",
+    )
+    currency: str = Field(default="Rs", description="Shown beside the energy cost")
     inbox_path: str = Field(
         default="state/console/inbox.json",
         description="Where the inbox is kept across restarts (S-10); the room's "
         "own notes to the occupant, bounded like everything else",
     )
+
+
+class GoogleConfig(_Section):
+    """Google Calendar and Gmail, after the occupant signs in (FR-84 to FR-86).
+
+    Nothing here reaches the internet until a client secret is in place and
+    the occupant has connected an account: NFR-06 holds until then.
+    """
+
+    client_secret_path: str = Field(
+        default="state/google/client_secret.json",
+        description="The OAuth client the occupant downloads from Google Cloud",
+    )
+    token_path: str = Field(
+        default="state/google/token.json",
+        description="Written at sign-in, read by the assistance service; never published",
+    )
+    outbox_path: str = Field(
+        default="state/google/outbox.json",
+        description="What is waiting to reach Google, kept across restarts (FR-86)",
+    )
+    outbox_max: int = Field(default=500, gt=0, description="Operations kept waiting at most")
+    redirect_uri: str = Field(
+        default="http://127.0.0.1:8077/api/google/callback",
+        description="Registered on the OAuth client; must match the console's address",
+    )
+    calendar_id: str = Field(default="primary")
+    pull_interval_s: float = Field(
+        default=300.0, gt=0.0, description="How often Google-side events are mirrored in"
+    )
+    pull_days: int = Field(default=14, gt=0, description="How far ahead events are mirrored")
+    retry_min_s: float = Field(default=10.0, gt=0.0, description="First wait after a failure")
+    retry_max_s: float = Field(default=600.0, gt=0.0, description="Longest wait between attempts")
 
 
 class AmbientConfig(_Section):
@@ -1086,6 +1152,7 @@ class Config(_Section):
     profiles: ProfilesConfig = ProfilesConfig()
     console: ConsoleConfig = ConsoleConfig()
     ambient: AmbientConfig = AmbientConfig()
+    google: GoogleConfig = GoogleConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

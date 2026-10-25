@@ -229,6 +229,14 @@ feature safe to ship at all.
 | FR-76 | When configured to listen continuously, the system shall transcribe every utterance on-device. An utterance not addressed with the wake word shall be published as ambient speech, shall never be answered or acted on as a request, and shall be used only as FR-77 and FR-78 allow. No audio shall be kept or published (FR-51 holds); ambient transcripts shall not be retained on the blackboard. Revises FR-50, which continues to govern the `wake_word` mode. | S | T |
 | FR-77 | A plan overheard in ambient speech — a meeting, an appointment, a trip — shall be pencilled into the local calendar without confirmation, marked tentative and shown as distinct from a firm entry, with the words that suggested it. The occupant shall be able to keep it, making it firm, or discard it. No booking or other commit tool shall be invoked from ambient speech. | S | T |
 | FR-78 | A fact overheard about a recognised person shall be held as a suggestion and remembered only if that person keeps it; a dismissed suggestion is deleted. Nothing overheard from a guest shall be held. | S | T |
+| FR-79 | Replies to spoken requests shall be spoken aloud on this node, with a voice that runs here and fetches nothing at runtime. While the room speaks, the microphone shall be ignored, so its own voice is never heard as someone talking. Typed replies and changes of mode may be spoken too, as the occupant chooses. | S | D |
+| FR-80 | The console shall open on a Home page for the occupant: the room's temperature and humidity in plain words, a target that can be stepped, slid or set by preset, warmer and cooler, the day's calendar, anything waiting for a yes, and the energy used today. The engineering pages remain. | S | D |
+| FR-81 | The occupant shall be able to hand the temperature back to the system ("back to automatic") and to turn cooling off for a chosen time. Both are preferences gated like any other; cooling off asks for the safety gate's upper bound, never beyond it. | S | T |
+| FR-82 | The occupant shall be able to mute listening from the console. Muted means nothing is captured, and the status says so. The choice survives a restart. | M | T |
+| FR-83 | Quiet hours shall stop the room speaking unprompted. A reply the occupant asked for is still spoken. | C | T |
+| FR-84 | The occupant may connect a Google account from the console. Only then, and only to Google's APIs, does the node make outbound requests (revises NFR-06). Tokens stay in a local file and are never published. | S | D |
+| FR-85 | With an account connected, calendar entries shall also be written to Google Calendar, tentative ones as tentative, and Google-side entries shall appear in the room's calendar; a confirmed mail shall be sent through Gmail and still require the occupant's yes (FR-54). A confirmed mock booking shall add a calendar entry and email its itinerary to the occupant. | S | D |
+| FR-86 | Anything bound for Google while the node is offline shall be queued, kept across restarts, sent once Google is reachable, and never sent twice. The console shall show what is waiting. | S | T |
 
 ### 3.7 Functional Requirements — Observability
 
@@ -248,7 +256,7 @@ feature safe to ship at all.
 | NFR-03 | Environmental Supervisor end-to-end latency shall be under 15 s on the Jetson AGX Orin at MAXN. | M | M |
 | NFR-04 | Wake-word to transcript latency shall be under 3 s for utterances up to 10 s. | S | M |
 | NFR-05 | Total resident memory of all system processes shall remain under 20 GB, leaving headroom on the 32 GB module. | M | M |
-| NFR-06 | The system shall operate with no outbound internet connectivity. | M | D |
+| NFR-06 | The system shall operate with no outbound internet connectivity. The one exception is FR-84: after the occupant connects a Google account, requests to Google's APIs only; without it, none. | M | D |
 | NFR-07 | The system shall recover to a running state within 60 s of an unclean restart, restoring persisted coefficients. | S | T |
 | NFR-08 | All components shall run under process supervision and restart automatically on crash. | S | T |
 | NFR-09 | The full stack shall run in simulation on a development laptop with no hardware attached. | M | D |
@@ -1533,12 +1541,14 @@ startup, which NFR-06 forbids.
 | `space/context/utterance` | pub | no | 1 | `ConsoleUtterance` |
 | `space/context/ambient` | pub | no | 1 | `AmbientUtterance` |
 | `space/speech/status` | pub | yes | 1 | `SpeechStatus` |
+| `space/speech/settings` | pub | yes | 1 | `SpeechSettings` |
 | `space/tariff/state` | pub | yes | 1 | `TariffState` |
 | `space/control/tracking` | pub | yes | 1 | `TrackingState` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/result` | pub | no | 1 | `ToolResult` |
 | `space/assist/catalogue` | pub | yes | 1 | `ToolCatalogue` |
+| `space/assist/google` | pub | yes | 1 | `GoogleStatus` |
 | `space/audit/validation` | pub | no | 1 | `ValidationVerdict` |
 | `space/audit/reasoning` | pub | no | 1 | `ReasoningRecord` |
 
@@ -1931,6 +1941,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-60 to FR-63 | §4.4, §6.1 | Inspection + E7 |
 | FR-70 to FR-75 | §5.7.6, §6.1, §6.2 | Unit + demonstration |
 | FR-76 to FR-78 | §5.8.4, §6.1 | Unit + demonstration |
+| FR-79 to FR-86 | §5.8.5, §5.7.7, §6.1 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

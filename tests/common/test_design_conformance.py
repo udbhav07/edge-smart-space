@@ -247,6 +247,8 @@ DOCUMENTED_TOPICS = frozenset(
         "space/context/utterance",
         "space/context/ambient",
         "space/speech/status",
+        "space/speech/settings",
+        "space/assist/google",
         "space/tariff/state",
         "space/control/tracking",
         "space/assist/proposed",
