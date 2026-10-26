@@ -43,7 +43,7 @@ from src.common.schemas import AssistantReply, PreferenceHint, SpeechStatus
 from src.common.tools import ArgumentValue, ParameterType, ProviderOutcome, ToolEffect, ToolParameter
 from src.devices.music.room import RoomVoice
 from src.devices.music.stream import StreamDecoder, pcm_source
-from src.devices.music.track import Track
+from src.devices.music.track import Track, tidy
 from src.devices.music.youtube import Candidate, CatalogueUnavailable, YouTubeCatalogue
 from src.devices.runner import DeviceParts
 from src.devices.service import DeviceService
@@ -198,6 +198,8 @@ class MusicDevice:
         self._paused = False
         #: Held until Jarvis has said he is playing it: when to give up waiting.
         self._cued_until: float | None = None
+        #: Changed off the tick -- a held song started as Jarvis finished -- and not yet published.
+        self._unpublished = False
         self._volume = config.default_volume
         self._autoplay = config.autoplay
         self._up_next: deque[Candidate] = deque(maxlen=_UP_NEXT_KEPT)
@@ -293,7 +295,8 @@ class MusicDevice:
             self.follow_room()
             if self._track is not None and not self._paused and self._player.finished:
                 self._after_the_end()
-            return self._moment() != before
+            changed, self._unpublished = self._moment() != before or self._unpublished, False
+            return changed
 
     def follow_room(self) -> None:
         """The room's voice changed: start a song that was waiting for it, dip or restore the volume."""
@@ -315,7 +318,7 @@ class MusicDevice:
                 "source": self._track.origin if self._track else "",
                 "volume": self._volume,
                 "autoplay": self._autoplay,
-                "up_next": self._up_next[0].title if self._up_next else "",
+                "up_next": _named(self._up_next[0]) if self._up_next else "",
                 "tracks": len(self._library.tracks()),
             }
 
@@ -358,6 +361,7 @@ class MusicDevice:
         if self._room is not None and not self._room.reply_said() and self._clock.now() < self._cued_until:
             return
         self._cued_until = None
+        self._unpublished = True
         if not self._paused:
             self._player.resume()
 
@@ -434,6 +438,11 @@ class MusicDevice:
 
     def _playing(self) -> bool:
         return self._track is not None and not self._paused and self._cued_until is None
+
+
+def _named(candidate: Candidate) -> str:
+    title, artist = tidy(candidate.title, candidate.channel)
+    return f"{title} by {artist}" if artist else title
 
 
 class MiniaudioPlayer:

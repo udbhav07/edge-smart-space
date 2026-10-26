@@ -381,6 +381,8 @@ class TestJarvisSpeaksFirst:
         assert player.resumed == 0  # still saying it
         room.on_status("t", _status(SpeechActivity.LISTENING))
         assert player.resumed == 1 and device.state()["playing"]
+        assert device.check() is True  # started off the tick, so the next tick publishes it
+        assert device.check() is False
 
     def test_a_reply_not_said_aloud_lets_it_start_at_once(self, tmp_path):
         device, player, room, _, _ = _room_device(tmp_path, _Catalogue(ONLINE))
@@ -455,8 +457,8 @@ class TestAutoplay:
         return device, player, catalogue
 
     def test_what_comes_next_is_lined_up_while_it_plays(self, tmp_path):
-        device, _, _ = self._playing(tmp_path, [Candidate("next", "Billie Jean", "Michael Jackson", 294)])
-        assert device.state()["up_next"] == "Billie Jean"
+        device, _, _ = self._playing(tmp_path, [Candidate("next", "Scorpions - Still Loving You (Official Video)", "Scorpions", 386)])
+        assert device.state()["up_next"] == "Still Loving You by Scorpions"
 
     def test_when_a_song_ends_the_next_plays(self, tmp_path):
         device, player, catalogue = self._playing(tmp_path, [Candidate("next", "Billie Jean", "", 294)])
