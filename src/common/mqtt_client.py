@@ -182,6 +182,11 @@ class Blackboard:
         self._connected = False
 
     @property
+    def connected(self) -> bool:
+        """Whether the link is up, as last reported by the transport."""
+        return self._connected
+
+    @property
     def subscriptions(self) -> tuple[str, ...]:
         """Patterns this client wants, whether or not the link is up."""
         return tuple(self._subscriptions)
