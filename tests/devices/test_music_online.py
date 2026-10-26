@@ -15,17 +15,21 @@ import numpy as np
 import pytest
 
 from src.common.config import MusicConfig
-from src.devices.music import CatalogueUnavailable, Library, MusicDevice, Track
+from src.common.schemas import AssistantReply, Comfort, Intent, PreferenceHint, SpeechActivity, SpeechStatus
+from src.devices.music import CatalogueUnavailable, Library, MusicDevice, RoomVoice, Track
 from src.devices.music.stream import PcmBuffer, StreamDecoder, StreamUnavailable, pcm_source
-from src.devices.music.youtube import YouTubeCatalogue
+from src.devices.music.track import tidy
+from src.devices.music.youtube import Candidate, YouTubeCatalogue
 
 
 class _Player:
     def __init__(self):
         self.played = []
         self.finished = False
+        self.broken = False
+        self.position_s = 0.0
 
-    def play(self, track):
+    def play(self, track, start_s=0.0, paused=False):
         self.played.append(track)
 
     def pause(self):
@@ -150,28 +154,51 @@ class _YoutubeDL:
         return self.results[target]
 
 
-SEARCH = "ytsearch5:bohemian rhapsody"
+SEARCH = "ytsearch8:bohemian rhapsody"
+
+
+def _watch(id_):
+    return f"https://www.youtube.com/watch?v={id_}"
 
 
 class TestTheCatalogue:
     def setup_method(self):
         _YoutubeDL.calls = []
 
-    def _results(self, *entries):
+    def _results(self, *entries, search=SEARCH, metadata=None):
         resolved = {
-            entry["url"]: {"title": entry["title"], "url": f"https://cdn.invalid/{entry['id']}", "webpage_url": entry["url"], "http_headers": {"User-Agent": "x"}}
+            _watch(entry["id"]): {
+                "title": entry["title"], "channel": entry.get("channel", ""), "url": f"https://cdn.invalid/{entry['id']}",
+                "webpage_url": _watch(entry["id"]), "http_headers": {"User-Agent": "x"}, **(metadata or {}).get(entry["id"], {}),
+            }
             for entry in entries
         }
-        return {SEARCH: {"entries": list(entries)}, **resolved}
+        return {search: {"entries": list(entries)}, **resolved}
 
-    def _entry(self, id_, duration):
-        return {"id": id_, "title": f"song {id_}", "duration": duration, "url": f"https://www.youtube.com/watch?v={id_}"}
+    def _entry(self, id_, duration, title=None, channel="Queen Official"):
+        return {"id": id_, "title": title or f"Queen - Song {id_} (Official Video)", "duration": duration, "channel": channel}
 
-    def test_the_first_song_length_result_is_resolved_to_its_stream(self):
+    def test_the_first_song_length_result_is_resolved_and_its_name_tidied(self):
         downloader = _YoutubeDL(self._results(self._entry("live", None), self._entry("mix", 36000), self._entry("song", 354)))
         track = YouTubeCatalogue(15, 10, downloader=downloader).find("bohemian rhapsody")
-        assert track.title == "song song" and track.url == "https://cdn.invalid/song" and track.origin == "youtube"
+        assert (track.title, track.artist, track.name) == ("Song song", "Queen", "Song song by Queen")
+        assert track.url == "https://cdn.invalid/song" and track.origin == "youtube" and track.video_id == "song"
         assert track.headers == (("User-Agent", "x"),) and track.page.endswith("v=song")
+
+    def test_the_records_own_name_wins_when_youtube_has_it(self):
+        metadata = {"a": {"track": "Hotel California (2013 Remaster)", "artist": "Eagles"}}
+        downloader = _YoutubeDL(self._results(self._entry("a", 392, title="Hotel California (2013 Remaster)", channel="Eagles"), metadata=metadata))
+        assert YouTubeCatalogue(15, 10, downloader=downloader).find("bohemian rhapsody").name == "Hotel California by Eagles"
+
+    def test_a_live_take_or_cover_loses_to_the_song_unless_asked_for(self):
+        entries = (self._entry("live", 300, title="Queen - Bohemian Rhapsody (Live Aid 1985)"), self._entry("cover", 300, title="Bohemian Rhapsody cover"), self._entry("song", 354))
+        assert YouTubeCatalogue(15, 10, downloader=_YoutubeDL(self._results(*entries))).find("bohemian rhapsody").video_id == "song"
+        live = _YoutubeDL(self._results(*entries, search="ytsearch8:bohemian rhapsody live"))
+        assert YouTubeCatalogue(15, 10, downloader=live).find("bohemian rhapsody live").video_id == "live"
+
+    def test_the_record_itself_is_preferred(self):
+        entries = (self._entry("video", 360), self._entry("record", 354, title="Bohemian Rhapsody", channel="Queen - Topic"))
+        assert YouTubeCatalogue(15, 10, downloader=_YoutubeDL(self._results(*entries))).find("bohemian rhapsody").video_id == "record"
 
     def test_the_search_is_flat_and_only_one_is_resolved(self):
         downloader = _YoutubeDL(self._results(self._entry("a", 200), self._entry("b", 200)))
@@ -187,6 +214,36 @@ class TestTheCatalogue:
     def test_a_network_failure_is_unavailable(self):
         with pytest.raises(CatalogueUnavailable, match="couldn't reach YouTube"):
             YouTubeCatalogue(15, 10, downloader=_YoutubeDL({}, fail=True)).find("bohemian rhapsody")
+
+    def test_what_follows_is_youtubes_mix_songs_only_itself_left_out(self):
+        mix = {"entries": [self._entry("now", 354), self._entry("next", 210), self._entry("hours", 36000), self._entry("after", 260)]}
+        downloader = _YoutubeDL({f"{_watch('now')}&list=RDnow": mix})
+        following = YouTubeCatalogue(15, 10, downloader=downloader).up_next("now")
+        assert [candidate.video_id for candidate in following] == ["next", "after"]
+        assert _YoutubeDL.calls[0][1]["extract_flat"]
+
+
+class TestTitles:
+    @pytest.mark.parametrize(
+        ("title", "channel", "expected"),
+        [
+            ("Queen \u2013 Bohemian Rhapsody (Official Video Remastered)", "Queen Official", ("Bohemian Rhapsody", "Queen")),
+            ('"Tum Hi Ho" Aashiqui 2 Full Song With Lyrics | Aditya Roy Kapur, Shraddha Kapoor', "T-Series", ("Tum Hi Ho", "")),
+            ("Kesariya - Brahmastra | Ranbir Kapoor | Alia Bhatt | Pritam | Arijit Singh", "Sony Music India", ("Kesariya", "")),
+            ("The Stranglers - Golden Brown (Official Lyric Video)", "Classic Rockers", ("Golden Brown", "The Stranglers")),
+            ("Shape of You", "Ed Sheeran - Topic", ("Shape of You", "Ed Sheeran")),
+            ("Billie Jean", "Michael Jackson", ("Billie Jean", "")),
+            ("Miles Davis - So What", "", ("So What", "Miles Davis")),
+        ],
+    )
+    def test_a_video_title_becomes_a_song_name(self, title, channel, expected):
+        assert tidy(title, channel) == expected
+
+    def test_metadata_wins(self):
+        assert tidy("whatever", "x", track="Hotel California (2013 Remaster)", artist="Eagles, Don Henley") == ("Hotel California", "Eagles")
+
+    def test_a_name_that_is_all_aside_is_kept(self):
+        assert tidy("(Official Video)") == ("(Official Video)", "")
 
 
 class TestTheBuffer:
@@ -258,3 +315,194 @@ class TestDecoding:
         (tmp_path / "x.wav").write_bytes(b"not audio")
         with pytest.raises(StreamUnavailable, match="couldn't be opened"):
             StreamDecoder(str(tmp_path / "x.wav"))
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def now(self):
+        return self.t
+
+
+def _hint(typed=False, remote=False):
+    return PreferenceHint(ts=1.0, comfort=Comfort.UNCHANGED, rationale="music", transcript="play bohemian rhapsody", intent=Intent.SERVICE, typed=typed, remote=remote)
+
+
+def _reply(spoken=True):
+    return AssistantReply(ts=2.0, transcript="play bohemian rhapsody", intent=Intent.SERVICE, reply="Playing it.", spoken=spoken)
+
+
+def _status(activity):
+    return SpeechStatus(ts=3.0, activity=activity, heartbeat_s=5.0)
+
+
+class _HeldPlayer(_Player):
+    def __init__(self):
+        super().__init__()
+        self.paused_at_start, self.resumed, self.volumes = [], 0, []
+
+    def play(self, track, start_s=0.0, paused=False):
+        super().play(track)
+        self.paused_at_start.append(paused)
+        self.start_s = start_s
+
+    def resume(self):
+        self.resumed += 1
+
+    def set_volume(self, volume):
+        self.volumes.append(round(volume, 3))
+
+
+def _room_device(tmp_path, catalogue=None, *names):
+    clock = _Clock()
+    room = RoomVoice(clock, request_window_s=45)
+    for name in names:
+        (tmp_path / "music").mkdir(exist_ok=True)
+        (tmp_path / "music" / name).write_bytes(b"")
+    player = _HeldPlayer()
+    jobs = []
+    device = MusicDevice(
+        Library([tmp_path / "music"], [".mp3"], random.Random(1)), player, MusicConfig(library_path=str(tmp_path / "music")),
+        catalogue, room=room, clock=clock, background=jobs.append,
+    )
+    room.on_change = device.follow_room
+    return device, player, room, clock, jobs
+
+
+class TestJarvisSpeaksFirst:
+    def test_a_song_asked_for_aloud_waits_for_the_reply_to_be_said(self, tmp_path):
+        device, player, room, _, _ = _room_device(tmp_path, _Catalogue(ONLINE))
+        room.on_request("t", _hint())
+        device.play({"query": "bohemian rhapsody"})
+        assert player.paused_at_start == [True] and device.state()["starting"] and not device.state()["playing"]
+        room.on_reply("t", _reply())
+        room.on_status("t", _status(SpeechActivity.SPEAKING))
+        assert player.resumed == 0  # still saying it
+        room.on_status("t", _status(SpeechActivity.LISTENING))
+        assert player.resumed == 1 and device.state()["playing"]
+
+    def test_a_reply_not_said_aloud_lets_it_start_at_once(self, tmp_path):
+        device, player, room, _, _ = _room_device(tmp_path, _Catalogue(ONLINE))
+        room.on_request("t", _hint())
+        device.play({"query": "bohemian rhapsody"})
+        room.on_reply("t", _reply(spoken=False))
+        assert player.resumed == 1
+
+    def test_it_stops_waiting_after_a_while(self, tmp_path):
+        device, player, room, clock, _ = _room_device(tmp_path, _Catalogue(ONLINE))
+        room.on_request("t", _hint())
+        device.play({"query": "bohemian rhapsody"})
+        clock.t += 21
+        device.check()
+        assert player.resumed == 1
+
+    def test_a_tap_or_a_typed_request_starts_at_once(self, tmp_path):
+        device, player, room, _, _ = _room_device(tmp_path, _Catalogue(ONLINE))
+        room.on_request("t", _hint(typed=True))
+        device.play({"query": "bohemian rhapsody"})
+        assert player.paused_at_start == [False] and device.state()["playing"]
+
+    def test_an_old_request_does_not_hold_a_song(self, tmp_path):
+        device, player, room, clock, _ = _room_device(tmp_path, _Catalogue(ONLINE))
+        room.on_request("t", _hint())
+        clock.t += 60
+        device.play({"query": "bohemian rhapsody"})
+        assert player.paused_at_start == [False]
+
+
+class TestTheMusicDips:
+    def test_down_while_the_room_listens_or_speaks_and_back_after(self, tmp_path):
+        device, player, room, _, _ = _room_device(tmp_path, None, "a.mp3")
+        device.play({})
+        room.on_status("t", _status(SpeechActivity.LISTENING))
+        assert player.volumes[-1] == 0.15  # a quarter of 60 %
+        room.on_status("t", _status(SpeechActivity.SPEAKING))
+        assert player.volumes[-1] == 0.15
+        room.on_status("t", _status(SpeechActivity.WAITING))
+        assert player.volumes[-1] == 0.6
+
+    def test_overheard_talk_does_not_dip_it(self, tmp_path):
+        device, player, room, _, _ = _room_device(tmp_path, None, "a.mp3")
+        device.play({})
+        room.on_status("t", _status(SpeechActivity.OVERHEARING))
+        assert player.volumes[-1] == 0.6
+
+
+class _Following(_Catalogue):
+    def __init__(self, following):
+        super().__init__(ONLINE_WITH_ID)
+        self.following, self.resolved = following, []
+
+    def up_next(self, video_id):
+        return self.following
+
+    def resolve(self, candidate):
+        self.resolved.append(candidate.video_id)
+        return Track(title=candidate.title, url=f"https://cdn.invalid/{candidate.video_id}", origin="youtube", video_id=candidate.video_id)
+
+
+ONLINE_WITH_ID = Track(title="Bohemian Rhapsody", artist="Queen", url="https://cdn.invalid/now", origin="youtube", video_id="now")
+
+
+class TestAutoplay:
+    def _playing(self, tmp_path, following):
+        catalogue = _Following(following)
+        device, player, room, clock, jobs = _room_device(tmp_path, catalogue)
+        device.play({"query": "bohemian rhapsody"})
+        for job in jobs:
+            job()
+        return device, player, catalogue
+
+    def test_what_comes_next_is_lined_up_while_it_plays(self, tmp_path):
+        device, _, _ = self._playing(tmp_path, [Candidate("next", "Billie Jean", "Michael Jackson", 294)])
+        assert device.state()["up_next"] == "Billie Jean"
+
+    def test_when_a_song_ends_the_next_plays(self, tmp_path):
+        device, player, catalogue = self._playing(tmp_path, [Candidate("next", "Billie Jean", "", 294)])
+        player.finished = True
+        assert device.check() is True and player.played[-1].video_id == "next" and device.state()["playing"]
+
+    def test_a_song_already_played_is_not_lined_up_again(self, tmp_path):
+        device, _, _ = self._playing(tmp_path, [Candidate("now", "Bohemian Rhapsody", "", 354), Candidate("next", "Billie Jean", "", 294)])
+        assert device.state()["up_next"] == "Billie Jean"
+
+    def test_off_it_stops_at_the_end(self, tmp_path):
+        device, player, _ = self._playing(tmp_path, [Candidate("next", "Billie Jean", "", 294)])
+        device.set_autoplay({"on": False})
+        player.finished = True
+        device.check()
+        assert device.state()["track"] == "" and player.played[-1].video_id == "now"
+
+    def test_next_skips_now(self, tmp_path):
+        device, player, _ = self._playing(tmp_path, [Candidate("next", "Billie Jean", "", 294)])
+        assert device.next({}).message == "Next up, Billie Jean." and player.played[-1].video_id == "next"
+
+    def test_next_with_nothing_lined_up_is_said(self, tmp_path):
+        device, _, _ = self._playing(tmp_path, [])
+        with pytest.raises(ValueError, match="nothing lined up"):
+            device.next({})
+
+    def test_the_library_follows_itself(self, tmp_path):
+        device, player, _, _, _ = _room_device(tmp_path, None, "a.mp3", "b.mp3")
+        device.play({"file": "a.mp3"})
+        player.finished = True
+        device.check()
+        assert player.played[-1].path.name == "b.mp3"
+
+
+class TestCarryingOn:
+    def test_a_dropped_stream_carries_on_from_where_it_was(self, tmp_path):
+        device, player, _, _, _ = _room_device(tmp_path, _Catalogue(ONLINE_WITH_ID))
+        device.play({"query": "bohemian rhapsody"})
+        player.position_s, player.broken, player.finished = 95.0, True, True
+        device.check()
+        assert player.played[-1] is ONLINE_WITH_ID and player.start_s == 95.0
+
+    def test_resuming_a_stream_that_dropped_while_paused_reopens_it(self, tmp_path):
+        device, player, _, _, _ = _room_device(tmp_path, _Catalogue(ONLINE_WITH_ID))
+        device.play({"query": "bohemian rhapsody"})
+        device.stop({})
+        player.position_s, player.broken = 40.0, True
+        device.resume({})
+        assert len(player.played) == 2 and player.start_s == 40.0 and device.state()["playing"]

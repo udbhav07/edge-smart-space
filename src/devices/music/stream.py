@@ -89,8 +89,10 @@ class StreamDecoder:
         channels: int = 2,
         ahead_s: float = 10.0,
         timeout_s: float = 10.0,
+        start_s: float = 0.0,
     ) -> None:
         """
+        :param start_s: where to begin, for a song carried on after its stream dropped.
         :raises StreamUnavailable: the stream could not be opened or holds no sound.
         """
         import av
@@ -100,10 +102,14 @@ class StreamDecoder:
             options = {"headers": "".join(f"{name}: {value}\r\n" for name, value in headers)} if headers else {}
             self._container = av.open(url, options=options, timeout=timeout_s)
             self._stream = self._container.streams.audio[0]
+            if start_s > 0:
+                self._container.seek(int(start_s * av.time_base))
         except (av.FFmpegError, OSError, IndexError) as exc:
             LOGGER.info("could not open a stream: %s", exc)
             raise StreamUnavailable("That song couldn't be opened; try another.") from exc
         self.buffer = PcmBuffer(int(ahead_s * sample_rate * channels * 2))
+        #: Whether the stream ended because the connection dropped, not because the song did.
+        self.broken = False
         self._resampler = av.AudioResampler(format="s16", layout="stereo" if channels == 2 else "mono", rate=sample_rate)
         self._thread = threading.Thread(target=self._decode, name="music-stream", daemon=True)
         self._thread.start()
@@ -125,8 +131,10 @@ class StreamDecoder:
             for out in self._resampler.resample(None):
                 self.buffer.put(bytes(out.planes[0])[: out.samples * len(out.layout.channels) * 2])
         except (self._av.FFmpegError, OSError) as exc:
-            # A dropped connection ends the song early; it never stops the service.
+            # A dropped connection -- often a long pause -- ends what was
+            # buffered; the player opens it again where it was (FR-96).
             LOGGER.warning("the stream broke off: %s", exc)
+            self.broken = True
         finally:
             self.buffer.finish()
             self._container.close()

@@ -1202,6 +1202,16 @@ class MusicConfig(_Section):
     )
     online_max_minutes: float = Field(default=15.0, gt=0.0, description="Longest result taken to be a song, in min")
     online_timeout_s: float = Field(default=15.0, gt=0.0, description="How long a search may wait on the network, in s")
+    autoplay: bool = Field(default=True, description="Play another song when one ends: YouTube's next, or the library's")
+    duck_volume: float = Field(
+        default=0.25, ge=0.0, le=1.0, description="Share of the volume kept while the room listens or speaks"
+    )
+    wait_for_reply_s: float = Field(
+        default=20.0, gt=0.0, description="Longest a song asked for aloud waits for Jarvis to say so, in s"
+    )
+    request_window_s: float = Field(
+        default=45.0, gt=0.0, description="How recent a spoken request must be for a song to wait for its reply, in s"
+    )
 
 
 class MessagesConfig(_Section):
