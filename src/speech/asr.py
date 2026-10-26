@@ -188,7 +188,13 @@ class Transcriber:
         """
         if not frames:
             return ""
-        segments, _ = self._model.transcribe(to_float_audio(frames), beam_size=_BEAM_SIZE)
+        return self.transcribe_audio(to_float_audio(frames), confident_only)
+
+    def transcribe_audio(self, audio: np.ndarray, confident_only: bool = False) -> str:
+        """Transcribe audio already decoded: 16 kHz mono float, as from a phone (FR-94)."""
+        if audio.size == 0:
+            return ""
+        segments, _ = self._model.transcribe(audio, beam_size=_BEAM_SIZE)
         if confident_only:
             heard = list(segments)
             segments = [segment for segment in heard if self._confident(segment)]

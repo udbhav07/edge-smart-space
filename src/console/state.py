@@ -82,6 +82,9 @@ _RECORDS_KEPT = 100
 _RATE_MIN_ARRIVALS = 5
 _RATE_MIN_SPAN_S = 30.0
 
+#: Remote requests awaiting a reply, at most. Bounded: an unanswered one is forgotten.
+_REMOTE_KEPT = 16
+
 #: The longest gap between meter readings that is still integrated (FR-80).
 _ENERGY_GAP_S = 120.0
 
@@ -144,6 +147,8 @@ class ConsoleState:
         self._devices: dict[str, dict] = {}
         #: Device calls made from here, whose answers the page shows.
         self._device_requests: set[str] = set()
+        #: What a phone away from the room asked, by its words, awaiting the reply (FR-94).
+        self._remote_requests: OrderedDict[str, str] = OrderedDict()
         #: Today's electricity, integrated from the meter (FR-80).
         self._energy = {"day": "", "kwh": 0.0, "cost": 0.0}
         self._last_power: tuple[float, float] | None = None
@@ -338,6 +343,12 @@ class ConsoleState:
         found = self._devices.get(device_id)
         return found if found and found["manifest"] is not None else None
 
+    def expect_remote(self, utterance_id: str, text: str) -> None:
+        """A request from a device away from the room; its reply goes back to it (FR-94)."""
+        self._remote_requests[" ".join(text.lower().split())] = utterance_id
+        while len(self._remote_requests) > _REMOTE_KEPT:
+            self._remote_requests.popitem(last=False)
+
     def expect_device(self, invocation_id: str) -> None:
         """A device call made from here; its answer is shown when it comes."""
         self._device_requests.add(invocation_id)
@@ -486,7 +497,13 @@ class ConsoleState:
         return events
 
     def _on_reply(self, _topic, reply: AssistantReply):
-        return [self._say("assistant", reply.reply, intent=reply.intent.value, profile_id=reply.profile_id, waiting=reply.awaiting_confirmation)]
+        events = [self._say("assistant", reply.reply, intent=reply.intent.value, profile_id=reply.profile_id, waiting=reply.awaiting_confirmation)]
+        if reply.remote:
+            # The reply carries the words it answers, not an id: matched by them.
+            utterance_id = self._remote_requests.pop(" ".join(reply.transcript.lower().split()), None)
+            if utterance_id is not None:
+                events.append(self._event("remote_reply", {"utterance_id": utterance_id, "reply": reply.reply, "transcript": reply.transcript}))
+        return events
 
     def _on_profile(self, _topic, context: ProfileContext):
         self._profiles[context.profile_id] = {

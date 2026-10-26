@@ -474,6 +474,12 @@ sim:
 console:
   host: 127.0.0.1
   port: 8077
+  # Also served over HTTPS, with a certificate this node makes for itself, so a
+  # phone away from the room may use its microphone (FR-94). 0 turns it off.
+  tls_port: 8443
+  tls_directory: state/console/tls
+  talk_max_seconds: 30
+  talk_max_bytes: 8000000
   conversation_kept: 80
   activity_kept: 120
   calendar_days: 7

@@ -124,24 +124,19 @@ class PiperSpeaker:
         for _ in self._voice.synthesize("ready", syn_config=self._config):
             pass
 
-    def say(self, text: str, volume: float) -> None:
-        import pyaudio
-
+    def render(self, text: str, volume: float = 1.0) -> tuple[bytes, int]:
+        """The sentence as 16-bit mono PCM and its sample rate, not played: for a
+        reply that is heard on someone's phone rather than in the room (FR-94)."""
         chunks = list(self._voice.synthesize(text, syn_config=self._config))
         if not chunks:
-            return
+            return b"", 22050
         samples = np.concatenate([chunk.audio_float_array for chunk in chunks]) * volume
-        pcm = (np.clip(samples, -1.0, 1.0) * _INT16_FULL_SCALE).astype(np.int16).tobytes()
-        audio = pyaudio.PyAudio()
-        try:
-            stream = audio.open(format=pyaudio.paInt16, channels=1, rate=chunks[0].sample_rate, output=True)
-            try:
-                stream.write(pcm)
-            finally:
-                stream.stop_stream()
-                stream.close()
-        finally:
-            audio.terminate()
+        return (np.clip(samples, -1.0, 1.0) * _INT16_FULL_SCALE).astype(np.int16).tobytes(), chunks[0].sample_rate
+
+    def say(self, text: str, volume: float) -> None:
+        pcm, rate = self.render(text, volume)
+        if pcm:
+            play_with_pyaudio(pcm, rate)
 
 
 class SystemSpeaker:

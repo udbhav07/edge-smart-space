@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
@@ -32,6 +32,7 @@ from src.common import topics
 from src.common.mqtt_client import Blackboard
 from src.console.actions import ActionRefused, ConsoleActions
 from src.console.google_signin import GoogleSignIn, SignInError
+from src.console.remote_voice import RemoteVoice, RemoteVoiceUnavailable
 from src.console.state import ConsoleState, Event, encode
 
 LOGGER = logging.getLogger(__name__)
@@ -181,6 +182,15 @@ class DeviceRequest(BaseModel):
     arguments: dict[str, bool | int | float | str | None] = Field(default_factory=dict)
 
 
+class RemoteSayRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    profile_id: str = ""
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=800)
+
+
 class ComfortRequest(BaseModel):
     direction: str = Field(min_length=1, max_length=16)
     profile_id: str = ""
@@ -212,6 +222,8 @@ def create_app(
     link: Link,
     lock: threading.Lock,
     signin: GoogleSignIn | None = None,
+    remote_voice: RemoteVoice | None = None,
+    talk_max_bytes: int = 8_000_000,
 ) -> FastAPI:
     """The web application; every dependency injected so it can be tested."""
     @asynccontextmanager
@@ -252,6 +264,50 @@ def create_app(
     @app.post("/api/target")
     async def post_target(request: TargetRequest) -> JSONResponse:
         return act(actions.set_target, request.target_c, request.profile_id)
+
+    # --- talking from a phone away from the room (FR-94) ----------------------
+
+    @app.post("/api/talk")
+    async def post_talk(request: Request) -> JSONResponse:
+        """A recording from a device's microphone: transcribed here, sent on as a remote request.
+
+        Transcribed outside the lock: it takes a second, and the page must not
+        stall meanwhile. The recording is never kept (FR-51).
+        """
+        if remote_voice is None:
+            return JSONResponse({"ok": False, "error": "Talking from a device is not available here."}, status_code=503)
+        recording = await request.body()
+        if len(recording) > talk_max_bytes:
+            return JSONResponse({"ok": False, "error": "That recording is too large; keep it short."}, status_code=413)
+        try:
+            heard = await asyncio.to_thread(remote_voice.transcribe, recording)
+        except RemoteVoiceUnavailable as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        if not heard:
+            return JSONResponse({"ok": False, "error": "I didn't catch anything; try again, a little closer."}, status_code=400)
+        response = act(actions.say, heard, "", True)
+        if response.status_code == 200:
+            utterance = json.loads(response.body)["result"]
+            return JSONResponse({"ok": True, "result": {"utterance_id": utterance["utterance_id"], "transcript": heard}})
+        return response
+
+    @app.post("/api/talk/text")
+    async def post_talk_text(request: RemoteSayRequest) -> JSONResponse:
+        """Typed on a device away from the room: answered there too (FR-94)."""
+        return act(actions.say, request.text, request.profile_id, True)
+
+    @app.post("/api/voice/speak", response_model=None)
+    async def post_voice_speak(request: SpeakRequest) -> Response | JSONResponse:
+        """A reply in the room's voice, as audio for the device that asked to play."""
+        if remote_voice is None:
+            return JSONResponse({"ok": False, "error": "No voice here."}, status_code=503)
+        try:
+            audio = await asyncio.to_thread(remote_voice.speak, request.text)
+        except RemoteVoiceUnavailable as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        return Response(content=audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/music/upload")
     async def post_music_upload(request: Request, name: str = Query(min_length=1, max_length=200)) -> JSONResponse:

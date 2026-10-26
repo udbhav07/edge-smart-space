@@ -12,6 +12,8 @@ client like the recorder, with no authority of its own.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import datetime as dt
 import logging
 import threading
 from pathlib import Path
@@ -21,8 +23,10 @@ from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.console.actions import ConsoleActions
 from src.console.google_signin import GoogleSignIn
+from src.console.remote_voice import RemoteVoice
 from src.console.server import STATIC_DIRECTORY, Hub, Link, create_app
 from src.console.state import ConsoleState
+from src.console.tls import ensure_certificate, local_names
 
 LOGGER = logging.getLogger("console")
 
@@ -62,19 +66,43 @@ def main(argv: list[str] | None = None) -> int:
     holder.append(link)
 
     actions = ConsoleActions(config, clock, blackboard, state)
-    app = create_app(state, actions, hub, link, lock, signin=GoogleSignIn(config.google))
+    remote_voice = RemoteVoice(config.speech, config.console.talk_max_seconds)
+    app = create_app(
+        state, actions, hub, link, lock,
+        signin=GoogleSignIn(config.google), remote_voice=remote_voice, talk_max_bytes=config.console.talk_max_bytes,
+    )
 
     host = arguments.host or config.console.host
     port = arguments.port or config.console.port
     if not (STATIC_DIRECTORY / "index.html").is_file():
         LOGGER.warning("the frontend is not built; serving a placeholder page (see console/web)")
+    servers = [uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))]
+    if config.console.tls_port:
+        # The same console over HTTPS, so a phone may use its microphone (FR-94).
+        names, addresses = local_names()
+        now = dt.datetime.fromtimestamp(clock.now(), tz=dt.timezone.utc)
+        cert, key = ensure_certificate(Path(config.console.tls_directory), names, addresses, now)
+        servers.append(
+            uvicorn.Server(
+                uvicorn.Config(app, host=host, port=config.console.tls_port, log_level="warning", ssl_certfile=str(cert), ssl_keyfile=str(key))
+            )
+        )
     blackboard.start()
     LOGGER.info("console on http://%s:%d -- it has no authority; the room runs without it", host, port)
+    if config.console.tls_port:
+        LOGGER.info("and on https://%s:%d, for talking from a phone (accept its certificate once)", host, config.console.tls_port)
     try:
-        uvicorn.run(app, host=host, port=port, log_level="warning")
+        asyncio.run(_serve(servers))
+    except KeyboardInterrupt:
+        LOGGER.info("stopping")
     finally:
         blackboard.stop()
     return 0
+
+
+async def _serve(servers) -> None:
+    """Every server on one event loop, so they share the push stream."""
+    await asyncio.gather(*(server.serve() for server in servers))
 
 
 if __name__ == "__main__":

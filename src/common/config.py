@@ -1083,6 +1083,18 @@ class ConsoleConfig(_Section):
         description="Electricity price per kWh by tariff band, for Home's energy card",
     )
     currency: str = Field(default="Rs", description="Shown beside the energy cost")
+    tls_port: int = Field(
+        default=8443,
+        ge=0,
+        le=65535,
+        description="Where the console is also served over HTTPS, so a phone may use "
+        "its microphone (FR-94); 0 serves plain HTTP only",
+    )
+    tls_directory: str = Field(
+        default="state/console/tls", description="This node's own certificate, made on first start"
+    )
+    talk_max_seconds: float = Field(default=30.0, gt=0.0, description="Longest recording a device may send, in s")
+    talk_max_bytes: int = Field(default=8_000_000, gt=0, description="Largest recording a device may send")
     inbox_path: str = Field(
         default="state/console/inbox.json",
         description="Where the inbox is kept across restarts (S-10); the room's "
