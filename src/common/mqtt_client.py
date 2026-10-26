@@ -268,8 +268,18 @@ def topic_matches(pattern: str, topic: str) -> bool:
     return len(pattern_levels) == len(topic_levels)
 
 
-def build_transport(config: MqttConfig, client_id: str, blackboard_ref: list):
+def build_transport(
+    config: MqttConfig,
+    client_id: str,
+    blackboard_ref: list,
+    will: tuple[str, bytes, bool] | None = None,
+):
     """Create a paho client wired to a blackboard's dispatch.
+
+    ``will`` is ``(topic, payload, retain)``: what the broker publishes for
+    this client if it vanishes without disconnecting -- a device service
+    saying it is offline (FR-87). It is registered before connecting, which
+    is the only time MQTT accepts one.
 
     paho is imported here rather than at module scope so the routing and
     decoding logic above stays importable and testable without it.
@@ -289,6 +299,9 @@ def build_transport(config: MqttConfig, client_id: str, blackboard_ref: list):
     client.reconnect_delay_set(
         min_delay=int(config.reconnect_min_s), max_delay=int(config.reconnect_max_s)
     )
+    if will is not None:
+        will_topic, will_payload, will_retain = will
+        client.will_set(will_topic, will_payload, qos=1, retain=will_retain)
 
     def _on_message(_client, _userdata, message) -> None:
         blackboard_ref[0].dispatch(message.topic, message.payload)

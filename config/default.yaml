@@ -503,3 +503,43 @@ ambient:
                                 # across sentences reads as one
   max_lines: 8                  # lines of context per voice
   max_calls_per_min: 6          # leaves the server to the assistant and supervisor
+
+# Device services beyond the thermal loop (FR-87 to FR-91). Each is a service
+# on the board with a retained manifest; the assistant is shown only the
+# tools of the device a request is about, at most max_device_tools of them.
+actuators:
+  command_timeout_s: 8.0
+  max_device_tools: 6
+  fan:
+    enabled: true              # simulated (FR-15): no thermal effect is claimed
+    max_speed: 3
+    min_interval_s: 1.0
+  music:
+    enabled: true
+    library_path: ~/Music
+    uploads_path: state/music/uploads
+    default_volume: 60
+  # An MCP server mounted as a device by the bridge (FR-90). Only the tools
+  # listed are exposed, with the effect and class declared here.
+  mcp_servers:
+    - device_id: lamp
+      name: Desk lamp
+      kind: light
+      aliases: [the lamp, desk lamp, light]
+      simulated: true
+      command: python
+      args: [examples/mcp_lamp/server.py]
+      tools:
+        turn_on: {effect: write, device_class: comfort}
+        turn_off: {effect: write, device_class: comfort}
+        set_brightness: {effect: write, device_class: comfort}
+        get_status: {effect: read, device_class: comfort}
+    # A third-party server is mounted the same way, for example:
+    # - device_id: spotify
+    #   name: Spotify
+    #   kind: media
+    #   simulated: false
+    #   command: uvx
+    #   args: [some-spotify-mcp-server]
+    #   tools:
+    #     play: {effect: write, device_class: media}

@@ -1571,6 +1571,11 @@ startup, which NFR-06 forbids.
 | `space/assist/result` | pub | no | 1 | `ToolResult` |
 | `space/assist/catalogue` | pub | yes | 1 | `ToolCatalogue` |
 | `space/assist/google` | pub | yes | 1 | `GoogleStatus` |
+| `space/device/{device_id}/manifest` | pub | yes | 1 | `DeviceManifest` |
+| `space/device/{device_id}/availability` | pub | yes | 1 | `DeviceAvailability` (last will: offline) |
+| `space/device/{device_id}/command` | pub | no | 1 | `ToolInvocation` (one capability) |
+| `space/device/{device_id}/result` | pub | no | 1 | `ToolResult` |
+| `space/device/{device_id}/state` | pub | yes | 1 | `DeviceState` |
 | `space/audit/validation` | pub | no | 1 | `ValidationVerdict` |
 | `space/audit/reasoning` | pub | no | 1 | `ReasoningRecord` |
 

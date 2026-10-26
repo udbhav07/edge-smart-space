@@ -21,7 +21,9 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.common.devices import DeviceClass, DeviceKind
 from src.common.schemas import ListenMode, Unit
+from src.common.tools import ToolEffect
 
 #: Number of coefficients in the RC model (DESIGN.md section 5.2.1).
 COEFFICIENT_COUNT = 4
@@ -1107,6 +1109,86 @@ class GoogleConfig(_Section):
     retry_max_s: float = Field(default=600.0, gt=0.0, description="Longest wait between attempts")
 
 
+class McpToolConfig(_Section):
+    """One tool of an MCP server the bridge exposes, and what it may do (FR-90).
+
+    Declared here rather than read from the server: an MCP server's own
+    annotations are hints it makes about itself, and the confirmation gate
+    and the safety class must not rest on a third party's word.
+    """
+
+    effect: ToolEffect
+    device_class: DeviceClass = Field(description="comfort or media; plant is never bridged")
+    purpose: str = Field(default="", description="What the model is told; the server's own if empty")
+    min_interval_s: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _plant_is_never_bridged(self) -> McpToolConfig:
+        if self.device_class is DeviceClass.PLANT:
+            raise ValueError("an MCP tool cannot be plant: the thermal loop is reached only through the validator (FR-45)")
+        return self
+
+
+class McpServerConfig(_Section):
+    """An MCP server mounted as a device by the bridge (FR-90)."""
+
+    device_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    name: str = Field(min_length=1)
+    kind: DeviceKind = DeviceKind.OTHER
+    room: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    simulated: bool = Field(description="Whether it acts on anything real (FR-15)")
+    command: str = Field(min_length=1, description="The program that runs the server, over stdio")
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    tools: dict[str, McpToolConfig] = Field(
+        description="The only tools exposed; anything else the server offers is not"
+    )
+
+
+class FanConfig(_Section):
+    """The simulated fan (FR-87, FR-15)."""
+
+    enabled: bool = True
+    device_id: str = Field(default="fan", pattern=r"^[a-z][a-z0-9_]*$")
+    name: str = "Ceiling fan"
+    aliases: list[str] = Field(default_factory=lambda: ["the fan", "ceiling fan", "fan"])
+    max_speed: int = Field(default=3, gt=0, description="Highest speed setting")
+    min_interval_s: float = Field(default=1.0, ge=0.0, description="Shortest time between switches, in s")
+
+
+class MusicConfig(_Section):
+    """The music player on this machine (FR-87)."""
+
+    enabled: bool = True
+    device_id: str = Field(default="music", pattern=r"^[a-z][a-z0-9_]*$")
+    name: str = "Music"
+    aliases: list[str] = Field(default_factory=lambda: ["music", "the music", "song", "speaker"])
+    library_path: str = Field(default="~/Music", description="Where tracks are looked for")
+    uploads_path: str = Field(
+        default="state/music/uploads", description="Where a file given in the console is kept"
+    )
+    extensions: list[str] = Field(default_factory=lambda: [".mp3", ".flac", ".wav", ".ogg"])
+    default_volume: int = Field(default=60, ge=0, le=100)
+
+
+class ActuatorsConfig(_Section):
+    """Device services beyond the thermal loop, and how the assistant reaches them (FR-87 to FR-91)."""
+
+    command_timeout_s: float = Field(
+        default=8.0, gt=0.0, description="How long a device has to answer a command, in s"
+    )
+    max_device_tools: int = Field(
+        default=6,
+        gt=0,
+        description="Most device tools a model is shown at once (FR-89); a 7B "
+        "model's context must not grow with every device plugged in",
+    )
+    fan: FanConfig = FanConfig()
+    music: MusicConfig = MusicConfig()
+    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
+
+
 class AmbientConfig(_Section):
     """Mining overheard speech for plans and facts (FR-76 to FR-78)."""
 
@@ -1153,6 +1235,7 @@ class Config(_Section):
     console: ConsoleConfig = ConsoleConfig()
     ambient: AmbientConfig = AmbientConfig()
     google: GoogleConfig = GoogleConfig()
+    actuators: ActuatorsConfig = ActuatorsConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:
