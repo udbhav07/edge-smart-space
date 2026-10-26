@@ -19,8 +19,8 @@ from collections.abc import Callable, Mapping
 
 from src.common import topics
 from src.common.clock import Clock
-from src.common.devices import DeviceAvailability, DeviceClass, DeviceManifest, DeviceState
-from src.common.mqtt_client import PAYLOAD_ENCODING, Blackboard
+from src.common.devices import DeviceAvailability, DeviceClass, DeviceManifest, DeviceState, last_will
+from src.common.mqtt_client import Blackboard
 from src.common.tools import ArgumentValue, ProviderOutcome, ToolArgumentError, ToolInvocation, ToolResult, ToolStatus
 
 LOGGER = logging.getLogger(__name__)
@@ -35,16 +35,7 @@ StateReader = Callable[[], Mapping[str, ArgumentValue]]
 _INTERNAL_FAILURE = "Something went wrong with the device; nothing was changed."
 
 
-def last_will(device_id: str, clock: Clock) -> tuple[str, bytes, bool]:
-    """What the broker publishes for a device whose service dies: offline, retained.
-
-    For :func:`~src.common.mqtt_client.build_transport`'s ``will``. Its
-    timestamp is the moment the service started, which is the last moment
-    it is known to have been alive.
-    """
-    message = DeviceAvailability(ts=clock.now(), device_id=device_id, online=False)
-    topic = topics.DEVICE_AVAILABILITY.format(device_id=device_id)
-    return topic, message.model_dump_json().encode(PAYLOAD_ENCODING), topics.DEVICE_AVAILABILITY.retain
+__all__ = ["DeviceService", "Handler", "StateReader", "last_will"]
 
 
 class DeviceService:

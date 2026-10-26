@@ -29,8 +29,10 @@ from types import MappingProxyType
 
 from pydantic import Field, field_serializer, field_validator, model_validator
 
-from src.common.schemas import TimestampedMessage
-from src.common.tools import ArgumentValue, ToolSpec
+from src.common import topics
+from src.common.clock import Clock
+from src.common.schemas import ActuatorState, TimestampedMessage
+from src.common.tools import ArgumentValue, ParameterType, ToolEffect, ToolParameter, ToolSpec
 
 #: A device id becomes part of a tool name (``fan_set_speed``) and a topic
 #: level, so it is one lower-case identifier, like a tool name.
@@ -140,3 +142,87 @@ class DeviceState(TimestampedMessage):
     @field_serializer("values")
     def _serialise_values(self, value: Mapping[str, ArgumentValue]) -> dict[str, ArgumentValue]:
         return dict(value)
+
+
+def last_will(device_id: str, clock: Clock) -> tuple[str, bytes, bool]:
+    """What the broker publishes for a device whose service dies: offline, retained.
+
+    For :func:`~src.common.mqtt_client.build_transport`'s ``will``. Its
+    timestamp is the moment the service started, which is the last moment
+    it is known to have been alive.
+    """
+    message = DeviceAvailability(ts=clock.now(), device_id=device_id, online=False)
+    topic = topics.DEVICE_AVAILABILITY.format(device_id=device_id)
+    return topic, message.model_dump_json().encode("utf-8"), topics.DEVICE_AVAILABILITY.retain
+
+
+# --- The air conditioner, on the same contract (FR-87, FR-88, FR-45) -----------
+
+
+def air_conditioner_manifest(now: float, simulated: bool) -> DeviceManifest:
+    """The AC as a device: visible like any other, and every capability ``PLANT``.
+
+    None of these becomes a tool. They are here so the console and the
+    assistant can see the unit and what it is, and so a request naming it is
+    recognised as being about the room's temperature -- which reaches the unit
+    only as a preference the validator gates (FR-45).
+    """
+
+    def plant(name: str, purpose: str, *parameters: ToolParameter) -> DeviceCapability:
+        return DeviceCapability(name=name, purpose=purpose, effect=ToolEffect.WRITE, device_class=DeviceClass.PLANT, parameters=parameters)
+
+    return DeviceManifest(
+        ts=now,
+        device_id=topics.AIR_CONDITIONER_ID,
+        name="Air conditioner",
+        kind=DeviceKind.AC,
+        aliases=("the ac", "air conditioner", "aircon", "a/c", "cooling"),
+        simulated=simulated,
+        capabilities=(
+            plant(
+                "set_temperature",
+                "Set the room's temperature.",
+                ToolParameter(name="target_c", type=ParameterType.NUMBER, description="Target in degrees Celsius"),
+            ),
+            plant("turn_off", "Turn the air conditioner off."),
+        ),
+    )
+
+
+def air_conditioner_state(state: ActuatorState) -> DeviceState:
+    """The unit's actuator state, as device state."""
+    return DeviceState(
+        ts=state.ts,
+        device_id=state.actuator_id,
+        values={"command": state.kind.value, "ack": state.ack.value, "last_command_ts": state.last_command_ts},
+        simulated=state.simulated,
+    )
+
+
+class PlantAnnouncer:
+    """Keeps the AC on the device contract for whichever process owns it.
+
+    The simulator or the hardware bridge owns the unit; each calls
+    :meth:`mirror` with every actuator state it publishes. The manifest and
+    ``online`` go out whenever the link has (re)connected, since the broker
+    publishes the last will -- offline -- whenever it drops.
+    """
+
+    def __init__(self, blackboard, clock: Clock, simulated: bool) -> None:
+        self._blackboard = blackboard
+        self._clock = clock
+        self._simulated = simulated
+        self._announced = False
+
+    def mirror(self, state: ActuatorState) -> None:
+        if not self._blackboard.connected:
+            self._announced = False
+            return
+        if not self._announced:
+            now = self._clock.now()
+            self._blackboard.publish(topics.DEVICE_MANIFEST, air_conditioner_manifest(now, self._simulated), device_id=state.actuator_id)
+            self._blackboard.publish(
+                topics.DEVICE_AVAILABILITY, DeviceAvailability(ts=now, device_id=state.actuator_id, online=True), device_id=state.actuator_id
+            )
+            self._announced = True
+        self._blackboard.publish(topics.DEVICE_STATE, air_conditioner_state(state), device_id=state.actuator_id)

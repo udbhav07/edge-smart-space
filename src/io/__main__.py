@@ -15,6 +15,8 @@ from pathlib import Path
 
 from src.common.clock import RealClock
 from src.common.config import ConfigError, load_config
+from src.common import topics
+from src.common.devices import last_will
 from src.common.mqtt_client import Blackboard, build_transport
 from src.io.devices import DeviceBridge
 
@@ -37,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = RealClock()
     holder: list = []
-    transport = build_transport(config.mqtt, CLIENT_ID, holder)
+    transport = build_transport(config.mqtt, CLIENT_ID, holder, will=last_will(topics.AIR_CONDITIONER_ID, clock))
     blackboard = Blackboard(config.mqtt, transport)
     holder.append(blackboard)
     bridge = DeviceBridge(config, clock, blackboard)

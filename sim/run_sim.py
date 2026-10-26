@@ -31,6 +31,7 @@ from src.common.injection import (
     InjectedFault,
 )
 from src.common.localtime import SECONDS_PER_HOUR, local_time
+from src.common.devices import PlantAnnouncer, last_will
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -105,6 +106,9 @@ class RoomSimulator:
         self._config = config
         self._clock = clock
         self._blackboard = blackboard
+        # The AC on the device contract too, so it is seen like any other
+        # device; its capabilities are plant and never tools (FR-87, FR-88).
+        self._plant_device = PlantAnnouncer(blackboard, clock, simulated=_SIMULATED_PLANT)
         self._room = room
         self._actuator = actuator
         self._rng = rng
@@ -412,6 +416,7 @@ class RoomSimulator:
         self._blackboard.publish(
             topics.ACTUATOR_STATE, state, actuator_id=topics.AIR_CONDITIONER_ID
         )
+        self._plant_device.mirror(state)
 
     def run(self, steps: int | None = None) -> None:
         """Run the plant. ``steps=None`` runs until interrupted."""
@@ -503,7 +508,9 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = RealClock()
     holder: list = []
-    transport = build_transport(config.mqtt, "room-simulator", holder)
+    transport = build_transport(
+        config.mqtt, "room-simulator", holder, will=last_will(topics.AIR_CONDITIONER_ID, clock)
+    )
     blackboard = Blackboard(config.mqtt, transport)
     holder.append(blackboard)
 

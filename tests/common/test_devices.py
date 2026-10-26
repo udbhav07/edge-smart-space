@@ -140,3 +140,70 @@ class TestLastWill:
 
         client = build_transport(load_config(Path("config/default.yaml")).mqtt, "test-no-will", [None])
         assert client._will is False
+
+
+class TestTheAirConditioner:
+    """FR-87, FR-88, FR-45: the AC is seen on the device contract, and none of
+    it is a tool."""
+
+    def _state(self, ts=10.0):
+        from src.common.schemas import AckStatus, ActuatorState, CommandKind
+
+        return ActuatorState(ts=ts, actuator_id="ac", simulated=True, kind=CommandKind.COOL, ack=AckStatus.ACKNOWLEDGED, last_command_ts=5.0)
+
+    def _announcer(self):
+        from eval.loopback import LoopbackTransport
+        from src.common.clock import SimClock
+        from src.common.devices import PlantAnnouncer
+        from src.common.mqtt_client import Blackboard
+
+        transport = LoopbackTransport()
+        board = Blackboard(load_config(Path("config/default.yaml")).mqtt, transport)
+        transport.attach(board)
+        return PlantAnnouncer(board, SimClock(start_epoch_s=100.0), simulated=True), board, transport
+
+    def test_every_capability_is_plant(self):
+        from src.common.devices import air_conditioner_manifest
+
+        assert {c.device_class for c in air_conditioner_manifest(1.0, False).capabilities} == {DeviceClass.PLANT}
+
+    def test_its_state_mirrors_the_actuator(self):
+        from src.common.devices import air_conditioner_state
+
+        assert air_conditioner_state(self._state()).values == {"command": "COOL", "ack": "ACKNOWLEDGED", "last_command_ts": 5.0}
+
+    def test_announced_once_then_only_mirrored(self):
+        announcer, _, transport = self._announcer()
+        announcer.mirror(self._state())
+        announcer.mirror(self._state(11.0))
+        assert transport.count_on("space/device/ac/manifest") == 1 and transport.count_on("space/device/ac/state") == 2
+
+    def test_announced_again_after_the_link_comes_back(self):
+        announcer, board, transport = self._announcer()
+        announcer.mirror(self._state())
+        board.on_disconnected()
+        announcer.mirror(self._state(11.0))
+        board.on_connected()
+        announcer.mirror(self._state(12.0))
+        assert transport.count_on("space/device/ac/manifest") == 2
+
+    def test_nothing_is_published_while_the_link_is_down(self):
+        announcer, board, transport = self._announcer()
+        board.on_disconnected()
+        announcer.mirror(self._state())
+        assert transport.count_on("space/device/ac/state") == 0
+
+    def test_the_simulator_publishes_the_ac_as_a_device(self):
+        from eval.loopback import LoopbackTransport
+        from sim.run_sim import build_simulator
+        from src.common.clock import SimClock
+        from src.common.mqtt_client import Blackboard
+
+        config = load_config(Path("config/default.yaml"))
+        transport = LoopbackTransport()
+        board = Blackboard(config.mqtt, transport)
+        simulator = build_simulator(config, SimClock(), board)
+        transport.attach(board)
+        simulator.step()
+        manifest = DeviceManifest.model_validate_json([p for t, p, _, _ in transport.published if t == "space/device/ac/manifest"][0])
+        assert manifest.kind is DeviceKind.AC and manifest.simulated is True
