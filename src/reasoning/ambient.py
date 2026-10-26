@@ -247,8 +247,8 @@ class AmbientMiner:
                 # example dentist: a plan must be about words actually said.
                 LOGGER.info("not pencilling %r: nothing said names it", plan.subject)
                 continue
-            if self._already_noted(voice, _plan_key(plan.subject)):
-                LOGGER.info("not pencilling %r: an earlier line already gave it", plan.subject)
+            if self._already_noted(voice, _plan_key(plan.subject, starts)):
+                LOGGER.info("not pencilling %r on %s: an earlier line already gave it", plan.subject, starts.date())
                 continue
             days.add(starts.date())
             arguments = {
@@ -401,16 +401,24 @@ def grounded(claim: str, said: str) -> bool:
     return any(word[:_STEM] in heard for word in _telling_words(claim))
 
 
-def _plan_key(subject: str) -> str:
-    """A plan's telling words, as a key: lower case, filler dropped, sorted."""
+def _plan_key(subject: str, starts: datetime) -> str:
+    """A plan's telling words and its day, as a key.
+
+    The day is part of it: a 7B model names plans generically -- "Meeting",
+    "Appointment" -- and live, three different meetings on different days were
+    each dropped as the first one heard again.
+    """
     words = "".join(c if c.isalnum() else " " for c in subject.lower()).split()
     telling = sorted({word for word in words if word not in _FILLER and len(word) > 2})
-    return "plan:" + " ".join(telling) if telling else ""
+    return f"plan:{starts.date().isoformat()}:" + " ".join(telling) if telling else ""
 
 
 def _same_words(one: str, other: str) -> bool:
-    mine, theirs = set(one[5:].split()), set(other[5:].split())
-    return bool(mine and theirs) and (mine <= theirs or theirs <= mine)
+    """Two plan keys on the same day whose telling words contain one another."""
+    one_day, _, one_words = one[5:].partition(":")
+    other_day, _, other_words = other[5:].partition(":")
+    mine, theirs = set(one_words.split()), set(other_words.split())
+    return one_day == other_day and bool(mine and theirs) and (mine <= theirs or theirs <= mine)
 
 
 def _validated(raw: str) -> _Findings | None:
