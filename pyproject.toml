@@ -32,6 +32,9 @@ dependencies = [
     "google-auth==2.57.1",
     "google-auth-oauthlib==1.5.0",
     "google-api-python-client==2.201.0",
+    # The music player device (FR-87): decodes mp3, flac, wav and ogg and
+    # plays them, with wheels for Windows, Linux and the Jetson's aarch64.
+    "miniaudio==1.71",
 ]
 
 [project.optional-dependencies]
