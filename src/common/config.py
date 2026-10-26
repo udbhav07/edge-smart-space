@@ -562,6 +562,20 @@ class SpeechConfig(_Section):
     voice_length_scale: float = Field(
         default=1.0, gt=0.0, description="Piper speaking pace; above 1 is slower"
     )
+    chime: bool = Field(
+        default=True,
+        description="Play a short chime whenever a capture window opens, so the "
+        "occupant knows the room is listening (FR-93)",
+    )
+    chime_volume: float = Field(default=0.35, ge=0.0, le=1.0, description="Chime loudness, before the occupant's volume")
+    chime_tail_ms: float = Field(
+        default=150.0, ge=0.0, description="Microphone ignored this long after the chime ends, in ms"
+    )
+    follow_up_after_reply: bool = Field(
+        default=True,
+        description="After a reply is spoken, open a capture window without the "
+        "wake word, so an answer to a question asked back is heard (FR-93)",
+    )
     speaking_tail_ms: int = Field(
         default=400,
         ge=0,

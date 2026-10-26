@@ -824,7 +824,8 @@ class SpeechActivity(str, Enum):
     """What the speech pipeline is doing (section 5.8)."""
 
     WAITING = "waiting"            # for the wake word, or for speech when continuous
-    LISTENING = "listening"        # capture window open
+    LISTENING = "listening"        # a capture window open for the assistant: after the wake word, or after a reply
+    OVERHEARING = "overhearing"    # speech nobody addressed is being taken down (FR-76); not for the assistant
     TRANSCRIBING = "transcribing"  # utterance closed, Whisper running
     UNDERSTANDING = "understanding"  # transcript known, extraction running
     SPEAKING = "speaking"          # a reply is being said; the microphone is ignored (FR-79)

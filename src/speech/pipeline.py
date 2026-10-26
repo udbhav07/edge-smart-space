@@ -100,6 +100,11 @@ class SpeechPipeline:
         return self._state
 
     @property
+    def listening_for_the_assistant(self) -> bool:
+        """Whether a window is open for the assistant: after the wake word, or after a reply."""
+        return self._state is PipelineState.LISTENING and self._addressed
+
+    @property
     def buffered_frames(self) -> int:
         """Frames currently held. Zero outside an utterance (FR-51)."""
         return len(self._buffer)
@@ -139,8 +144,20 @@ class SpeechPipeline:
             self._utterance.reset()
             self._detector.reset()
 
+    def listen_for_answer(self) -> None:
+        """Open a window without the wake word: the room just asked or answered (FR-93).
+
+        Whatever was being overheard is let go -- what is said now is meant
+        for the assistant.
+        """
+        LOGGER.info("listening for an answer to the reply")
+        self._open_addressed()
+
     def _wake(self) -> None:
         LOGGER.info("wake word detected; opening capture window")
+        self._open_addressed()
+
+    def _open_addressed(self) -> None:
         self._detector.reset()
         self._utterance.reset()
         self._buffer = []
@@ -162,7 +179,7 @@ class SpeechPipeline:
         self._utterance.begin_counting()
         self._addressed = False
         self._state = PipelineState.LISTENING
-        self._tell(SpeechActivity.LISTENING)
+        self._tell(SpeechActivity.OVERHEARING)
 
     def _listen(self, frame) -> PreferenceHint | AmbientUtterance | None:
         if not self._addressed and self._detector.heard(frame):
@@ -173,7 +190,7 @@ class SpeechPipeline:
         finished = self._utterance.accept(frame)
 
         if self._utterance.silence_timed_out:
-            LOGGER.info("no speech after the wake word; closing capture window")
+            LOGGER.info("no speech in the capture window; closing it")
             return self._close(transcribe=False)
 
         if finished:
@@ -193,7 +210,7 @@ class SpeechPipeline:
         if not transcribe:
             self._tell(SpeechActivity.WAITING)
             return None
-        self._tell(SpeechActivity.TRANSCRIBING)
+        self._tell(SpeechActivity.TRANSCRIBING if addressed else SpeechActivity.OVERHEARING)
         try:
             return self._understand(frames) if addressed else self._overheard(frames)
         finally:
@@ -212,6 +229,8 @@ class SpeechPipeline:
         words = [word for word in words if word]
         distinct = set(words)
         if len(distinct) < self._config.ambient_min_words:
+            # Counted, never quoted: what the room said is not for the log (FR-51).
+            LOGGER.info("overheard speech dropped: %d distinct confident words, fewer than %d", len(distinct), self._config.ambient_min_words)
             return None
         if len(words) >= _LOOP_CHECK_WORDS and len(distinct) / len(words) < self._config.ambient_min_distinct_ratio:
             # "We are going home We are going home No we are going home ...":

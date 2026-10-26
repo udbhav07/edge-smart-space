@@ -263,6 +263,10 @@ speech:
   voice_engine: piper
   voice_model_path: models/piper/en_US-lessac-medium.onnx
   voice_length_scale: 1.0
+  chime: true                   # a short chime when a capture window opens (FR-93)
+  chime_volume: 0.35
+  chime_tail_ms: 150
+  follow_up_after_reply: true   # after a spoken reply, listen without the wake word (FR-93)
   speaking_tail_ms: 400          # the microphone ignores the room's own voice
   ambient_max_no_speech_prob: 0.6
   ambient_min_avg_logprob: -1.0

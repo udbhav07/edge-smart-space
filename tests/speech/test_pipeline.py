@@ -628,3 +628,45 @@ class TestPause:
         pipeline.pause()
         _feed(pipeline, SILENCE)
         assert parts["transcriber"].calls == []
+
+
+class TestListeningForAnAnswer:
+    """FR-93: after a reply, the next words are for the assistant, wake word or not."""
+
+    def test_a_window_opens_for_the_assistant(self, continuous):
+        seen = []
+        pipeline, _ = _listening(continuous, SimClock(), on_activity=lambda activity, heard: seen.append(activity.value))
+        pipeline.listen_for_answer()
+        assert pipeline.listening_for_the_assistant and seen == ["listening"]
+
+    def test_what_is_said_then_is_a_request_not_overheard(self, continuous):
+        clock = SimClock()
+        pipeline, parts = _listening(continuous, clock)
+        pipeline.listen_for_answer()
+        results = _feed(pipeline, SPEECH, SILENCE)
+        assert len(results) == 1 and isinstance(results[0], PreferenceHint)
+
+    def test_whatever_was_being_overheard_is_let_go(self, continuous):
+        pipeline, _ = _listening(continuous, SimClock())
+        _feed(pipeline, SPEECH)
+        assert not pipeline.listening_for_the_assistant
+        pipeline.listen_for_answer()
+        assert pipeline.listening_for_the_assistant and pipeline.buffered_frames == 0
+
+
+class TestOverhearingIsNotListening:
+    """The console shows "listening" only when the room is listening to you."""
+
+    def test_overheard_speech_reports_overhearing(self, continuous):
+        seen = []
+        pipeline, _ = _listening(continuous, SimClock(), on_activity=lambda activity, heard: seen.append(activity.value))
+        _feed(pipeline, SPEECH, SILENCE)
+        assert "listening" not in seen and seen[0] == "overhearing" and seen[-1] == "waiting"
+
+    def test_too_few_confident_words_is_said_in_the_log_without_the_words(self, continuous, caplog):
+        import logging
+
+        caplog.set_level(logging.INFO)
+        pipeline, _ = _listening(continuous, SimClock(), text="secret word")
+        _feed(pipeline, SPEECH, SILENCE)
+        assert "fewer than" in caplog.text and "secret" not in caplog.text

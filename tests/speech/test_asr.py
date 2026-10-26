@@ -266,3 +266,22 @@ class TestConfidentOnly:
     def test_an_addressed_request_keeps_every_segment(self, config):
         whisper = _ScoredWhisper(_Segment("make it cooler", no_speech_prob=0.9))
         assert Transcriber(config, model=whisper).transcribe([FRAME]) == "make it cooler"
+
+
+class TestWhyOverheardSpeechWasDropped:
+    """Counts only: what the room said is never written to the log (FR-51)."""
+
+    def test_each_test_counts_its_own(self):
+        from types import SimpleNamespace
+
+        from src.common.config import load_config
+        from src.speech.asr import _why_dropped
+
+        config = load_config(Path("config/default.yaml")).speech
+        segments = [
+            SimpleNamespace(no_speech_prob=0.9, avg_logprob=-0.2, compression_ratio=1.0),
+            SimpleNamespace(no_speech_prob=0.1, avg_logprob=-1.5, compression_ratio=1.0),
+            SimpleNamespace(no_speech_prob=0.1, avg_logprob=-0.2, compression_ratio=3.0),
+            SimpleNamespace(no_speech_prob=0.1, avg_logprob=-0.2, compression_ratio=1.0),
+        ]
+        assert _why_dropped(segments, config) == "1 likely silence, 1 low confidence, 1 repeating"

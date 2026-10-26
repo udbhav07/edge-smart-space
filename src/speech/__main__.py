@@ -125,6 +125,14 @@ def run(
             continue
         if status is not None and status.activity in (SpeechActivity.SPEAKING, SpeechActivity.MUTED):
             status.changed(SpeechActivity.WAITING)
+        if voice is not None and voice.take_follow_up():
+            # The room has just replied: the occupant's answer needs no wake word (FR-93).
+            pipeline.listen_for_answer()
+            voice.chime()
+        if voice is not None and voice.chiming:
+            # The chime's own sound is not speech; the window it announced stays open.
+            continue
+        was_listening = pipeline.listening_for_the_assistant
         try:
             hint = pipeline.accept(frame)
         except ReasoningUnavailableError as exc:
@@ -132,6 +140,8 @@ def run(
             # preference hint, not the audio pipeline (FR-47).
             LOGGER.warning("reasoning unavailable, dropping utterance: %s", exc)
             continue
+        if voice is not None and not was_listening and pipeline.listening_for_the_assistant:
+            voice.chime()  # the wake word was just heard
 
         if hint is not None:
             _publish(blackboard, hint)
@@ -177,6 +187,10 @@ def main(argv: list[str] | None = None) -> int:
         clock,
         utc_offset_h=config.site.utc_offset_h,
         tail_s=config.speech.speaking_tail_ms / 1000.0,
+        chime=config.speech.chime,
+        chime_volume=config.speech.chime_volume,
+        chime_tail_s=config.speech.chime_tail_ms / 1000.0,
+        follow_up=config.speech.follow_up_after_reply,
     )
     # Replies, the occupant's settings and changes of mode reach the voice;
     # it says what they ask for on a thread of its own (FR-79).

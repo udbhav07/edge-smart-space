@@ -50,6 +50,12 @@ class FakePipeline:
     def __init__(self, results):
         self._results = list(results)
         self.seen = 0
+        self.listening_for_the_assistant = False
+        self.answers_awaited = 0
+
+    def listen_for_answer(self):
+        self.answers_awaited += 1
+        self.listening_for_the_assistant = True
 
     def accept(self, frame):
         self.seen += 1
@@ -230,6 +236,18 @@ class _HeldVoice:
 
         self.settings = SpeechSettings(ts=1.0, listening=listening)
         self.busy = busy
+        self.chiming = False
+        self.chimes = 0
+        self.follow_ups = 0
+
+    def take_follow_up(self):
+        if self.follow_ups:
+            self.follow_ups -= 1
+            return True
+        return False
+
+    def chime(self):
+        self.chimes += 1
 
 
 class TestTheMicrophoneIsHeld:
@@ -253,3 +271,32 @@ class TestTheMicrophoneIsHeld:
     def test_otherwise_frames_flow_as_before(self, config):
         pipeline, blackboard = self._run(config, _HeldVoice(), [_hint()])
         assert pipeline.seen == 1 and len(blackboard.published) == 1
+
+
+class TestAWindowAnnounced:
+    """FR-93: a window opened after a reply needs no wake word, and every window chimes."""
+
+    def _run(self, config, pipeline, voice, frames):
+        runner.run(config, SimClock(), FakeCapture(["f"] * frames), pipeline, RecordingBlackboard(), frames=frames, voice=voice)
+
+    def test_after_a_reply_the_window_opens_and_chimes(self, config):
+        pipeline, voice = FakePipeline([None, None]), _HeldVoice()
+        voice.follow_ups = 1
+        self._run(config, pipeline, voice, 2)
+        assert pipeline.answers_awaited == 1 and voice.chimes == 1
+
+    def test_the_chimes_own_sound_is_not_fed_to_the_window(self, config):
+        pipeline, voice = FakePipeline([]), _HeldVoice()
+        voice.chiming = True
+        self._run(config, pipeline, voice, 3)
+        assert pipeline.seen == 0
+
+    def test_the_wake_word_chimes_once(self, config):
+        class Waking(FakePipeline):
+            def accept(self, frame):
+                self.listening_for_the_assistant = True
+                return super().accept(frame)
+
+        pipeline, voice = Waking([None, None]), _HeldVoice()
+        self._run(config, pipeline, voice, 2)
+        assert voice.chimes == 1  # when it opened; not again while it stays open
