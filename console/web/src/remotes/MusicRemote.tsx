@@ -1,10 +1,10 @@
-import { Music, Pause, Play, Search, Square, Upload } from "lucide-react";
+import { Music, Pause, Play, Search, SkipForward, Square, Upload } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, Refused } from "@/lib/api";
 import { cn } from "@/lib/format";
 import type { Device } from "@/lib/types";
-import { Button, inputClass } from "@/components/ui";
+import { Button, Switch, inputClass } from "@/components/ui";
 import { Slider, boundedNumber, capability, has } from "./parts";
 import type { RemoteProps, RemoteSpec } from "./types";
 
@@ -18,7 +18,13 @@ function MusicRemote({ device, size, call }: RemoteProps) {
   const [busy, setBusy] = useState(false);
   const [searching, setSearching] = useState(false);
   const file = useRef<HTMLInputElement>(null);
-  const state = device.state as { playing?: boolean; paused?: boolean; track?: string; source?: string; volume?: number; tracks?: number };
+  const state = device.state as {
+    playing?: boolean; paused?: boolean; starting?: boolean; track?: string; source?: string;
+    volume?: number; tracks?: number; autoplay?: boolean; up_next?: string;
+  };
+  const canSkip = has(device, "next");
+  const canAutoplay = has(device, "set_autoplay");
+  const status = state.starting ? "Starting after Jarvis…" : state.playing ? "Playing" : state.paused ? "Paused" : "Stopped";
   const online = state.source === "youtube";
   const search = async () => {
     setSearching(true);
@@ -52,21 +58,32 @@ function MusicRemote({ device, size, call }: RemoteProps) {
         </span>
         <div className="min-w-0 flex-1">
           <div className={cn("truncate font-medium text-fg", size === "full" ? "text-[22px]" : "text-[15px]")}>{state.track || "Nothing playing"}</div>
-          <div className="text-[12px] text-muted">{state.playing ? "Playing" : state.paused ? "Paused" : "Stopped"}{online ? " · from YouTube" : ` · ${state.tracks ?? 0} ${state.tracks === 1 ? "track" : "tracks"} in your library`}</div>
+          <div className="text-[12px] text-muted">{status}{online ? " · from YouTube" : ` · ${state.tracks ?? 0} ${state.tracks === 1 ? "track" : "tracks"} in your library`}</div>
         </div>
         <div className="flex gap-1.5">
           {state.playing
             ? <Button icon={Pause} disabled={off} onClick={() => void call("pause")}>Pause</Button>
             : <Button icon={Play} variant="primary" disabled={off} onClick={() => void call(state.paused ? "resume" : "play")}>Play</Button>}
+          {canSkip && <Button icon={SkipForward} variant="ghost" disabled={off || !state.track} onClick={() => void call("next")}>Next</Button>}
           <Button icon={Square} variant="ghost" disabled={off || (!state.playing && !state.paused)} onClick={() => void call("stop")}>Stop</Button>
         </div>
       </div>
+      {state.up_next && <div className={cn("truncate text-[12.5px] text-muted", size === "full" && "text-center")}>Up next: <span className="text-fg/85">{state.up_next}</span></div>}
       {size === "full" && <form onSubmit={(event) => { event.preventDefault(); if (query.trim()) void search(); }} className="flex gap-2">
         <input value={query} disabled={off || searching} onChange={(event) => setQuery(event.target.value)} placeholder="Play something… your music first, then YouTube" aria-label="What to play" className={cn(inputClass, "py-1.5")} />
         <Button type="submit" icon={Search} disabled={off || searching || !query.trim()}>{searching ? "Finding…" : "Play"}</Button>
         <input ref={file} type="file" accept=".mp3,.flac,.wav,.ogg,audio/*" className="hidden" onChange={(event) => void upload(event.target.files?.[0])} />
         <Button icon={Upload} disabled={off || busy} onClick={() => file.current?.click()}>{busy ? "Uploading…" : "Upload"}</Button>
       </form>}
+      {size === "full" && canAutoplay && (
+        <Switch
+          checked={state.autoplay ?? false}
+          disabled={off}
+          onChange={(on) => void call("set_autoplay", { on })}
+          label="Autoplay"
+          hint="When a song ends, play the next: what YouTube would play after it, or another of yours."
+        />
+      )}
       {volume && <Slider title="Volume" parameter={volume} value={state.volume ?? Number(volume.maximum) / 2} disabled={off} onSet={(value) => void call("set_volume", { [volume.name]: value })} />}
     </div>
   );
