@@ -160,6 +160,7 @@ Each page has its own address, so any of them can be bookmarked:
 | **Calendar** `/calendar` | The week ahead; add and remove entries |
 | **Bookings** `/bookings` | Requests waiting for your yes, a booking form, and what has been booked |
 | **Mail** `/mail` | An inbox of what the room tells you; sending waits for your yes, then goes through Gmail if Google is connected (or waits in the outbox while offline), and to a mock outbox if not |
+| **Talk** `/talk` | For someone away from the room, on a phone or laptop: hold to talk on that device's microphone, or type, and hear Jarvis answer there -- the room stays silent; what is coming up on the shared calendar; every device's remote |
 | **Remotes** `/remotes` | A remote for every device -- the fan, the lamp behind MCP, the music, the air conditioner, anything plugged in -- usable from the grid; `/remotes/<device>` has its full remote, its state, what it can do and what it was last asked |
 | **Settings** `/settings` | Connect or disconnect Google; the microphone, which replies are spoken, alerts, volume and quiet hours; the presets |
 
@@ -171,6 +172,14 @@ drops. It has no authority: typed words go through the same extraction as
 speech, a comfort setting is a preference the validator gates, and nothing
 it does can reach the actuator (FR-56, FR-57). Stop it, or never start it,
 and the room runs exactly the same.
+
+**From a phone, away from the room.** Open the console from any device on
+the same network and go to **Talk** (FR-94): hold the button and speak, and
+Jarvis answers on that device. Browsers only allow a microphone over HTTPS,
+so the console is also served at **https://&lt;this machine&gt;:8443**
+(`console.tls_port`) with a certificate it makes for itself; the first visit
+shows a warning, which is expected -- continue to the site once, per device.
+The recording is transcribed on this machine and never kept.
 
 It listens on this machine only. To open it to phones on the same network,
 set `console.host` to this machine's LAN address; its page loads nothing

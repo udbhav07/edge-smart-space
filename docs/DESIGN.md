@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.17 |
+| Version | 1.18 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.18 | **Talking to the room from away** (§5.8.6; FR-94): the Talk page records on a phone's microphone, the console transcribes it with the room's Whisper and speaks the reply back to that device in the room's voice, the room silent; requests carry `remote`; the console also serves HTTPS with its own certificate. |
 | 1.17 | **A reply is a turn** (§5.8.5; FR-93): after a spoken reply the room listens for the answer without the wake word; every capture window opens with a chime; the console shows on every page when the room is listening, thinking and speaking; overheard speech is its own `overhearing` activity. Overheard plans are deduplicated by subject and day, not subject alone. **Remotes** (§5.11; FR-92): every device controllable by hand, through the same gates, with a remote chosen by device, kind, or its manifest. |
 | 1.16 | **Device services** (§5.11; FR-87 to FR-91). Every actuator beyond the thermal loop is a service on the blackboard with a retained manifest, availability under a last will, commands, results and retained state; each capability declares its effect and a safety class, and `plant` -- the air conditioner, now announced on the same contract -- is never a tool. The assistance service declares and withdraws device tools as devices come and go; the extraction is shown one line per device and the assistant only the named device's tools, so a 7B model's context does not grow with the room. An MCP bridge mounts any configured server as a device, exposing only the tools configured, with the effect and class the configuration gives them. Reference devices: a simulated fan, a music player, the AC as plant, and an MCP lamp. Numeric tool parameters carry bounds, enforced in the one shared check. |
 | 1.15 | The room speaks (§5.8.5; FR-79, FR-82, FR-83): Piper replies, mute and quiet hours, the microphone ignored while it speaks. A Home page for the occupant with Back to automatic and cooling off (FR-80, FR-81). Google Calendar and Gmail, offline first, after a sign-in in the console (§5.7.7; FR-84 to FR-86; NFR-06 revised). |
@@ -247,6 +248,7 @@ feature safe to ship at all.
 | FR-89 | However many devices are plugged in, the model shall be shown one line per device to choose from, and then only the tools of the device a request is about, at most a configured number. | S | T |
 | FR-90 | Any MCP server named in configuration shall be mountable as a device, exposing only the tools configured, with the effect and class the configuration gives them. | S | T |
 | FR-91 | The console shall show every device and control it from what its manifest declares, with its availability, its state, and whether it is simulated. | S | D |
+| FR-94 | Someone away from the room shall be able to talk to the room from a phone or laptop on the network: speak on that device's microphone or type, and hear the answer on that device, with the room itself silent; see the shared calendar; and control every device. The recording is transcribed on the node and never kept or published. | S | D |
 | FR-93 | The occupant shall know when the room is listening to them: a chime whenever a capture window opens, and an indicator on every page of the console while it listens, thinks and speaks. After a reply is spoken, the room shall listen for an answer without the wake word. Overheard speech shall not be shown as listening. | S | D |
 | FR-92 | Every device, including one behind an MCP server, shall be controllable by hand from the console, through the same executor and gates as the assistant: a page of remotes and a page per device. A remote written for a device or its kind is used where one exists; any other device gets a remote drawn from its manifest. | S | D |
 
@@ -1363,6 +1365,10 @@ The speech service owns the loudspeaker as well as the microphone, so the one pr
 
 **What overhearing missed** (v1.17). Live, about one plan in four said in the background became an entry. Two causes were found. First, an overheard plan counted as already noted by its subject words alone; a 7B model calls every plan "Meeting", so three different meetings on different days were each dropped as the first one heard again. The key is now the subject's words *and its day*. Second, at the wake-word threshold of 0.1 (§5.8.1) the detector opens windows on its own -- 5 of 16 windows in that run held no speech -- and a background sentence falling into one is taken as a request rather than overheard. That is the threshold's documented cost, not fixed here: raising it needs the occupants' own voices measured. The chime now makes every false wake audible. Overheard windows that are dropped now say why in the log -- how many segments Whisper's confidence tests turned away, and how many distinct words were left -- in counts, never words.
 
+#### 5.8.6 Talking to the room from away (v1.18; FR-94)
+
+The room's microphone is on the machine in the room; someone in another room, or out, has only the console on their phone. The console's **Talk** page records on that device's microphone and posts the recording to the console, which decodes it (WebM/Opus from Chrome, MP4/AAC from Safari, via PyAV) and transcribes it in memory with the room's Whisper model -- loaded by the console itself, on first use, so the console still reaches the speech service only through the board, and no audio is ever published (FR-51). The words go on as a `ConsoleUtterance` with `remote: true`, through the same extraction and gates as typing; `remote` is carried by the hint and the reply, set by the system and never by the model. The room's voice says nothing of a remote reply. The console matches the reply to the device that asked by its words and pushes it there; the page fetches it rendered in the room's Piper voice (`/api/voice/speak`) and plays it on the device. A browser allows a page the microphone only over HTTPS, so the console also serves HTTPS (`console.tls_port`, 8443) with a certificate of its own, made for every name and address the machine has and remade when they change; each device accepts it once. Plain HTTP stays, and a page opened over it offers the HTTPS address. Measured live, over HTTPS from the Wi-Fi address, with a synthesised WebM/Opus recording: "Make it a little cooler please" was transcribed in 2.5 s (Whisper loading the first time; 0.1 s after), became a preference goal of 23 °C through the validator, and was answered in 10.6 s with the reply's audio sent back, while the room's speaker said nothing. The page also shows the shared calendar and every device's remote.
+
 **Settings and mute.** The console publishes the retained `space/speech/settings` (`SpeechSettings`: listening, the three speak switches, volume, quiet hours) and the speech service obeys it. Retained, a restart of either keeps the choice (FR-82). `listening: false` stops capture outright: frames are read and discarded before the detector sees them, and the status reads `muted`. It is a privacy switch, not a filter.
 
 ### 5.9 Key Sequences
@@ -2024,6 +2030,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-79 to FR-86 | §5.8.5, §5.7.7, §6.1 | Unit + demonstration |
 | FR-87 to FR-92 | §5.11, §6.1 | Unit + demonstration |
 | FR-93 | §5.8.5 | Unit + demonstration |
+| FR-94 | §5.8.6 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 
