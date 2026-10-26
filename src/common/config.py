@@ -1197,6 +1197,11 @@ class MusicConfig(_Section):
     extensions: list[str] = Field(default_factory=lambda: [".mp3", ".flac", ".wav", ".ogg"])
     default_volume: int = Field(default=60, ge=0, le=100)
     max_upload_mb: float = Field(default=100.0, gt=0.0, description="Largest file accepted from the console, in MB")
+    online: bool = Field(
+        default=True, description="Search YouTube (yt-dlp) for a song the library does not have (FR-96)"
+    )
+    online_max_minutes: float = Field(default=15.0, gt=0.0, description="Longest result taken to be a song, in min")
+    online_timeout_s: float = Field(default=15.0, gt=0.0, description="How long a search may wait on the network, in s")
 
 
 class MessagesConfig(_Section):

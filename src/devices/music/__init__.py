@@ -1,10 +1,15 @@
-"""The music player on this machine, as a device service (FR-87).
+"""The music player on this machine, as a device service (FR-87, FR-96).
 
 It plays files from the occupant's own music folder (``actuators.music``):
 mp3, flac, wav and ogg, decoded and played by miniaudio. "Play some jazz"
 reaches it as ``play(query="jazz")``, matched against file and folder names;
 a file the occupant hands over in the console is saved to the uploads folder
 and played by name, so only a name ever crosses the blackboard, never audio.
+
+Asked for something the library does not have -- or asked for it "from
+YouTube" -- it searches online and streams the song (:mod:`.youtube`,
+:mod:`.stream`). The library always comes first, and "play some music",
+which names nothing, never leaves it.
 
 The decision of *what* to play lives in :class:`MusicDevice` and the sound
 itself in a :class:`Player`, so the first is tested without a sound card.
@@ -24,21 +29,32 @@ from src.common.clock import Clock
 from src.common.config import Config, MusicConfig
 from src.common.devices import DeviceCapability, DeviceClass, DeviceKind, DeviceManifest
 from src.common.tools import ArgumentValue, ParameterType, ProviderOutcome, ToolEffect, ToolParameter
+from src.devices.music.stream import StreamDecoder, pcm_source
+from src.devices.music.track import Track
+from src.devices.music.youtube import CatalogueUnavailable, YouTubeCatalogue
 from src.devices.runner import DeviceParts
 from src.devices.service import DeviceService
+
+__all__ = ["CatalogueUnavailable", "Catalogue", "Library", "MiniaudioPlayer", "MusicDevice", "Player", "Track", "build", "manifest"]
 
 LOGGER = logging.getLogger(__name__)
 
 #: Words in a request that say nothing about which track: "play some music for me".
 _FILLER = frozenset(
-    "a an and any by for me my music of on play please put some song songs something the track tracks to tune tunes".split()
+    "a an and any by for from me my music of on play please put some song songs something the track tracks to tune tunes".split()
 )
+#: Words that ask for the song to be found online, whatever the library has.
+_ONLINE = frozenset("youtube online internet".split())
 
 
 class Player(Protocol):
     """Makes the sound. One track at a time."""
 
-    def play(self, path: Path) -> None: ...
+    def play(self, track: Track) -> None:
+        """A file or a stream.
+
+        :raises ValueError: it could not be opened, in words for the occupant.
+        """
 
     def pause(self) -> None: ...
 
@@ -56,6 +72,13 @@ class Player(Protocol):
 
 def _words(text: str) -> list[str]:
     return [word for word in re.split(r"[^a-z0-9]+", text.lower()) if word]
+
+
+class Catalogue(Protocol):
+    """Songs beyond the library, found by words (FR-96)."""
+
+    def find(self, query: str) -> Track | None:
+        """:raises CatalogueUnavailable: it could not be searched."""
 
 
 class Library:
@@ -107,11 +130,15 @@ class Library:
 class MusicDevice:
     """What to play, and what is playing."""
 
-    def __init__(self, library: Library, player: Player, config: MusicConfig) -> None:
+    def __init__(self, library: Library, player: Player, config: MusicConfig, catalogue: Catalogue | None = None) -> None:
+        """
+        :param catalogue: where to look beyond the library; None keeps to it.
+        """
         self._library = library
         self._player = player
         self._config = config
-        self._track: Path | None = None
+        self._catalogue = catalogue
+        self._track: Track | None = None
         self._paused = False
         self._volume = config.default_volume
         player.set_volume(self._volume / 100)
@@ -119,34 +146,50 @@ class MusicDevice:
     def play(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         name, query = arguments.get("file"), arguments.get("query")
         if name:
-            track = self._library.named(str(name))
-            if track is None:
+            path = self._library.named(str(name))
+            if path is None:
                 raise ValueError(f"I couldn't find a file called {name} in your music.")
+            track = Track.file(path)
         else:
             if self._paused and not query:
                 return self.resume(arguments)
-            if not self._library.tracks():
-                raise ValueError(f"There's no music in {self._config.library_path} yet. Add some files there, or upload one on Home.")
-            track = self._library.find(str(query or ""))
-            if track is None:
-                raise ValueError(f"Nothing in your music matches “{query}”.")
+            track = self._choose(str(query or ""))
         self._player.play(track)
         self._track, self._paused = track, False
-        return ProviderOutcome(message=f"Playing {track.stem}.", detail=self.state())
+        where = " from YouTube" if track.origin == "youtube" else ""
+        return ProviderOutcome(message=f"Playing {track.title}{where}.", detail=self.state())
+
+    def _choose(self, query: str) -> Track:
+        """The library first; online only for something named that it lacks, or asked for there."""
+        words = [word for word in _words(query) if word not in _FILLER]
+        online_asked = any(word in _ONLINE for word in words)
+        wanted = " ".join(word for word in words if word not in _ONLINE)
+        if not online_asked and self._library.tracks():
+            path = self._library.find(wanted)
+            if path is not None:
+                return Track.file(path)
+        if not wanted:
+            raise ValueError(f"There's no music in {self._config.library_path} yet. Add some files there, or upload one on Home.")
+        if self._catalogue is None:
+            raise ValueError("Finding songs online is turned off here." if online_asked else f"Nothing in your music matches “{query}”.")
+        track = self._catalogue.find(wanted)
+        if track is None:
+            raise ValueError(f"I couldn't find “{wanted}” on YouTube either." if not online_asked else f"I couldn't find “{wanted}” on YouTube.")
+        return track
 
     def pause(self, _arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         if not self._playing():
             raise ValueError("Nothing is playing.")
         self._player.pause()
         self._paused = True
-        return ProviderOutcome(message=f"Paused {self._track.stem}.", detail=self.state())
+        return ProviderOutcome(message=f"Paused {self._track.title}.", detail=self.state())
 
     def resume(self, _arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         if self._track is None or not self._paused:
             raise ValueError("Nothing is paused.")
         self._player.resume()
         self._paused = False
-        return ProviderOutcome(message=f"Playing {self._track.stem} again.", detail=self.state())
+        return ProviderOutcome(message=f"Playing {self._track.title} again.", detail=self.state())
 
     def stop(self, _arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         if self._track is None:
@@ -164,7 +207,7 @@ class MusicDevice:
         if self._track is None:
             return ProviderOutcome(message="Nothing is playing.", detail=self.state())
         how = "Paused on" if self._paused else "Playing"
-        return ProviderOutcome(message=f"{how} {self._track.stem}, at {self._volume}% volume.", detail=self.state())
+        return ProviderOutcome(message=f"{how} {self._track.title}, at {self._volume}% volume.", detail=self.state())
 
     def check(self) -> bool:
         """Notice a track that ran out by itself. Returns whether the state changed."""
@@ -178,7 +221,8 @@ class MusicDevice:
         return {
             "playing": self._playing(),
             "paused": self._paused,
-            "track": self._track.stem if self._track else "",
+            "track": self._track.title if self._track else "",
+            "source": self._track.origin if self._track else "",
             "volume": self._volume,
             "tracks": len(self._library.tracks()),
         }
@@ -193,7 +237,8 @@ class MiniaudioPlayer:
     One generator feeds the sound card for the whole track: it hands over
     silence while paused, applies the volume, and notes when the decoder runs
     dry. The device is opened per track and closed on stop, so the music holds
-    no audio device while nothing plays.
+    no audio device while nothing plays. A file is decoded by miniaudio; a
+    stream by PyAV, on a thread of its own, ahead of the sound card (FR-96).
     """
 
     SAMPLE_RATE = 44100
@@ -213,15 +258,21 @@ class MiniaudioPlayer:
         self._lock = threading.Lock()
         self._device = None
         self._source: Generator | None = None
+        self._stream: StreamDecoder | None = None
         self._paused = False
         self._volume = 1.0
         self._finished = False
         self._drained = False
         self._tail = 0
 
-    def play(self, path: Path) -> None:
+    def play(self, track: Track) -> None:
         self.stop()
-        source = self._miniaudio.stream_file(str(path), nchannels=self.CHANNELS, sample_rate=self.SAMPLE_RATE)
+        if track.path is not None:
+            source = self._miniaudio.stream_file(str(track.path), nchannels=self.CHANNELS, sample_rate=self.SAMPLE_RATE)
+        else:
+            self._stream = StreamDecoder(track.url, track.headers, sample_rate=self.SAMPLE_RATE, channels=self.CHANNELS)
+            source = pcm_source(self._stream.buffer, self.CHANNELS)
+            next(source)
         with self._lock:
             self._source, self._paused, self._finished, self._drained, self._tail = source, False, False, False, 0
         device = self._miniaudio.PlaybackDevice(
@@ -244,6 +295,9 @@ class MiniaudioPlayer:
         if self._device is not None:
             self._device.close()
             self._device = None
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
         with self._lock:
             self._source, self._paused = None, False
 
@@ -297,8 +351,9 @@ def manifest(config: MusicConfig, now: float) -> DeviceManifest:
         capabilities=(
             media(
                 "play",
-                "Play music from the occupant's library. Give query for what they asked for "
-                "(an artist, a song, a genre, a mood), or nothing to play anything.",
+                "Play music: from the occupant's library, or found online when the library has nothing "
+                "that matches. Give query for what they asked for (an artist, a song, a genre, a mood), "
+                "or nothing to play anything from the library.",
                 ToolParameter(name="query", type=ParameterType.STRING, description="What to play, in the occupant's words", required=False),
                 ToolParameter(name="file", type=ParameterType.STRING, description="An exact file name, when the occupant gave one", required=False),
             ),
@@ -318,7 +373,8 @@ def manifest(config: MusicConfig, now: float) -> DeviceManifest:
 def build(config: Config, clock: Clock, player: Player | None = None) -> DeviceParts:
     music = config.actuators.music
     library = Library([Path(music.library_path), Path(music.uploads_path)], music.extensions)
-    device = MusicDevice(library, player or MiniaudioPlayer(), music)
+    catalogue = YouTubeCatalogue(music.online_max_minutes, music.online_timeout_s) if music.online else None
+    device = MusicDevice(library, player or MiniaudioPlayer(), music, catalogue)
     handlers = {
         "play": device.play,
         "pause": device.pause,

@@ -529,6 +529,12 @@ actuators:
     library_path: ~/Music
     uploads_path: state/music/uploads
     default_volume: 60
+    # A song the library lacks is found on YouTube with yt-dlp and streamed
+    # (FR-96). For a personal room only: YouTube's terms restrict automated
+    # access. Keep yt-dlp current; off makes the player library-only.
+    online: true
+    online_max_minutes: 15
+    online_timeout_s: 15
   # An MCP server mounted as a device by the bridge (FR-90). Only the tools
   # listed are exposed, with the effect and class declared here.
   mcp_servers:

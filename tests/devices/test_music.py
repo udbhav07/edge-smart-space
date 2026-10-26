@@ -21,8 +21,8 @@ class RecordingPlayer:
         self.calls = []
         self.finished = False
 
-    def play(self, path):
-        self.calls.append(("play", path.name))
+    def play(self, track):
+        self.calls.append(("play", track.path.name if track.path else track.title))
 
     def pause(self):
         self.calls.append(("pause",))
