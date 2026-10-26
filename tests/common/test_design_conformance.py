@@ -254,6 +254,8 @@ DOCUMENTED_TOPICS = frozenset(
         "space/device/{device_id}/command",
         "space/device/{device_id}/result",
         "space/device/{device_id}/state",
+        "space/message/incoming",
+        "space/message/status/{message_id}",
         "space/tariff/state",
         "space/control/tracking",
         "space/assist/proposed",

@@ -163,6 +163,16 @@ ACTUATOR_STATE = TopicSpec(
 #: the same topics under their own id and carry ``simulated: true``.
 AIR_CONDITIONER_ID = "ac"
 
+# --- Messages home (FR-95) -----------------------------------------------------
+
+#: A spoken message from someone away, for the room to play. Metadata only:
+#: the recording stays in a file on this node and never crosses the board.
+MESSAGE_INCOMING = TopicSpec("space/message/incoming", Qos.AT_LEAST_ONCE, retain=False)
+#: Everything about one message as it stands -- sent, playing, played,
+#: replied, with the reply's words. Retained, so the sender's page and the
+#: room's inbox survive a restart; withdrawn when the message is deleted.
+MESSAGE_STATUS = TopicSpec("space/message/status/{message_id}", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Device services (FR-87, FR-88) ------------------------------------------
 
 #: What a device is and can do. Retained, so a service that starts later --

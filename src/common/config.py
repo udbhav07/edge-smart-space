@@ -1199,6 +1199,20 @@ class MusicConfig(_Section):
     max_upload_mb: float = Field(default=100.0, gt=0.0, description="Largest file accepted from the console, in MB")
 
 
+class MessagesConfig(_Section):
+    """Spoken messages from someone away, played in the room (FR-95)."""
+
+    directory: str = Field(default="state/messages", description="Where recordings and replies are kept")
+    max_seconds: float = Field(default=60.0, gt=0.0, description="Longest message accepted, in s")
+    max_bytes: int = Field(default=10_000_000, gt=0, description="Largest recording accepted")
+    keep_days: float = Field(default=7.0, gt=0.0, description="Recordings are deleted after this many days")
+    max_kept: int = Field(default=50, gt=0, description="Most messages kept; the oldest go first")
+    announce: bool = Field(default=True, description="Say who it is from before playing it")
+    reply_wait_s: float = Field(
+        default=8.0, gt=0.0, description="How long the room waits for an answer after playing it, in s"
+    )
+
+
 class ActuatorsConfig(_Section):
     """Device services beyond the thermal loop, and how the assistant reaches them (FR-87 to FR-91)."""
 
@@ -1263,6 +1277,7 @@ class Config(_Section):
     ambient: AmbientConfig = AmbientConfig()
     google: GoogleConfig = GoogleConfig()
     actuators: ActuatorsConfig = ActuatorsConfig()
+    messages: MessagesConfig = MessagesConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

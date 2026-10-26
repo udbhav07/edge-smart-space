@@ -1009,3 +1009,52 @@ class FaultDiagnosis(TimestampedMessage):
         description="True when the model gave nothing usable and the text is "
         "the fixed notification for the detector (section 5.7.1)",
     )
+
+
+# --- Messages home (FR-95) -----------------------------------------------------
+
+#: A message id: what the console made it, and the stem of its audio file.
+MESSAGE_ID_PATTERN = r"^msg_[a-z0-9_]{1,56}$"
+#: An audio file in the messages directory: a name, never a path.
+MESSAGE_FILE_PATTERN = r"^msg_[a-z0-9_]{1,56}(-reply)?\.wav$"
+
+
+class MessageState(str, Enum):
+    """Where a message home is."""
+
+    SENT = "sent"          # kept on this node, handed to the room
+    PLAYING = "playing"    # being played in the room now
+    PLAYED = "played"      # played aloud; nobody answered (yet)
+    REPLIED = "replied"    # someone at home answered, in their own voice
+    FAILED = "failed"      # could not be played; detail says why
+
+
+class HomeMessage(TimestampedMessage):
+    """A spoken message from someone away, to be played in the room (FR-95).
+
+    Carries words and a file name, never audio: the recording is kept in the
+    messages directory on this node and read from there.
+    """
+
+    message_id: str = Field(pattern=MESSAGE_ID_PATTERN)
+    sender: str = Field(min_length=1, max_length=40, description="Who it is from, as they wrote it")
+    transcript: str = Field(default="", max_length=1000, description="What it says, for the screen")
+    duration_s: float = Field(gt=0.0, le=600.0)
+    audio_file: str = Field(pattern=MESSAGE_FILE_PATTERN)
+
+
+class MessageStatus(TimestampedMessage):
+    """Everything about one message as it stands. Retained per message (FR-95)."""
+
+    message_id: str = Field(pattern=MESSAGE_ID_PATTERN)
+    sender: str = Field(min_length=1, max_length=40)
+    transcript: str = Field(default="", max_length=1000)
+    duration_s: float = Field(gt=0.0, le=600.0)
+    state: MessageState
+    sent_ts: float = Field(gt=0.0)
+    played_ts: float | None = None
+    replied_ts: float | None = None
+    reply_transcript: str = Field(default="", max_length=1000, description="What home said back")
+    reply_duration_s: float | None = Field(default=None, gt=0.0, le=600.0)
+    reply_file: str = Field(default="", pattern=r"^$|" + MESSAGE_FILE_PATTERN[1:])
+    detail: str = Field(default="", max_length=300, description="Why it failed, if it did")

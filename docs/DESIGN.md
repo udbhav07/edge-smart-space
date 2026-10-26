@@ -1635,6 +1635,8 @@ flowchart LR
 | `space/device/{device_id}/command` | pub | no | 1 | `ToolInvocation` (one capability) |
 | `space/device/{device_id}/result` | pub | no | 1 | `ToolResult` |
 | `space/device/{device_id}/state` | pub | yes | 1 | `DeviceState` |
+| `space/message/incoming` | pub | no | 1 | `HomeMessage` (no audio: a file name) |
+| `space/message/status/{message_id}` | pub | yes | 1 | `MessageStatus` |
 | `space/audit/validation` | pub | no | 1 | `ValidationVerdict` |
 | `space/audit/reasoning` | pub | no | 1 | `ReasoningRecord` |
 

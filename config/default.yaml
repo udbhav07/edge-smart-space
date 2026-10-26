@@ -553,3 +553,14 @@ actuators:
     #   args: [some-spotify-mcp-server]
     #   tools:
     #     play: {effect: write, device_class: media}
+
+# Spoken messages from someone away, played in the room in their own voice
+# (FR-95). Recordings stay on this node and are deleted after keep_days.
+messages:
+  directory: state/messages
+  max_seconds: 60
+  max_bytes: 10000000
+  keep_days: 7
+  max_kept: 50
+  announce: true          # "Message from Ravi" before the recording
+  reply_wait_s: 8         # how long the room listens for an answer afterwards
