@@ -16,7 +16,8 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const unreadMail = (state?.inbox ?? []).filter((item) => item.ts > mailSeen).length;
   const waiting = state?.waiting.length ?? 0;
   const faults = state?.faults.length ?? 0;
-  const badge: Record<string, number> = { "/bookings": waiting, "/faults": faults };
+  const offline = (state?.devices ?? []).filter((device) => !device.online).length;
+  const badge: Record<string, number> = { "/bookings": waiting, "/faults": faults, "/remotes": offline };
   const voice = speechAlive(state?.speech ?? null, now);
   return (
     <nav className="flex h-full flex-col gap-6 px-3 py-5" aria-label="Pages">
@@ -49,7 +50,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 <Icon className="h-4 w-4" />
                 {item.label}
                 {count > 0 && (
-                  <span className={cn("ml-auto min-w-[20px] rounded-full px-1.5 text-center text-[11px] font-semibold tabular", item.to === "/faults" ? "bg-alert text-white" : "bg-line/[0.08] text-fg/80")}>
+                  <span className={cn("ml-auto min-w-[20px] rounded-full px-1.5 text-center text-[11px] font-semibold tabular", item.to === "/faults" || item.to === "/remotes" ? "bg-alert text-white" : "bg-line/[0.08] text-fg/80")}>
                     {count}
                   </span>
                 )}

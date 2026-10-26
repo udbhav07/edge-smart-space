@@ -520,9 +520,11 @@ class ConsoleState:
     def _on_result(self, _topic, result: ToolResult):
         noted = self._note_device_result(result)
         if result.invocation_id in self._device_requests:
+            # A remote's own call: its answer goes to the page that asked, and
+            # the result is logged like any other, so the device's activity shows it.
             self._device_requests.discard(result.invocation_id)
             answer = {"invocation_id": result.invocation_id, "tool": result.tool, "status": result.status.value, "message": result.message}
-            return [*noted, self._event("device_result", answer)]
+            noted.append(self._event("device_result", answer))
         if result.invocation_id in self._calendar_requests:
             self._calendar_requests.discard(result.invocation_id)
             self._calendar = _calendar_from(result, self._clock.now())

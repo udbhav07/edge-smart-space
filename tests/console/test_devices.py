@@ -219,3 +219,12 @@ class TestLastResult:
         result = self._result(clock).model_copy(update={"invocation_id": invocation_id})
         events = state.accept(topics.ASSIST_RESULT.pattern, result.model_dump_json().encode())
         assert {"devices", "device_result"} <= {event["type"] for event in events}
+
+    def test_a_remotes_own_call_is_in_the_activity(self, console):
+        state, actions, _, clock, _ = console
+        _announce(state, clock)
+        self._catalogue(state, clock)
+        invocation_id = actions.device("fan", "turn_on", {})
+        result = self._result(clock).model_copy(update={"invocation_id": invocation_id})
+        state.accept(topics.ASSIST_RESULT.pattern, result.model_dump_json().encode())
+        assert any(step["text"].startswith("fan_turn_on") for step in state.snapshot()["activity"])

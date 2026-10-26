@@ -40,7 +40,7 @@ function MusicRemote({ device, size, call }: RemoteProps) {
         </span>
         <div className="min-w-0 flex-1">
           <div className={cn("truncate font-medium text-fg", size === "full" ? "text-[22px]" : "text-[15px]")}>{state.track || "Nothing playing"}</div>
-          <div className="text-[12px] text-muted">{state.playing ? "Playing" : state.paused ? "Paused" : "Stopped"} · {state.tracks ?? 0} tracks in your library</div>
+          <div className="text-[12px] text-muted">{state.playing ? "Playing" : state.paused ? "Paused" : "Stopped"} · {state.tracks ?? 0} {state.tracks === 1 ? "track" : "tracks"} in your library</div>
         </div>
         <div className="flex gap-1.5">
           {state.playing
@@ -49,12 +49,12 @@ function MusicRemote({ device, size, call }: RemoteProps) {
           <Button icon={Square} variant="ghost" disabled={off || (!state.playing && !state.paused)} onClick={() => void call("stop")}>Stop</Button>
         </div>
       </div>
-      <form onSubmit={(event) => { event.preventDefault(); if (query.trim()) void call("play", { query: query.trim() }).then(() => setQuery("")); }} className="flex gap-2">
+      {size === "full" && <form onSubmit={(event) => { event.preventDefault(); if (query.trim()) void call("play", { query: query.trim() }).then(() => setQuery("")); }} className="flex gap-2">
         <input value={query} disabled={off} onChange={(event) => setQuery(event.target.value)} placeholder="Play something… an artist, a song, a mood" aria-label="What to play" className={cn(inputClass, "py-1.5")} />
         <Button type="submit" icon={Search} disabled={off || !query.trim()}>Play</Button>
         <input ref={file} type="file" accept=".mp3,.flac,.wav,.ogg,audio/*" className="hidden" onChange={(event) => void upload(event.target.files?.[0])} />
         <Button icon={Upload} disabled={off || busy} onClick={() => file.current?.click()}>{busy ? "Uploading…" : "Upload"}</Button>
-      </form>
+      </form>}
       {volume && <Slider title="Volume" parameter={volume} value={state.volume ?? Number(volume.maximum) / 2} disabled={off} onSet={(value) => void call("set_volume", { [volume.name]: value })} />}
     </div>
   );
