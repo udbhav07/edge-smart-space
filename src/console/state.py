@@ -117,7 +117,14 @@ class _Room:
 class ConsoleState:
     """The console's view of the room, rebuilt from the blackboard."""
 
-    def __init__(self, config: ConsoleConfig, clock: Clock, inbox_path: Path | None = None, utc_offset_h: float = 0.0) -> None:
+    def __init__(
+        self,
+        config: ConsoleConfig,
+        clock: Clock,
+        inbox_path: Path | None = None,
+        utc_offset_h: float = 0.0,
+        bounds_c: tuple[float, float] = (18.0, 30.0),
+    ) -> None:
         self._config = config
         self._clock = clock
         #: Where the inbox is kept across restarts; None keeps it in memory
@@ -126,6 +133,8 @@ class ConsoleState:
         #: Nothing published before this console was listening is charted.
         self._started_ts = clock.now()
         self._utc_offset_h = utc_offset_h
+        #: The gate's setpoint bounds (V-1), so Home's slider offers only what can pass.
+        self._bounds_c = bounds_c
         #: How the occupant wants the room to listen and speak (FR-79, FR-82).
         self._speech_settings: dict | None = None
         #: Whether Google is connected, and what waits for it (FR-84).
@@ -228,6 +237,7 @@ class ConsoleState:
             "energy": {**self._energy, "currency": self._config.currency},
             "presets": self._config.presets_c,
             "cooling_off_c": self._config.cooling_off_c,
+            "bounds_c": list(self._bounds_c),
         }
 
     def accept(self, topic: str, payload: bytes) -> list[Event]:

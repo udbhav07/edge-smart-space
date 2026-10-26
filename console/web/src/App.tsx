@@ -8,6 +8,8 @@ import { Shell } from "./Shell";
 const page = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
   lazy(() => load().then((module) => ({ default: module[name] })));
 
+const Home = page(() => import("./pages/Home"), "Home");
+const Settings = page(() => import("./pages/Settings"), "Settings");
 const Overview = page(() => import("./pages/Overview"), "Overview");
 const Services = page(() => import("./pages/Services"), "Services");
 const Estimator = page(() => import("./pages/Estimator"), "Estimator");
@@ -30,7 +32,9 @@ export default function App() {
     <Suspense fallback={<Loading />}>
       <Routes>
         <Route element={<Shell />}>
-          <Route index element={<Overview />} />
+          <Route index element={<Home />} />
+          <Route path="overview" element={<Overview />} />
+          <Route path="settings" element={<Settings />} />
           <Route path="services" element={<Services />} />
           <Route path="estimator" element={<Estimator />} />
           <Route path="mqtt" element={<Mqtt />} />

@@ -24,6 +24,11 @@ async function post<T = unknown>(path: string, body: unknown = {}): Promise<T> {
 export const api = {
   say: (text: string, profile_id: string) => post("/api/say", { text, profile_id }),
   setTarget: (target_c: number, profile_id: string) => post("/api/target", { target_c, profile_id }),
+  comfort: (direction: "warmer" | "cooler") => post("/api/comfort", { direction, profile_id: "" }),
+  automatic: () => post("/api/automatic", { profile_id: "" }),
+  coolingOff: (hours: number) => post("/api/cooling-off", { hours, profile_id: "" }),
+  speechSettings: (changes: Partial<import("./types").SpeechSettings>) => post("/api/speech/settings", changes),
+  disconnectGoogle: () => post("/api/google/disconnect"),
   answer: (invocationId: string, yes: boolean) => post(`/api/bookings/${encodeURIComponent(invocationId)}`, { yes }),
   refreshCalendar: () => post("/api/calendar/refresh"),
   removeEntry: (subject: string, starts_at: string) => post("/api/calendar/remove", { subject, starts_at }),

@@ -48,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = RealClock()
     state = ConsoleState(
-        config.console, clock, inbox_path=Path(config.console.inbox_path), utc_offset_h=config.site.utc_offset_h
+        config.console, clock, inbox_path=Path(config.console.inbox_path), utc_offset_h=config.site.utc_offset_h,
+        bounds_c=(config.validator.setpoint_bounds_c.low, config.validator.setpoint_bounds_c.high),
     )
     lock = threading.Lock()
     hub = Hub()

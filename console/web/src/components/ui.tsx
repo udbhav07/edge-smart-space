@@ -144,3 +144,32 @@ export function Json({ value }: { value: unknown }) {
     <pre className="scroll-thin max-h-[420px] overflow-auto rounded-2xl bg-raised/70 p-4 font-mono text-[12px] leading-relaxed text-fg/90">{text}</pre>
   );
 }
+
+/** An on/off setting, labelled; the state is in the words too, not only the knob. */
+export function Switch({ checked, onChange, label, hint, disabled }: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <label className={cn("flex items-center gap-3 py-1.5", disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer")}>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[14px] text-fg">{label}</span>
+        {hint && <span className="block text-[12px] text-muted">{hint}</span>}
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={cn("relative h-[28px] w-[46px] shrink-0 rounded-full transition", checked ? "bg-good" : "bg-line/[0.16]")}
+      >
+        <span className={cn("absolute top-[2px] h-6 w-6 rounded-full bg-white shadow transition-all", checked ? "left-[20px]" : "left-[2px]")} />
+      </button>
+    </label>
+  );
+}

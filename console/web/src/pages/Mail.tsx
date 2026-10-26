@@ -16,7 +16,7 @@ import { Pending } from "@/components/Pending";
 type Box = "inbox" | "sent" | "compose";
 const toneHealth: Record<string, Health> = { good: "good", warn: "warn", alert: "alert", info: "idle", neutral: "idle" };
 
-function Compose({ onSent }: { onSent: () => void }) {
+function Compose({ onSent, google }: { onSent: () => void; google: boolean }) {
   const [to, setTo] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -26,7 +26,7 @@ function Compose({ onSent }: { onSent: () => void }) {
     setBusy(true);
     try {
       await api.sendMail(to, subject, body);
-      toast.success("Written; confirm it above to send the mock");
+      toast.success(google ? "Written; confirm it above to send it" : "Written; confirm it above to send the mock");
       setTo(""); setSubject(""); setBody("");
       onSent();
     } catch (error) {
@@ -42,10 +42,17 @@ function Compose({ onSent }: { onSent: () => void }) {
       <Field label="Message"><textarea id="mail-body" rows={8} value={body} onChange={(event) => setBody(event.target.value)} placeholder="I'll be ten minutes late. Sorry!" className={cn(inputClass, "resize-y")} /></Field>
       <div className="flex flex-wrap items-center gap-3">
         <Button type="submit" variant="primary" icon={Send} disabled={busy || !to.trim() || (!subject.trim() && !body.trim())}>Send</Button>
-        <span className="text-[12px] text-muted">It waits for your confirmation, then goes to a mock outbox. Nothing leaves this node.</span>
+        <span className="text-[12px] text-muted">{google ? "It waits for your confirmation, then sends from your Gmail." : "It waits for your confirmation, then goes to a mock outbox. Nothing leaves this node."}</span>
       </div>
     </form>
   );
+}
+
+/** Where a sent mail went, said plainly (FR-86). */
+function sentWord(mail: SentMail): string {
+  if (mail.queued) return "waiting to send when the system is back online";
+  if (mail.mock === false) return "sent from your Gmail";
+  return "mock, not sent";
 }
 
 function Reading({ item }: { item: InboxItem | SentMail | null }) {
@@ -56,7 +63,7 @@ function Reading({ item }: { item: InboxItem | SentMail | null }) {
       <div>
         <h2 className="text-balance text-[18px] font-semibold text-fg">{item.subject || "(no subject)"}</h2>
         <div className="mt-1 text-[12.5px] text-muted">
-          {sent ? `To ${(item as SentMail).to} · ${(item as SentMail).reference} · mock, not sent` : `From ${(item as InboxItem).sender}`} · {clock(item.ts)}
+          {sent ? `To ${(item as SentMail).to}${(item as SentMail).reference ? ` · ${(item as SentMail).reference}` : ""} · ${sentWord(item as SentMail)}` : `From ${(item as InboxItem).sender}`} · {clock(item.ts)}
         </div>
       </div>
       <p className="whitespace-pre-wrap text-[14.5px] leading-relaxed text-fg/90">{item.body || "(empty)"}</p>
@@ -74,6 +81,7 @@ export function Mail() {
   const sent = useMemo(() => [...(state?.sent ?? [])].reverse(), [state?.sent]);
   if (!state) return null;
   const waiting = state.waiting.filter((item) => item.tool === "send_mail");
+  const google = !!state.google?.connected;
   const list: (InboxItem | SentMail)[] = box === "sent" ? sent : inbox;
   const key = (item: InboxItem | SentMail) => ("id" in item ? item.id : `${item.reference}-${item.ts}`);
   const selected = list.find((item) => key(item) === selectedId) ?? list[0] ?? null;
@@ -82,14 +90,14 @@ export function Mail() {
     <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-8">
       <PageHeader
         title="Mail"
-        subtitle="What the room tells you, and mail you send through Jarvis. This node never connects to the internet, so sending reaches a mock outbox: like a booking, it waits for your yes and nothing actually leaves."
+        subtitle={google ? "What the room tells you, and mail you send through Jarvis. Mail waits for your yes, then goes from your Gmail; if the system is offline it waits in the outbox and sends once it is back." : "What the room tells you, and mail you send through Jarvis. Until Google is connected in Settings, sending reaches a mock outbox: it waits for your yes and nothing actually leaves."}
         actions={<Button variant="primary" icon={PenLine} onClick={() => setBox("compose")}>Write</Button>}
       />
       <div className="grid gap-4">
         <Pending items={waiting} now={now} noun="mail" />
         <div className="grid gap-4 lg:grid-cols-[200px_minmax(0,1fr)]">
           <nav className="flex gap-1 lg:flex-col" aria-label="Mailboxes">
-            {([["inbox", "Inbox", Inbox, inbox.length], ["sent", "Sent (mock)", Send, sent.length], ["compose", "Write", PenLine, 0]] as const).map(([value, label, Icon, count]) => (
+            {([["inbox", "Inbox", Inbox, inbox.length], ["sent", google ? "Sent" : "Sent (mock)", Send, sent.length], ["compose", "Write", PenLine, 0]] as const).map(([value, label, Icon, count]) => (
               <button key={value} onClick={() => setBox(value)} className={cn("flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px]", box === value ? "bg-raised text-fg" : "text-muted hover:bg-raised/60 hover:text-fg")}>
                 <Icon className="h-4 w-4" />{label}
                 {count > 0 && <span className="ml-auto text-[11.5px] text-muted tabular">{count}</span>}
@@ -97,7 +105,7 @@ export function Mail() {
             ))}
           </nav>
           {box === "compose" ? (
-            <Card title="New mail" icon={PenLine}><Compose onSent={() => setBox("sent")} /></Card>
+            <Card title="New mail" icon={PenLine}><Compose google={google} onSent={() => setBox("sent")} /></Card>
           ) : (
             <div className="grid min-h-[480px] gap-4 xl:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
               <Card padded={false} className="overflow-hidden">
@@ -116,6 +124,7 @@ export function Mail() {
                             <span className="flex items-center gap-2 text-[13px]">
                               {!isSent && <Dot health={toneHealth[(item as InboxItem).tone] ?? "idle"} />}
                               <span className="font-medium text-fg">{isSent ? `To ${(item as SentMail).to}` : (item as InboxItem).sender}</span>
+                              {isSent && (item as SentMail).queued && <span className="rounded-full bg-ember/10 px-1.5 text-[10.5px] font-medium text-ember">Outbox</span>}
                               <span className="ml-auto text-[11.5px] text-muted">{ago(item.ts, now)}</span>
                             </span>
                             <span className="truncate text-[13px] text-fg/90">{item.subject || "(no subject)"}</span>

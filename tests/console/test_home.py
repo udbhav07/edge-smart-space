@@ -377,3 +377,14 @@ class TestTheNewEndpoints:
     def test_the_status_endpoint(self, client):
         http, _ = client
         assert http.get("/api/google").json()["configured"] is True
+
+
+class TestWhatHomeIsGiven:
+    def test_the_gate_bounds_reach_the_snapshot(self):
+        state = ConsoleState(CONFIG.console, SimClock(), bounds_c=(19.0, 29.0))
+        assert state.snapshot()["bounds_c"] == [19.0, 29.0]
+
+    def test_the_presets_and_cooling_off_come_from_config(self, console):
+        state, _, _, _ = console
+        snapshot = state.snapshot()
+        assert snapshot["presets"] == CONFIG.console.presets_c and snapshot["cooling_off_c"] == CONFIG.console.cooling_off_c

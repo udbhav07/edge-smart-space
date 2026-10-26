@@ -70,7 +70,8 @@ export interface Actuator {
 }
 
 export interface Goal {
-  source: string;
+  ts: number;
+  source: "supervisor" | "preference" | "default" | "operator" | string;
   setpoint_c: number;
   rationale: string;
 }
@@ -93,13 +94,50 @@ export interface Diagnosis {
 
 export interface SpeechStatus {
   ts: number;
-  activity: "waiting" | "listening" | "transcribing" | "understanding";
+  activity: "waiting" | "listening" | "transcribing" | "understanding" | "speaking" | "muted";
   heard: string;
   microphone: string;
   wake_word: string;
   heartbeat_s: number;
   /** FR-76: whether everything said is transcribed, or only what follows the wake word. */
   listen_mode?: "continuous" | "wake_word";
+  /** FR-79: which voice says replies aloud, empty when none can. */
+  voice?: string;
+}
+
+/** How the room listens and speaks, set here and obeyed by the speech service (FR-79, FR-82). */
+export interface SpeechSettings {
+  listening: boolean;
+  speak_replies: boolean;
+  speak_typed: boolean;
+  speak_alerts: boolean;
+  volume: number;
+  quiet_from: string;
+  quiet_to: string;
+}
+
+export const DEFAULT_SPEECH_SETTINGS: SpeechSettings = {
+  listening: true, speak_replies: true, speak_typed: false, speak_alerts: true, volume: 0.8, quiet_from: "", quiet_to: "",
+};
+
+/** Whether Google is connected and what waits for it; never a token (FR-84). */
+export interface GoogleStatus {
+  ts: number;
+  configured: boolean;
+  connected: boolean;
+  account: string;
+  outbox: number;
+  online: boolean;
+  last_sync_ts: number | null;
+  last_error: string;
+  needs_reconnect: boolean;
+}
+
+export interface Energy {
+  day: string;
+  kwh: number;
+  cost: number;
+  currency: string;
 }
 
 export interface Waiting {
@@ -117,6 +155,8 @@ export interface CalendarEntry {
   /** Pencilled in from overheard conversation, not yet kept (FR-77). */
   tentative?: boolean;
   heard?: string;
+  /** Made in Google Calendar and mirrored here (FR-85). */
+  google?: boolean;
 }
 
 export interface Profile {
@@ -160,6 +200,12 @@ export interface Snapshot {
   calendar: { entries: CalendarEntry[]; as_of: number | null; note: string };
   tools: { name: string; purpose: string; effect: string }[];
   operator_controls: boolean;
+  speech_settings: SpeechSettings | null;
+  google: GoogleStatus | null;
+  energy: Energy;
+  presets: Record<string, number>;
+  cooling_off_c: number;
+  bounds_c: [number, number];
 }
 
 export interface TopicRow {
@@ -200,6 +246,10 @@ export interface SentMail {
   subject: string;
   body: string;
   ts: number;
+  /** Waiting in the outbox until the system is back online (FR-86). */
+  queued?: boolean;
+  /** Reached the mock outbox, not a real mailbox. */
+  mock?: boolean;
 }
 
 export interface InboxItem {

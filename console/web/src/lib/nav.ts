@@ -1,4 +1,4 @@
-import { BookOpen, CalendarDays, Cpu, Gauge, LayoutDashboard, Library, Mail, MessageSquare, Network, Plane, ShieldAlert, type LucideIcon } from "lucide-react";
+import { BookOpen, CalendarDays, Cpu, Gauge, House, LayoutDashboard, Settings, Library, Mail, MessageSquare, Network, Plane, ShieldAlert, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   to: string;
@@ -10,9 +10,13 @@ export interface NavItem {
 /** Every page, grouped as the sidebar shows them. */
 export const NAV: { group: string; items: NavItem[] }[] = [
   {
+    group: "Room",
+    items: [{ to: "/", label: "Home", icon: House, end: true }],
+  },
+  {
     group: "Monitor",
     items: [
-      { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
+      { to: "/overview", label: "Overview", icon: LayoutDashboard },
       { to: "/services", label: "Services", icon: Cpu },
       { to: "/estimator", label: "Thermal model", icon: Gauge },
       { to: "/mqtt", label: "MQTT board", icon: Network },
@@ -34,5 +38,9 @@ export const NAV: { group: string; items: NavItem[] }[] = [
       { to: "/architecture", label: "How it works", icon: BookOpen },
       { to: "/topics", label: "Topic guide", icon: Library },
     ],
+  },
+  {
+    group: "You",
+    items: [{ to: "/settings", label: "Settings", icon: Settings }],
   },
 ];

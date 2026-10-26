@@ -98,7 +98,7 @@ export function Calendar() {
     <div className="mx-auto max-w-[1500px] px-4 py-6 sm:px-8">
       <PageHeader
         title="Calendar"
-        subtitle="Your own calendar, kept on this node. Jarvis adds to it when you ask, and pencils in plans it overhears as model tentative for you to keep or discard. Nothing is shared with any hosted service."
+        subtitle={state.google?.connected ? "Your calendar, kept on this node and mirrored with Google Calendar both ways. Jarvis adds to it when you ask, and pencils in plans it overhears as model tentative for you to keep or discard." : "Your own calendar, kept on this node. Jarvis adds to it when you ask, and pencils in plans it overhears as model tentative for you to keep or discard. Connect Google in Settings to mirror it to Google Calendar."}
         actions={<Button icon={RefreshCw} onClick={() => void refresh()}>Refresh</Button>}
       />
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -148,6 +148,7 @@ export function Calendar() {
                           <div className={cn("flex items-center gap-1 font-mono text-[10.5px]", entry.tentative ? "text-ember" : "text-glacier")}>
                             {entry.tentative && <Ear className="h-2.5 w-2.5 shrink-0" />}
                             {at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            {entry.google && <span title="From Google Calendar" className="ml-auto rounded bg-raised px-0.5 font-sans text-[9.5px] font-semibold text-muted">G</span>}
                           </div>
                           <div className={cn("truncate", entry.tentative && "italic")}>{entry.subject}</div>
                         </button>
@@ -205,6 +206,7 @@ export function Calendar() {
                     <span className={cn("shrink-0 whitespace-nowrap font-mono text-[12px] tabular", entry.tentative ? "text-ember" : "text-glacier")}>{new Date(entry.starts_at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}</span>
                     <span className={cn("min-w-0 flex-1 truncate", entry.tentative ? "italic text-fg/80" : "text-fg")}>{entry.subject}</span>
                     {entry.tentative && <span className="shrink-0" title="Model tentative: overheard, not yet kept"><Ear className="h-3.5 w-3.5 text-ember" /></span>}
+                    {entry.google && <span title="From Google Calendar" className="shrink-0 rounded bg-raised px-1 text-[10.5px] font-semibold text-muted">G</span>}
                   </button>
                 </li>
               ))}

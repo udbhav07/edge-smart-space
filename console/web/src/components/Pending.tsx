@@ -3,11 +3,13 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { api, Refused } from "@/lib/api";
 import type { Waiting } from "@/lib/types";
+import { useConsole } from "@/lib/useConsole";
 import { Button, Card } from "@/components/ui";
 
 /** Commitments waiting for the occupant's yes (FR-54): nothing has happened yet. */
 export function Pending({ items, now, noun }: { items: Waiting[]; now: number; noun: string }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const google = !!useConsole().state?.google?.connected;
   if (!items.length) return null;
   const answer = async (id: string, yes: boolean) => {
     setBusy(id);
@@ -37,7 +39,7 @@ export function Pending({ items, now, noun }: { items: Waiting[]; now: number; n
                 ))}
               </dl>
               <p className="mt-2 text-[11.5px] text-muted">
-                A mock: nothing real happens. {expired ? "This request has expired." : `Expires in ${Math.max(1, Math.round((item.expires_ts - now) / 60))} min.`}
+                {consequence(item.tool, google)} {expired ? "This request has expired." : `Expires in ${Math.max(1, Math.round((item.expires_ts - now) / 60))} min.`}
               </p>
               <div className="mt-3 flex gap-2">
                 <Button variant="primary" icon={Check} disabled={busy !== null || expired} onClick={() => void answer(item.invocation_id, true)}>Confirm</Button>
@@ -49,4 +51,11 @@ export function Pending({ items, now, noun }: { items: Waiting[]; now: number; n
       </ul>
     </Card>
   );
+}
+
+/** What a yes does, honestly: real only where Google makes it real. */
+function consequence(tool: string, google: boolean): string {
+  if (!google) return "A mock: nothing real happens.";
+  if (tool === "send_mail") return "Sends from your Gmail.";
+  return "The booking is a mock; its calendar entry and itinerary email are real.";
 }

@@ -57,6 +57,10 @@ function applyOne(state: Snapshot, tail: BoardMessage[], event: ServerEvent): [S
       return [{ ...state, room: { ...room, [type]: data } }, tail];
     case "speech":
       return [{ ...state, speech: data }, tail];
+    case "speech_settings":
+    case "google":
+    case "energy":
+      return [{ ...state, [type]: data }, tail];
     case "series": {
       const points = state.series[data.key] ?? [];
       return [{ ...state, series: { ...state.series, [data.key]: [...points, data.point].slice(-KEEP_POINTS) } }, tail];
