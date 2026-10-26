@@ -6,7 +6,7 @@ import { matches } from "./services";
 // producer a publish. Patterns and retention follow src/common/topics.py.
 
 /** Who can be on either end of a topic: the services, plus the command-line tools. */
-export type Actor = "simulator" | "devices" | "estimator" | "control" | "detectors" | "reasoning" | "assistance" | "speech" | "console" | "cli";
+export type Actor = "simulator" | "devices" | "estimator" | "control" | "detectors" | "reasoning" | "assistance" | "speech" | "console" | "cli" | "device_services";
 
 export const ACTOR_NAMES: Record<Actor, string> = {
   simulator: "Room simulator",
@@ -19,6 +19,7 @@ export const ACTOR_NAMES: Record<Actor, string> = {
   speech: "Speech",
   console: "Console",
   cli: "Command-line tools",
+  device_services: "Device services",
 };
 
 export interface Consumer {
@@ -49,7 +50,7 @@ export interface TopicDoc {
   schema: string;
   fields: Field[];
   requirements: string[];
-  group: "Sensing" | "Model" | "Control" | "Faults" | "Conversation" | "Tools" | "Audit";
+  group: "Sensing" | "Model" | "Control" | "Faults" | "Conversation" | "Tools" | "Devices" | "Audit";
 }
 
 export const TOPIC_DOCS: TopicDoc[] = [
@@ -747,6 +748,108 @@ export const TOPIC_DOCS: TopicDoc[] = [
     schema: "ToolCatalogue",
     fields: [{ name: "tools", meaning: "name, purpose, effect and parameters of each" }],
     requirements: ["FR-60", "FR-70"],
+  },
+
+  // --- devices (FR-87 to FR-91) ------------------------------------------------------
+  {
+    slug: "device-manifest",
+    pattern: "space/device/+/manifest",
+    name: "Device manifest",
+    group: "Devices",
+    short: "What a device is and everything it can do, each capability with its effect and safety class.",
+    long: [
+      "Every device beyond the thermal loop is a service of its own -- the fan, the music player, a lamp behind the MCP bridge -- and announces itself here, retained, so a service that starts later learns every device at once. Plugging in a new device is publishing a manifest; nothing in the core changes.",
+      "Each capability says its effect (read, write, commit: whether it needs a yes) and its safety class: comfort, media, or plant. Plant capabilities -- the air conditioner's -- are never offered as tools; the room's temperature is reached only through a preference and the safety gate.",
+    ],
+    producers: [{ who: "device_services", when: "on start and after every reconnect; retained" }, { who: "simulator", when: "the air conditioner, as plant" }],
+    consumers: [
+      { who: "assistance", why: "Declares each capability as a tool while the device is online." },
+      { who: "reasoning", why: "Names the devices, one line each, for the extraction to route a request to." },
+      { who: "console", why: "Draws each device's controls from what it can do." },
+    ],
+    retained: true,
+    qos: 1,
+    cadence: "on start",
+    schema: "DeviceManifest",
+    fields: [
+      { name: "device_id, name, aliases", meaning: "how it is addressed, and what people call it" },
+      { name: "kind", meaning: "ac, fan, light, media or other" },
+      { name: "simulated", meaning: "whether it acts on anything real (FR-15)" },
+      { name: "provider", meaning: "native, or mcp:<server> behind the bridge" },
+      { name: "capabilities", meaning: "each with its parameters and bounds, effect, safety class and rate limit" },
+    ],
+    requirements: ["FR-87", "FR-88", "FR-90"],
+  },
+  {
+    slug: "device-availability",
+    pattern: "space/device/+/availability",
+    name: "Device availability",
+    group: "Devices",
+    short: "Whether a device's service is reachable; its last will says offline if it dies.",
+    long: [
+      "Retained. Each device service registers an MQTT last will with the broker, so a service that crashes or loses its network is reported offline without saying so itself. Its tools are withdrawn until it is back.",
+    ],
+    producers: [{ who: "device_services", when: "on start, on stop; the broker on a lost connection" }],
+    consumers: [
+      { who: "assistance", why: "Withdraws or restores the device's tools." },
+      { who: "console", why: "Shows the device online or offline." },
+    ],
+    retained: true,
+    qos: 1,
+    cadence: "on change",
+    schema: "DeviceAvailability",
+    fields: [{ name: "online", meaning: "true while the service is connected" }],
+    requirements: ["FR-87"],
+  },
+  {
+    slug: "device-command",
+    pattern: "space/device/+/command",
+    name: "Device command",
+    group: "Devices",
+    short: "One capability asked of a device, after the executor's gates.",
+    long: [
+      "The executor carries a tool call here once its registry has checked the arguments and, for a commit, the occupant's yes. The device checks again -- its bounds and its rate limit -- because this topic is open to anything on the broker.",
+    ],
+    producers: [{ who: "assistance", when: "for each device tool call" }],
+    consumers: [{ who: "device_services", why: "Runs the capability and answers." }],
+    retained: false,
+    qos: 1,
+    cadence: "on request",
+    schema: "ToolInvocation",
+    fields: [{ name: "tool", meaning: "the capability" }, { name: "arguments", meaning: "already checked once" }],
+    requirements: ["FR-87", "FR-88"],
+  },
+  {
+    slug: "device-result",
+    pattern: "space/device/+/result",
+    name: "Device result",
+    group: "Devices",
+    short: "What a device did, or why it did not, in a sentence for the occupant.",
+    long: ["Correlated to its command by invocation id. The executor passes it on to space/assist/result."],
+    producers: [{ who: "device_services", when: "for every command" }],
+    consumers: [{ who: "assistance", why: "Completes the tool call it is waiting on." }],
+    retained: false,
+    qos: 1,
+    cadence: "on request",
+    schema: "ToolResult",
+    fields: [{ name: "status, message", meaning: "OK, or the refusal and why" }],
+    requirements: ["FR-87"],
+  },
+  {
+    slug: "device-state",
+    pattern: "space/device/+/state",
+    name: "Device state",
+    group: "Devices",
+    short: "What a device is doing now: the fan's speed, the track playing.",
+    long: ["Retained, published after every command and whenever the device changes by itself -- a track ending."],
+    producers: [{ who: "device_services", when: "after a command, on its own change" }, { who: "simulator", when: "the air conditioner, every 5 s" }],
+    consumers: [{ who: "console", why: "Shows each device's state on Home." }],
+    retained: true,
+    qos: 1,
+    cadence: "on change",
+    schema: "DeviceState",
+    fields: [{ name: "values", meaning: "flat values, whatever the device reports" }, { name: "simulated", meaning: "FR-15" }],
+    requirements: ["FR-87", "FR-91"],
   },
 
   // --- audit ----------------------------------------------------------------------

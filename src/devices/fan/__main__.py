@@ -7,7 +7,7 @@ from src.devices.runner import run
 
 
 def main(argv: list[str] | None = None) -> int:
-    return run(argv, "Run the simulated fan.", "device-fan", build)
+    return run(argv, "Run the simulated fan.", "device-fan", lambda config, clock: build(config, clock) if config.actuators.fan.enabled else [])
 
 
 if __name__ == "__main__":

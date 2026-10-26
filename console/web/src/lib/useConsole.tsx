@@ -60,6 +60,7 @@ function applyOne(state: Snapshot, tail: BoardMessage[], event: ServerEvent): [S
     case "speech_settings":
     case "google":
     case "energy":
+    case "devices":
       return [{ ...state, [type]: data }, tail];
     case "series": {
       const points = state.series[data.key] ?? [];
@@ -181,6 +182,7 @@ function useConnection(): ConsoleData {
         return;
       }
       if (event.type === "calendar_stale") setCalendarStale((n) => n + 1);
+      if (event.type === "device_result") window.dispatchEvent(new CustomEvent(DEVICE_RESULT_EVENT, { detail: event.data }));
       pending.current.push(event);
       if (flushTimer.current === null) flushTimer.current = window.setTimeout(flush, BATCH_MS);
     };
@@ -216,6 +218,9 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
 }
 
 export const useConsole = () => useContext(ConsoleContext);
+
+/** A device's answer to a call made from this page, for whoever made it. */
+export const DEVICE_RESULT_EVENT = "smart-space:device-result";
 
 const MAIL_SEEN_KEY = "mail-seen";
 const MAIL_SEEN_EVENT = "smart-space:mail-seen";

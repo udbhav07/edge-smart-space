@@ -7,7 +7,12 @@ from src.devices.runner import run
 
 
 def main(argv: list[str] | None = None) -> int:
-    return run(argv, "Play music from the occupant's library.", "device-music", build)
+    return run(
+        argv,
+        "Play music from the occupant's library.",
+        "device-music",
+        lambda config, clock: build(config, clock) if config.actuators.music.enabled else [],
+    )
 
 
 if __name__ == "__main__":

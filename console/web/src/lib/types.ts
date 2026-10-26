@@ -133,6 +133,46 @@ export interface GoogleStatus {
   needs_reconnect: boolean;
 }
 
+/** One argument a device capability takes (FR-87). */
+export interface DeviceParameter {
+  name: string;
+  type: "string" | "number" | "integer" | "boolean" | "timestamp";
+  description: string;
+  required: boolean;
+  choices: string[];
+  supplied_by_system?: boolean;
+  minimum: number | null;
+  maximum: number | null;
+}
+
+export interface DeviceCapability {
+  name: string;
+  purpose: string;
+  effect: "read" | "write" | "commit";
+  device_class: "plant" | "comfort" | "media";
+  parameters: DeviceParameter[];
+}
+
+export interface DeviceManifest {
+  device_id: string;
+  name: string;
+  kind: "ac" | "fan" | "light" | "media" | "other";
+  room: string;
+  aliases: string[];
+  simulated: boolean;
+  provider: string;
+  capabilities: DeviceCapability[];
+}
+
+/** A device as the console knows it: what it is, whether it is here, how it is (FR-91). */
+export interface Device {
+  device_id: string;
+  manifest: DeviceManifest;
+  online: boolean;
+  state: Record<string, string | number | boolean | null>;
+  state_ts: number | null;
+}
+
 export interface Energy {
   day: string;
   kwh: number;
@@ -198,7 +238,7 @@ export interface Snapshot {
   activity: Step[];
   waiting: Waiting[];
   calendar: { entries: CalendarEntry[]; as_of: number | null; note: string };
-  tools: { name: string; purpose: string; effect: string }[];
+  tools: { name: string; purpose: string; effect: string; device?: string }[];
   operator_controls: boolean;
   speech_settings: SpeechSettings | null;
   google: GoogleStatus | null;
@@ -206,6 +246,7 @@ export interface Snapshot {
   presets: Record<string, number>;
   cooling_off_c: number;
   bounds_c: [number, number];
+  devices: Device[];
 }
 
 export interface TopicRow {

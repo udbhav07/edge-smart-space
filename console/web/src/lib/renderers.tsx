@@ -12,6 +12,7 @@ import {
   Gauge,
   Mic,
   MessageSquare,
+  Plug,
   Power,
   RotateCcw,
   ShieldCheck,
@@ -493,6 +494,54 @@ export const RENDERERS: Renderer[] = [
         ))}
       </ul>
     ),
+  },
+  {
+    pattern: "space/device/+/manifest",
+    icon: Plug,
+    title: (t) => `${segment(t, 2)} · what it can do`,
+    summary: (p) => <><span className="text-fg">{p.name}</span> <span className="text-muted">· {(p.capabilities ?? []).map((c: Payload) => c.name).join(", ")}</span>{p.simulated && <> <Chip tone="muted">simulated</Chip></>}</>,
+    detail: (p, _t, now) => (
+      <Stack>
+        <Fields rows={[["Device", `${p.name} (${p.device_id})`], ["Kind", p.kind], ["Behind", p.provider], ["Also called", (p.aliases ?? []).join(", ") || "—"], ["Announced", when(p.ts, now)]]} />
+        <ul className="grid gap-2">
+          {(p.capabilities ?? []).map((c: Payload) => (
+            <li key={c.name} className="rounded-xl bg-raised/50 p-3">
+              <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[13px] text-fg">{c.name}</span><Chip tone={c.device_class === "plant" ? "alert" : "info"}>{c.device_class}</Chip><Chip tone={c.effect === "commit" ? "warn" : "muted"}>{c.effect}</Chip></div>
+              <p className="mt-1 text-[12.5px] text-muted">{c.purpose}{(c.parameters ?? []).length ? ` — takes ${(c.parameters ?? []).map((x: Payload) => x.minimum != null ? `${x.name} ${x.minimum}–${x.maximum}` : x.name).join(", ")}` : ""}</p>
+            </li>
+          ))}
+        </ul>
+        <p className="text-[12.5px] text-muted">A plant capability is never a tool: the air conditioner is reached only through the safety gate (FR-88).</p>
+      </Stack>
+    ),
+  },
+  {
+    pattern: "space/device/+/availability",
+    icon: Plug,
+    title: (t) => `${segment(t, 2)} · reachable`,
+    summary: (p) => <Chip tone={p.online ? "good" : "alert"}>{p.online ? "online" : "offline"}</Chip>,
+    detail: (p, _t, now) => <Fields rows={[["Device", p.device_id], ["Online", p.online ? "yes" : "no — its service stopped, or its last will was published"], ["Since", when(p.ts, now)]]} />,
+  },
+  {
+    pattern: "space/device/+/command",
+    icon: Target,
+    title: (t) => `${segment(t, 2)} · asked`,
+    summary: (p) => <><span className="font-mono text-fg">{p.tool}</span> <span className="text-muted">{argumentsList(p.arguments)}</span></>,
+    detail: (p, _t, now) => <Fields rows={[["Capability", p.tool], ["Arguments", argumentsList(p.arguments) || "none"], ["Asked by", p.requester], ["Invocation", p.invocation_id], ["At", when(p.ts, now)]]} />,
+  },
+  {
+    pattern: "space/device/+/result",
+    icon: BadgeCheck,
+    title: (t) => `${segment(t, 2)} · answered`,
+    summary: (p) => <><Chip tone={statusTone(p.status)}>{words(p.status)}</Chip> <span className="text-fg">{p.message}</span></>,
+    detail: (p, _t, now) => <Fields rows={[["Capability", p.tool], ["Status", p.status], ["Said", p.message || "—"], ["Simulated", p.simulated ? "yes" : "no"], ["Invocation", p.invocation_id], ["At", when(p.ts, now)]]} />,
+  },
+  {
+    pattern: "space/device/+/state",
+    icon: Plug,
+    title: (t) => `${segment(t, 2)} · now`,
+    summary: (p) => <span className="text-fg">{Object.entries(p.values ?? {}).map(([k, v]) => `${k.replace(/_/g, " ")} ${String(v)}`).join(" · ")}</span>,
+    detail: (p, _t, now) => <Fields rows={[...Object.entries(p.values ?? {}).map(([k, v]) => [k.replace(/_/g, " "), String(v)] as [string, React.ReactNode]), ["Simulated", p.simulated ? "yes" : "no"], ["At", when(p.ts, now)]]} />,
   },
   {
     pattern: "space/audit/validation",

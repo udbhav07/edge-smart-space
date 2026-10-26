@@ -67,6 +67,14 @@ export const SERVICES: ServiceSpec[] = [
     cadence_s: 30,
   },
   {
+    id: "device_services",
+    name: "Device services",
+    role: "The fan, the music player, and every MCP server behind the bridge: each announces itself and answers its own commands",
+    layer: "Layer 1",
+    publishes: ["space/device/+/manifest", "space/device/+/availability", "space/device/+/state", "space/device/+/result"],
+    cadence_s: null,
+  },
+  {
     id: "speech",
     name: "Speech",
     role: "Wake word, Whisper and extraction; publishes what it heard and its own status",

@@ -29,6 +29,23 @@ export const api = {
   coolingOff: (hours: number) => post("/api/cooling-off", { hours, profile_id: "" }),
   speechSettings: (changes: Partial<import("./types").SpeechSettings>) => post("/api/speech/settings", changes),
   disconnectGoogle: () => post("/api/google/disconnect"),
+  device: (deviceId: string, capability: string, args: Record<string, unknown> = {}) =>
+    post<string>(`/api/devices/${encodeURIComponent(deviceId)}/${encodeURIComponent(capability)}`, { arguments: args }),
+  uploadMusic: async (file: File) => {
+    let response: Response;
+    try {
+      response = await fetch(`/api/music/upload?name=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: file,
+      });
+    } catch {
+      throw new Refused("The console server is not reachable.");
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Refused(payload.error ?? `Upload failed (${response.status})`);
+    return payload.result as string;
+  },
   answer: (invocationId: string, yes: boolean) => post(`/api/bookings/${encodeURIComponent(invocationId)}`, { yes }),
   refreshCalendar: () => post("/api/calendar/refresh"),
   removeEntry: (subject: string, starts_at: string) => post("/api/calendar/remove", { subject, starts_at }),

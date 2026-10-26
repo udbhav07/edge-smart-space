@@ -127,7 +127,7 @@ SERVICES = (
     Service(
         name="assistance",
         module="src.assistance",
-        description="Tool executor: local calendar and mock travel bookings",
+        description="Tool executor: calendar, bookings, mail, memory, and every device's tools",
     ),
     Service(
         name="reasoning",
@@ -143,6 +143,21 @@ SERVICES = (
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",
+    ),
+    Service(
+        name="fan",
+        module="src.devices.fan",
+        description="Simulated ceiling fan, a device service (FR-87)",
+    ),
+    Service(
+        name="music",
+        module="src.devices.music",
+        description="Music player on this machine, a device service (FR-87)",
+    ),
+    Service(
+        name="mcp",
+        module="src.devices.mcp_bridge",
+        description="MCP servers in actuators.mcp_servers, mounted as devices (FR-90)",
     ),
 )
 
