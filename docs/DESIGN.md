@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.16 |
+| Version | 1.17 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.17 | **A reply is a turn** (§5.8.5; FR-93): after a spoken reply the room listens for the answer without the wake word; every capture window opens with a chime; the console shows on every page when the room is listening, thinking and speaking; overheard speech is its own `overhearing` activity. Overheard plans are deduplicated by subject and day, not subject alone. **Remotes** (§5.11; FR-92): every device controllable by hand, through the same gates, with a remote chosen by device, kind, or its manifest. |
 | 1.16 | **Device services** (§5.11; FR-87 to FR-91). Every actuator beyond the thermal loop is a service on the blackboard with a retained manifest, availability under a last will, commands, results and retained state; each capability declares its effect and a safety class, and `plant` -- the air conditioner, now announced on the same contract -- is never a tool. The assistance service declares and withdraws device tools as devices come and go; the extraction is shown one line per device and the assistant only the named device's tools, so a 7B model's context does not grow with the room. An MCP bridge mounts any configured server as a device, exposing only the tools configured, with the effect and class the configuration gives them. Reference devices: a simulated fan, a music player, the AC as plant, and an MCP lamp. Numeric tool parameters carry bounds, enforced in the one shared check. |
 | 1.15 | The room speaks (§5.8.5; FR-79, FR-82, FR-83): Piper replies, mute and quiet hours, the microphone ignored while it speaks. A Home page for the occupant with Back to automatic and cooling off (FR-80, FR-81). Google Calendar and Gmail, offline first, after a sign-in in the console (§5.7.7; FR-84 to FR-86; NFR-06 revised). |
 | 1.14 | Always listening (§5.8.4; FR-76 to FR-78): overheard plans pencilled in as tentative, overheard facts offered to keep, nothing answered; the fixes from the customer acceptance check (S-01 to S-14). |
@@ -246,6 +247,7 @@ feature safe to ship at all.
 | FR-89 | However many devices are plugged in, the model shall be shown one line per device to choose from, and then only the tools of the device a request is about, at most a configured number. | S | T |
 | FR-90 | Any MCP server named in configuration shall be mountable as a device, exposing only the tools configured, with the effect and class the configuration gives them. | S | T |
 | FR-91 | The console shall show every device and control it from what its manifest declares, with its availability, its state, and whether it is simulated. | S | D |
+| FR-93 | The occupant shall know when the room is listening to them: a chime whenever a capture window opens, and an indicator on every page of the console while it listens, thinks and speaks. After a reply is spoken, the room shall listen for an answer without the wake word. Overheard speech shall not be shown as listening. | S | D |
 | FR-92 | Every device, including one behind an MCP server, shall be controllable by hand from the console, through the same executor and gates as the assistant: a page of remotes and a page per device. A remote written for a device or its kind is used where one exists; any other device gets a remote drawn from its manifest. | S | D |
 
 ### 3.7 Functional Requirements — Observability
@@ -1357,6 +1359,10 @@ The speech service owns the loudspeaker as well as the microphone, so the one pr
 
 **No echo.** While a sentence plays, and for `speech.speaking_tail_ms` after, the capture loop calls `pipeline.pause()`: buffered audio and pre-roll are dropped and the end-pointer and wake-word detector reset, and the status reads `speaking`. Measured live: a typed question answered aloud (`speaking` for 4.3 s) produced no `space/context/ambient` message.
 
+**A reply is a turn** (v1.17; FR-93). "Sorry, I wasn't sure about that -- can you tell me again?" must be answerable without saying "Hey Jarvis" first. Once a spoken reply has been said and its tail has passed, `Voice.take_follow_up` opens an addressed capture window, and the answer is taken as a request like any other; if nobody speaks, the window closes after `no_speech_timeout_s`. Every window -- after the wake word, or after a reply -- opens with a chime (`speech.chime`): two short notes, faded so they never click, at a fraction of the occupant's volume. While it plays, `Voice.chiming` holds and the capture loop drops the microphone's frames, but, unlike the room speaking, it does not reset the window it announces. The console shows the same on every page (`VoiceIndicator`): "Listening…" from the moment the window opens, what was heard while the assistant thinks, and "Speaking" while it replies; the sidebar orb follows it. Overheard speech is reported as its own activity, `overhearing`, and never lights either. Measured in-process with the real wake word, endpointer, Whisper, extraction and Piper voice, fed synthesised speech: the wake word opened the window 0.7 s into "Hey Jarvis, can you book me a flight?", the question back was spoken, the window reopened with a chime as it ended, and "From Hyderabad to Goa, next Friday" was published as a request with no wake word.
+
+**What overhearing missed** (v1.17). Live, about one plan in four said in the background became an entry. Two causes were found. First, an overheard plan counted as already noted by its subject words alone; a 7B model calls every plan "Meeting", so three different meetings on different days were each dropped as the first one heard again. The key is now the subject's words *and its day*. Second, at the wake-word threshold of 0.1 (§5.8.1) the detector opens windows on its own -- 5 of 16 windows in that run held no speech -- and a background sentence falling into one is taken as a request rather than overheard. That is the threshold's documented cost, not fixed here: raising it needs the occupants' own voices measured. The chime now makes every false wake audible. Overheard windows that are dropped now say why in the log -- how many segments Whisper's confidence tests turned away, and how many distinct words were left -- in counts, never words.
+
 **Settings and mute.** The console publishes the retained `space/speech/settings` (`SpeechSettings`: listening, the three speak switches, volume, quiet hours) and the speech service obeys it. Retained, a restart of either keeps the choice (FR-82). `listening: false` stops capture outright: frames are read and discarded before the detector sees them, and the status reads `muted`. It is a privacy switch, not a filter.
 
 ### 5.9 Key Sequences
@@ -2017,6 +2023,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-76 to FR-78 | §5.8.4, §6.1 | Unit + demonstration |
 | FR-79 to FR-86 | §5.8.5, §5.7.7, §6.1 | Unit + demonstration |
 | FR-87 to FR-92 | §5.11, §6.1 | Unit + demonstration |
+| FR-93 | §5.8.5 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

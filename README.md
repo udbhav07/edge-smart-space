@@ -197,6 +197,12 @@ which nothing is said unprompted. While the room is speaking, and for
 never overheard as someone talking. **Microphone off**, on Home or Settings,
 captures nothing at all until it is turned back on (FR-82).
 
+Every time the room starts listening to you -- after "Hey Jarvis", or after it
+has replied -- it plays a short chime, and the console shows **Listening…** at
+the bottom of every page, then what it heard while it thinks. After a reply,
+just answer: no wake word is needed for the next few seconds (FR-93).
+`speech.chime` and `speech.follow_up_after_reply` turn either off.
+
 ### Google Calendar and Gmail
 
 Optional. Until it is connected nothing leaves this node; once it is, the
