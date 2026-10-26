@@ -34,3 +34,9 @@ def test_every_unit_runs_the_module_start_py_runs(service):
 def test_there_is_no_unit_for_a_service_that_does_not_exist():
     names = {f"smart-space-{service.name}.service" for service in start.SERVICES}
     assert {path.name for path in UNITS.glob("*.service")} == names
+
+
+@pytest.mark.parametrize("service", start.SERVICES, ids=lambda service: service.name)
+def test_every_unit_reads_the_nodes_own_layer(service):
+    """site.yaml extends the calibration, which extends the reference (R-04)."""
+    assert _unit(service.name)["Service"]["ExecStart"].endswith("/config/site.yaml")

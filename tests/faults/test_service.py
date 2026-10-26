@@ -37,6 +37,7 @@ INDOOR = "temp_01"
 HUMIDITY = "hum_01"
 OUTDOOR = "outdoor_01"
 OCCUPANCY = "pir_01"
+POWER = "pwr_01"
 STUCK_VALUE = 27.0
 
 
@@ -161,6 +162,45 @@ class TestBankConstruction:
             event for event in transport.faults() if event.subject == OCCUPANCY
         ] == []
 
+    def test_a_silent_humidity_sensor_does_not_degrade_control(
+        self, wired, clock, config
+    ):
+        """It once switched the loop onto prediction with a healthy temperature
+        sensor and ended, 1800 s later, in SAFE_HOLD."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock, "hum_01", 55.0, Unit.PERCENT_RH))
+        for _ in range(10):
+            _deliver(blackboard, _reading(clock, "temp_01", 25.0))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        dropped = [event for event in transport.faults() if event.subject == "hum_01"]
+        assert dropped and dropped[0].mode_impact is Mode.NORMAL
+        assert service.mode is not Mode.DEGRADED_SENSOR
+
+    def test_an_idle_meter_reading_standby_all_night_raises_nothing(
+        self, wired, clock, config
+    ):
+        """A resting unit draws a constant standby; D2 on the meter would
+        fault it every time the compressor stopped."""
+        service, transport, blackboard = wired
+        for _ in range(config.detectors.stuck_at.window_samples + 4):
+            _deliver(blackboard, _reading(clock, POWER, 4.0, Unit.WATT))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert [event for event in transport.faults() if event.subject == POWER] == []
+
+    def test_a_meter_reporting_negative_draw_is_out_of_range(self, wired, clock, config):
+        """A unit cannot generate power: a meter wired backwards (FR-22)."""
+        service, transport, blackboard = wired
+        for _ in range(config.detectors.out_of_range.debounce_samples + 1):
+            _deliver(blackboard, _reading(clock, POWER, -300.0, Unit.WATT))
+            service.tick()
+            clock.advance(config.loop.sensor_period_s)
+        assert any(
+            event.subject == POWER and event.detector.value == "D3_OUT_OF_RANGE"
+            for event in transport.faults()
+        )
+
     def test_a_continuous_sensor_is_watched_by_all_three(self, wired, clock, config):
         """Each detector is reachable on temp_01: silence raises D1, a frozen
         value raises D2, and an implausible one raises D3."""
@@ -247,6 +287,17 @@ class TestPublishingFaults:
         )
         assert transport.withdrawals() == [f"space/fault/{raised.fault_id}"]
 
+    def test_its_explanation_is_withdrawn_with_it(self, wired, clock):
+        """A retained diagnosis must not outlive the fault it explains (U-14)."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        clock.advance(60.0)
+        service.tick()
+        raised = transport.faults()[0]
+        _report_healthily(service, blackboard, clock, config_confirm_s() + 10.0)
+        withdrawn = [topic for topic, payload, _, retain in transport.published if not payload and retain]
+        assert f"space/diagnosis/{raised.fault_id}" in withdrawn
+
     def test_nothing_is_published_before_any_reading_arrives(self, wired, clock):
         """Every detector answers UNKNOWN, which is not a claim about health."""
         service, transport, _ = wired
@@ -311,6 +362,17 @@ class TestPublishingHealth:
         )
         indoor = [entry for entry in transport.health() if entry.sensor_id == INDOOR]
         assert [entry.quality for entry in indoor][-1] is Quality.OK
+
+    def test_a_retired_fault_is_no_longer_named(self, wired, clock):
+        """Live: the reading was "ok" again before the fault retired, so the
+        retained health went on naming a fault that no longer existed."""
+        service, transport, blackboard = wired
+        _deliver(blackboard, _reading(clock))
+        clock.advance(60.0)
+        service.tick()
+        _report_healthily(service, blackboard, clock, config_confirm_s() + 30.0)
+        indoor = [entry for entry in transport.health() if entry.sensor_id == INDOOR]
+        assert indoor[-1].quality is Quality.OK and indoor[-1].active_fault_id is None
 
     def test_health_carries_the_last_reading_it_saw(self, wired, clock):
         service, transport, blackboard = wired

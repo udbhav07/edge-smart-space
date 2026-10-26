@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -123,6 +124,48 @@ class ChatClient:
         )
 
 
+    def warm(self) -> float:
+        """Load the model now, so the first person to speak does not wait.
+
+        The first completion after the server starts pays for loading the
+        weights: 85 s was measured, against 10 s for every later one (U-09).
+        Paid here, at startup, it is paid by nobody.
+
+        :returns: how long it took, in s.
+        :raises ReasoningUnavailableError: as for :meth:`complete`.
+        """
+        started = self._clock.monotonic()
+        try:
+            self._client.chat.completions.create(
+                model=self._config.model,
+                messages=[{"role": "user", "content": "ok"}],
+                max_tokens=1,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            raise ReasoningUnavailableError(f"inference failed: {exc}") from exc
+        return self._clock.monotonic() - started
+
+
+def warm_in_background(chat: ChatClient) -> threading.Thread:
+    """Warm the model without holding anything up (FR-47).
+
+    Nothing waits on this: regulatory control never needed the model, and an
+    utterance that arrives first simply shares the load.
+    """
+
+    def run() -> None:
+        LOGGER.info("loading %s so the first reply is not the slow one", chat.model)
+        try:
+            LOGGER.info("%s ready after %.0f s", chat.model, chat.warm())
+        except ReasoningUnavailableError as exc:
+            LOGGER.warning("could not warm %s: %s", chat.model, exc)
+
+    thread = threading.Thread(target=run, name="warm-up", daemon=True)
+    thread.start()
+    return thread
+
+
 def assistant_message(turn: ChatTurn) -> dict[str, object]:
     """The turn as it goes back into the conversation for the next round."""
     message: dict[str, object] = {"role": "assistant", "content": turn.content}
@@ -165,10 +208,42 @@ def _recover_text_calls(content: str) -> tuple[tuple[ToolCall, ...], str]:
             arguments = body.get("arguments") or {}
             if isinstance(arguments, dict):
                 calls.append(ToolCall(f"text_{index}", body["name"], arguments))
+    if calls:
+        LOGGER.info("recovered %d tool call(s) written as text", len(calls))
+        return tuple(calls), _TEXT_TOOL_CALL.sub("", content)
+    return _recover_bare_calls(content)
+
+
+def _recover_bare_calls(content: str) -> tuple[tuple[ToolCall, ...], str]:
+    """A call written as a bare JSON object, its opening tag lost.
+
+    Live, the model wrote ``portun {"name": "schedule_event", ...} </tool_call>``
+    and the whole of it was spoken to the occupant as the reply. An object
+    with a string ``name`` and an object ``arguments`` is the shape of a call
+    and of nothing else a reply would contain, so it is recovered; whatever
+    text surrounds it is dropped with the stray tags.
+    """
+    decoder = json.JSONDecoder()
+    calls = []
+    position = content.find("{")
+    while position != -1:
+        try:
+            body, end = decoder.raw_decode(content, position)
+        except json.JSONDecodeError:
+            position = content.find("{", position + 1)
+            continue
+        if (
+            isinstance(body, dict)
+            and isinstance(body.get("name"), str)
+            and isinstance(body.get("arguments", {}), dict)
+            and "arguments" in body
+        ):
+            calls.append(ToolCall(f"text_{len(calls)}", body["name"], body["arguments"]))
+        position = content.find("{", end)
     if not calls:
         return (), content
-    LOGGER.info("recovered %d tool call(s) written as text", len(calls))
-    return tuple(calls), _TEXT_TOOL_CALL.sub("", content)
+    LOGGER.info("recovered %d tool call(s) written as bare JSON", len(calls))
+    return tuple(calls), ""
 
 
 def _render(content: str, calls: Sequence[ToolCall]) -> str:

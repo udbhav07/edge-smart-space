@@ -179,12 +179,33 @@ class TestNonActuatingModes:
         )
         assert command.setpoint_c is None
 
-    def test_holding_does_not_flip_the_compressor_state(
+    def test_degraded_actuator_holds_the_unit_as_it_is(
         self, controller, clock, config
     ):
+        """So D5 can still see a working unit cool and release the mode."""
+        _start_cooling(controller, clock, config)
+        controller.tick(
+            SETPOINT_C + 10.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.DEGRADED_ACTUATOR
+        )
+        assert controller.compressor_on is True
+
+    def test_safe_hold_stops_a_running_compressor(self, controller, clock, config):
+        """Nothing is trusted to say when to stop cooling, so it stops now."""
+        _start_cooling(controller, clock, config)
+        command = controller.tick(
+            SETPOINT_C + 10.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD
+        )
+        assert command.kind is CommandKind.OFF
+        assert controller.compressor_on is False
+
+    def test_safe_hold_stops_once_then_holds(self, controller, clock, config):
         _start_cooling(controller, clock, config)
         controller.tick(SETPOINT_C + 10.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD)
-        assert controller.compressor_on is True
+        clock.advance(5.0)
+        command = controller.tick(
+            SETPOINT_C + 10.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD
+        )
+        assert command.kind is CommandKind.HOLD
 
 
 class TestDeterminism:
@@ -298,9 +319,17 @@ class TestReassertingIntent:
         state to re-assert into the plant."""
         clock.advance(config.reassert_interval_s)
         command = controller.tick(
-            SETPOINT_C + 2.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD
+            SETPOINT_C + 2.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.DEGRADED_ACTUATOR
         )
         assert command.kind is CommandKind.HOLD
+
+    def test_safe_hold_re_asserts_the_stop(self, controller, clock, config):
+        """An OFF lost on the IR path must not leave the unit running (R-02)."""
+        clock.advance(config.reassert_interval_s)
+        command = controller.tick(
+            SETPOINT_C + 2.0, UNUSED_PREDICTION_C, SETPOINT_C, Mode.SAFE_HOLD
+        )
+        assert command.kind is CommandKind.OFF
 
 
 class TestExcitation:

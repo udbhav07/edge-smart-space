@@ -69,9 +69,10 @@ _DIRECT_SENSOR_TESTS = frozenset(
 #: detects divergence because it owns the evidence (section 5.2.3).
 _EXTERNAL_DETECTORS = frozenset({DetectorId.MODEL_DIVERGENCE})
 
-#: Units for which variance and range tests are meaningful. Everything else
-#: gets dropout detection only.
-_CONTINUOUS_UNITS = frozenset({Unit.CELSIUS, Unit.PERCENT_RH})
+#: Units for which a collapse of variance means a stuck sensor. Not power: an
+#: idle air conditioner's meter reads standby, constant by design, and D2
+#: would fault it every time the compressor rested.
+_VARIANCE_UNITS = frozenset({Unit.CELSIUS, Unit.PERCENT_RH})
 
 
 class SubjectDetectors:
@@ -104,6 +105,11 @@ class SubjectDetectors:
         """Feed the model's prediction error to D4, if this subject has one."""
         if self._drift is not None:
             self._drift.observe(estimate)
+
+    def observe_contradiction(self, evidence: dict[str, float]) -> None:
+        """Hand D4 the plant's evidence against this reading (S-02)."""
+        if self._drift is not None:
+            self._drift.observe_contradiction(evidence)
 
     def evaluate(self) -> tuple[Finding, ...]:
         findings = [self._dropout.evaluate()]
@@ -148,7 +154,9 @@ class DetectorBankService:
         self._actuator = actuator
         self._mode_manager = mode_manager
         self._last_reading_ts: dict[str, float] = {}
-        self._published_quality: dict[str, Quality] = {}
+        #: What each sensor's retained health last said: its quality and the
+        #: fault holding it, since either changing is news.
+        self._published_quality: dict[str, tuple[Quality, str | None]] = {}
 
     # --- wiring -------------------------------------------------------
 
@@ -205,6 +213,19 @@ class DetectorBankService:
         configuration gap, and taking the service down over it would lose
         detection on every sensor that *is* configured.
         """
+        if (
+            reading.sensor_id == self._config.devices.ac_power_sensor_id
+            and reading.quality is Quality.OK
+        ):
+            # The unit's draw is D5's witness to whether it ran (S-02).
+            self._actuator.observe_power(reading.value)
+        if (
+            reading.sensor_id == self._config.detectors.actuator.humidity_sensor_id
+            and reading.quality is Quality.OK
+            and self._subject_is_trusted(reading.sensor_id)
+        ):
+            # And humidity to whether the room really warmed.
+            self._actuator.observe_humidity(reading.value)
         subject = self._detectors.get(reading.sensor_id)
         if subject is None:
             LOGGER.debug("no detectors configured for %s", reading.sensor_id)
@@ -351,14 +372,20 @@ class DetectorBankService:
             re-subscribing to the topics they were published on.
         """
         findings: list[Finding] = []
-        for subject in self._detectors.values():
-            findings.extend(subject.evaluate())
         if not self._indoor_is_trusted():
             # Suspended on every tick, not only when a reading arrives: a
             # dropped sensor delivers none, and D5 would otherwise judge its
             # window on the last value heard before the silence.
             self._actuator.reset()
         findings.append(self._actuator.evaluate())
+        contradiction = self._actuator.plant_contradiction
+        indoor = self._detectors.get(self._config.estimator.indoor_sensor_id)
+        if contradiction is not None and indoor is not None:
+            # The room warmed while the unit demonstrably ran: the reading is
+            # the suspect, and D4 on the indoor sensor raises it (S-02).
+            indoor.observe_contradiction(contradiction)
+        for subject in self._detectors.values():
+            findings.extend(subject.evaluate())
 
         outcome = self._aggregator.ingest(findings)
         for event in outcome.raised:
@@ -473,10 +500,13 @@ class DetectorBankService:
         in the log, in the health message, and in the mode change that follows.
         """
         self._blackboard.clear_retained(topics.FAULT, fault_id=event.fault_id)
+        # Its explanation goes with it: a retained diagnosis of a fault that
+        # no longer holds would tell the occupant something untrue.
+        self._blackboard.clear_retained(topics.DIAGNOSIS, fault_id=event.fault_id)
         LOGGER.info("withdrew %s", event.fault_id)
 
     def _publish_health(self, findings: Iterable[Finding]) -> None:
-        """Publish health for every sensor whose quality changed.
+        """Publish health for every sensor whose quality or fault changed.
 
         Only on change: the topic is retained, so a late subscriber gets the
         current value without this service restating it every tick.
@@ -492,9 +522,13 @@ class DetectorBankService:
                 # The actuator is a subject but not a sensor; it has no
                 # SensorHealth topic and publishing one would invent a sensor.
                 continue
-            if self._published_quality.get(sensor_id) is quality:
+            # Keyed on the fault too: keyed on quality alone, a fault retiring
+            # while the reading was already "ok" left the retained health
+            # naming a fault that no longer existed.
+            state = (quality, faulted.get(sensor_id))
+            if self._published_quality.get(sensor_id) == state:
                 continue
-            self._published_quality[sensor_id] = quality
+            self._published_quality[sensor_id] = state
             self._blackboard.publish(
                 topics.SENSOR_HEALTH,
                 SensorHealth(
@@ -554,20 +588,23 @@ def _bounds_for(config: Config, unit: Unit) -> Bounds | None:
         return out_of_range.temperature_c
     if unit is Unit.PERCENT_RH:
         return out_of_range.humidity_pct
+    if unit is Unit.WATT:
+        return out_of_range.power_w
     return None
 
 
 def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]:
     """Assemble the bank from the configured sensors.
 
-    Every sensor gets D1. Only continuous ones get D2 and D3, because variance
-    and range say nothing about a binary signal. Only the indoor sensor gets
+    Every sensor gets D1. D3 goes to every sensor with a range to leave, and
+    D2 only to temperature and humidity: variance says nothing about a binary
+    signal, nor about a meter that is constant whenever the unit rests. Only
+    the indoor sensor gets
     D4: the model predicts that one temperature, so it is the only subject
     there is a residual for (section 5.5).
     """
     bank: dict[str, SubjectDetectors] = {}
     for sensor in config.sensors.adapters:
-        continuous = sensor.unit in _CONTINUOUS_UNITS
         bounds = _bounds_for(config, sensor.unit)
         bank[sensor.sensor_id] = SubjectDetectors(
             dropout=DropoutDetector(
@@ -583,7 +620,7 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
                     config=config.detectors.stuck_at,
                     clock=clock,
                 )
-                if continuous
+                if sensor.unit in _VARIANCE_UNITS
                 else None
             ),
             out_of_range=(
@@ -593,7 +630,7 @@ def build_detectors(config: Config, clock: Clock) -> dict[str, SubjectDetectors]
                     bounds=bounds,
                     debounce_samples=config.detectors.out_of_range.debounce_samples,
                 )
-                if continuous and bounds is not None
+                if bounds is not None
                 else None
             ),
             drift=(
@@ -618,7 +655,11 @@ def build_service(
         clock=clock,
         blackboard=blackboard,
         aggregator=FaultAggregator(
-            clock=clock, clear_confirm_s=config.mode.fault_clear_confirm_s
+            clock=clock,
+            clear_confirm_s=config.mode.fault_clear_confirm_s,
+            controlling_subjects=frozenset(
+                {config.estimator.indoor_sensor_id, topics.AIR_CONDITIONER_ID}
+            ),
         ),
         detectors=build_detectors(config, clock),
         actuator=ActuatorResponseDetector(
@@ -626,6 +667,7 @@ def build_service(
             config=config.detectors.actuator,
             clock=clock,
             sample_period_s=config.loop.sensor_period_s,
+            running_power_w=config.devices.ac_running_power_w if config.devices.ac_power_sensor_id else None,
         ),
         mode_manager=ModeManager(config=config.mode, clock=clock),
     )

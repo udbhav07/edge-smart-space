@@ -97,6 +97,18 @@ class TestStartup:
         state = manager.update([], sensors_reporting=True)
         assert state.reason == "no active faults"
 
+    def test_reaching_normal_is_not_logged_as_a_warning(self, manager, caplog):
+        """U-27: ordinary operation must not look alarming."""
+        with caplog.at_level("INFO"):
+            manager.update([], sensors_reporting=True)
+        assert [record.levelname for record in caplog.records if "->" in record.message] == ["INFO"]
+
+    def test_leaving_normal_is_a_warning(self, manager, caplog):
+        manager.update([], sensors_reporting=True)
+        with caplog.at_level("INFO"):
+            manager.update([_fault()], sensors_reporting=True)
+        assert [record.levelname for record in caplog.records if "->" in record.message] == ["WARNING"]
+
     def test_an_unchanged_mode_publishes_nothing(self, manager):
         """Republishing a retained mode every tick would bury the transitions
         that matter in the ones that do not."""
@@ -335,3 +347,36 @@ class TestConfiguredDefaults:
     def test_the_transition_deadline_is_the_one_fr_26_gives(self):
         config = load_config(Path("config/default.yaml")).mode
         assert config.transition_deadline_s == 2.0
+
+
+_HUMIDITY_ADVISORY = _fault(
+    detector=DetectorId.D1_DROPOUT, subject="hum_01", mode_impact=Mode.NORMAL
+)
+
+
+class TestAdvisoryFaults:
+    """A humidity sensor or the power meter failing must not degrade control."""
+
+    def _started(self, manager):
+        manager.update([], sensors_reporting=True)
+        return manager
+
+    def test_an_advisory_fault_alone_leaves_the_mode_normal(self, manager):
+        state = self._started(manager).update([_HUMIDITY_ADVISORY])
+        assert state.mode is Mode.NORMAL
+        assert "advisory" in state.reason
+
+    def test_it_is_still_listed_as_active(self, manager):
+        state = self._started(manager).update([_HUMIDITY_ADVISORY])
+        assert state.active_fault_ids == (_HUMIDITY_ADVISORY.fault_id,)
+
+    def test_it_does_not_count_toward_multiple_faults(self, manager):
+        """Two subjects, one of which control does not depend on: not SAFE_HOLD."""
+        state = self._started(manager).update([_fault(), _HUMIDITY_ADVISORY])
+        assert state.mode is Mode.DEGRADED_SENSOR
+
+    def test_it_never_spends_the_prediction_budget(self, manager, clock):
+        self._started(manager).update([_HUMIDITY_ADVISORY])
+        clock.advance(BUDGET_S + 1.0)
+        assert manager.update([_HUMIDITY_ADVISORY]) is None
+        assert manager.mode is Mode.NORMAL

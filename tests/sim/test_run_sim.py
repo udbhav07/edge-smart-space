@@ -15,6 +15,7 @@ from src.common.config import load_config
 from src.common.injection import InjectedFault
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    AckStatus,
     ActuatorState,
     Command,
     CommandKind,
@@ -27,6 +28,7 @@ from sim.run_sim import (
     INDOOR_TEMPERATURE_ID,
     OCCUPANCY_ID,
     OUTDOOR_TEMPERATURE_ID,
+    POWER_ID,
     build_simulator,
 )
 
@@ -448,3 +450,169 @@ class TestInjectionAtLayerOne:
         self._inject(blackboard, OCCUPANCY_ID, InjectedFault.DROPOUT)
         simulator.step()
         assert transport.payloads_on(f"space/sensor/{OCCUPANCY_ID}/state") == []
+
+
+class TestAmbientFollowsTheLocalDay:
+    """FR-03: the hottest hour is a time of day, not an offset from launch."""
+
+    def _ambient_at(self, config, hour: float) -> float:
+        from datetime import datetime, timedelta
+
+        from src.common.localtime import epoch_of
+
+        local = datetime(2026, 10, 1) + timedelta(hours=hour)
+        clock = SimClock(start_epoch_s=epoch_of(local, config.site.utc_offset_h))
+        blackboard = Blackboard(config.mqtt, RecordingTransport())
+        return build_simulator(config, clock, blackboard).outdoor_temperature_c()
+
+    def test_the_peak_hour_is_the_hottest(self, config):
+        peak = config.sim.outdoor_peak_hour
+        assert self._ambient_at(config, peak) == pytest.approx(
+            config.sim.outdoor_mean_c + config.sim.outdoor_amplitude_c
+        )
+
+    def test_twelve_hours_later_is_the_coolest(self, config):
+        night = (config.sim.outdoor_peak_hour + 12.0) % 24.0
+        assert self._ambient_at(config, night) == pytest.approx(
+            config.sim.outdoor_mean_c - config.sim.outdoor_amplitude_c
+        )
+
+    def test_when_the_run_starts_does_not_move_the_day(self, config):
+        """A run launched at 20:00 meets the same 20:00 as one launched at 11:00."""
+        from datetime import datetime
+
+        from src.common.localtime import epoch_of
+
+        offset = config.site.utc_offset_h
+        evening = epoch_of(datetime(2026, 10, 1, 20, 0), offset)
+        late = SimClock(start_epoch_s=evening)
+        early = SimClock(start_epoch_s=epoch_of(datetime(2026, 10, 1, 11, 0), offset))
+        board = Blackboard(config.mqtt, RecordingTransport())
+        launched_early = build_simulator(config, early, board)
+        early.advance(evening - early.now())
+        assert launched_early.outdoor_temperature_c() == pytest.approx(
+            build_simulator(config, late, board).outdoor_temperature_c()
+        )
+
+
+class TestPowerMeter:
+    """R-02: the unit's draw follows what the room receives, not the command."""
+
+    def _power(self, transport) -> list[float]:
+        return [
+            SensorReading.model_validate_json(payload).value
+            for payload in transport.payloads_on(f"space/sensor/{POWER_ID}/state")
+        ]
+
+    def _cool(self, simulator, clock, blackboard, steps: int) -> None:
+        blackboard.dispatch(
+            topics.ACTUATOR_COMMAND.format(actuator_id="ac"),
+            Command(ts=clock.now(), actuator_id="ac", kind=CommandKind.COOL, setpoint_c=24.0)
+            .model_dump_json().encode(),
+        )
+        for _ in range(steps):
+            simulator.step()
+            clock.advance(5.0)
+
+    def test_the_meter_is_published_as_watts(self, quiet_config):
+        simulator, transport, _, _ = _running(quiet_config)
+        simulator.step()
+        reading = SensorReading.model_validate_json(
+            transport.payloads_on(f"space/sensor/{POWER_ID}/state")[-1]
+        )
+        assert reading.unit is Unit.WATT
+
+    def test_a_running_unit_draws_its_rated_power(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        self._cool(simulator, clock, board, 20)
+        rated = quiet_config.sim.power_meter.rated_power_w
+        assert self._power(transport)[-1] == pytest.approx(rated, abs=50.0)
+
+    def test_a_dead_unit_draws_standby_while_told_to_cool(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        simulator._actuator.inject_failure(True)
+        self._cool(simulator, clock, board, 20)
+        assert self._power(transport)[-1] < 50.0
+
+    def test_an_idle_meter_never_reads_negative(self, quiet_config):
+        simulator, transport, clock, _ = _running(quiet_config)
+        for _ in range(200):
+            simulator.step()
+            clock.advance(5.0)
+        assert min(self._power(transport)) >= 0.0
+
+    def test_adding_the_meter_moves_no_other_instrument(self, quiet_config):
+        """Its own random stream: every seeded result already measured stands."""
+        with_meter, transport_a, clock_a, _ = _running(quiet_config)
+        adapters = tuple(s for s in quiet_config.sensors.adapters if s.sensor_id != POWER_ID)
+        without = quiet_config.model_copy(
+            update={"sensors": quiet_config.sensors.model_copy(update={"adapters": adapters})}
+        )
+        without_meter, transport_b, clock_b, _ = _running(without)
+        for _ in range(50):
+            with_meter.step(); clock_a.advance(5.0)
+            without_meter.step(); clock_b.advance(5.0)
+        topic = f"space/sensor/{INDOOR_TEMPERATURE_ID}/state"
+        assert transport_a.payloads_on(topic) == transport_b.payloads_on(topic)
+
+
+class TestAcknowledgingFromTheMeter:
+    """U-21: with no readback, the simulator acknowledges on the draw, as the bridge does."""
+
+    def _ack(self, transport):
+        payload = transport.payloads_on("space/actuator/ac/state")[-1]
+        return ActuatorState.model_validate_json(payload).ack
+
+    def _cool_for(self, config, simulator, clock, board, seconds):
+        TestPowerMeter()._cool(simulator, clock, board, int(seconds / 5.0) + 1)
+
+    def test_a_working_unit_is_acknowledged_after_the_grace_period(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        self._cool_for(quiet_config, simulator, clock, board, quiet_config.devices.ac_ack_grace_s + 30.0)
+        assert self._ack(transport) is AckStatus.ACKNOWLEDGED
+
+    def test_a_dead_unit_is_reported_failed(self, quiet_config):
+        simulator, transport, clock, board = _running(quiet_config)
+        simulator._actuator.inject_failure(True)
+        self._cool_for(quiet_config, simulator, clock, board, quiet_config.devices.ac_ack_grace_s + 30.0)
+        assert self._ack(transport) is AckStatus.FAILED
+
+    def test_reasserting_cool_keeps_the_acknowledgement(self, quiet_config):
+        """Re-assertions every 60 s against a 60 s grace kept the ack UNKNOWN."""
+        simulator, transport, clock, board = _running(quiet_config)
+        cooler = TestPowerMeter()
+        for _ in range(4):
+            cooler._cool(simulator, clock, board, int(quiet_config.controller.reassert_interval_s / 5.0))
+        assert self._ack(transport) is AckStatus.ACKNOWLEDGED
+
+    def test_within_the_grace_period_it_stays_unknown(self, quiet_config):
+        """A compressor takes time to start; judging sooner would cry wolf."""
+        simulator, transport, clock, board = _running(quiet_config)
+        TestPowerMeter()._cool(simulator, clock, board, 2)
+        assert self._ack(transport) is AckStatus.UNKNOWN
+
+
+class TestInjectionsLeftFromEarlier:
+    """An injection older than the simulator is obeyed, and said out loud."""
+
+    def _inject(self, board, ts, kind="NO_RESPONSE"):
+        from src.common.schemas import InjectionCommand
+        command = InjectionCommand(ts=ts, subject="ac", kind=kind, magnitude=0.0, requester="operator")
+        board.dispatch("space/inject/ac", command.model_dump_json().encode())
+
+    def test_an_old_injection_is_a_warning(self, quiet_config, caplog):
+        _, _, clock, board = _running(quiet_config)
+        with caplog.at_level("WARNING"):
+            self._inject(board, clock.now() - 86400.0)
+        assert "left on the broker by an earlier session" in caplog.text
+
+    def test_it_is_still_obeyed(self, quiet_config):
+        simulator, _, clock, board = _running(quiet_config)
+        self._inject(board, clock.now() - 86400.0)
+        assert simulator._actuator._failed is True
+
+    def test_a_fresh_injection_is_not_a_warning(self, quiet_config, caplog):
+        _, _, clock, board = _running(quiet_config)
+        with caplog.at_level("WARNING"):
+            self._inject(board, clock.now())
+        assert "earlier session" not in caplog.text

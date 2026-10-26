@@ -32,12 +32,16 @@ from __future__ import annotations
 import logging
 import statistics
 from collections import deque
+from dataclasses import dataclass
+
+import numpy as np
 
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import Config
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    ONSET_KEY,
     ActuatorState,
     Coefficients,
     CommandKind,
@@ -71,9 +75,21 @@ _FREEZING_MODES = frozenset(
     {Mode.DEGRADED_SENSOR, Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD}
 )
 
-#: Confidence attached to a divergence finding. It is not a measurement:
-#: three consecutive rejections is a rule, not a probability.
+#: Confidence attached to a divergence finding. It is not a measurement: a
+#: sustained rejection rate, or a stalled estimate, is a rule, not a
+#: probability (section 5.2.3).
 _DIVERGENCE_CONFIDENCE = 1.0
+
+
+@dataclass(frozen=True)
+class _Step:
+    """One trusted step: what was read, what drove it, and what was learned."""
+
+    arrival_ts: float
+    measured_c: float
+    inputs: Regressor
+    theta: np.ndarray
+    covariance: np.ndarray
 
 
 class ThermalEstimatorService:
@@ -121,6 +137,15 @@ class ThermalEstimatorService:
             maxlen=config.estimator.horizon_sigma_window_samples
         )
         self._horizon_residual = 0.0
+        #: Recent trusted steps, so a prediction -- and the estimate it runs
+        #: on -- can be restarted from before a fault began. Bounded by
+        #: config; emptied at any gap, like the horizon.
+        self._recent: deque[_Step] = deque(
+            maxlen=config.estimator.reanchor_history_samples
+        )
+        #: Onset of the latest fault on the indoor sensor, if its detector
+        #: could say when the readings went wrong (D2, D4).
+        self._indoor_onset_ts: float | None = None
 
     # --- wiring -------------------------------------------------------
 
@@ -136,6 +161,19 @@ class ThermalEstimatorService:
             topics.ACTUATOR_STATE, ActuatorState, self._on_actuator
         )
         self._blackboard.subscribe(topics.SYSTEM_MODE, ModeState, self._on_mode)
+        self._blackboard.subscribe(topics.FAULT, FaultEvent, self._on_fault)
+
+    def _on_fault(self, _topic: str, event: FaultEvent) -> None:
+        """Note when a fault on the indoor sensor says its readings went bad.
+
+        The detector bank publishes the fault before the health it implies,
+        so this is known by the time the sensor is marked faulted.
+        """
+        if event.subject != self._config.estimator.indoor_sensor_id:
+            return
+        onset_ts = event.evidence.get(ONSET_KEY)
+        if onset_ts is not None and self._open_loop_c is None:
+            self._indoor_onset_ts = float(onset_ts)
 
     def restore(self) -> bool:
         """Adopt a persisted estimate if there is a usable one (FR-07).
@@ -191,13 +229,15 @@ class ThermalEstimatorService:
     def _track_indoor_trust(self, faulted: bool) -> None:
         """Enter or leave open-loop prediction as the indoor sensor's trust changes."""
         if faulted and self._open_loop_c is None and self._indoor_c is not None:
-            self._open_loop_c = self._indoor_c
+            self._open_loop_c = self._reanchored_c()
             LOGGER.warning(
-                "indoor sensor faulted; predicting on the model alone from the "
-                "last trusted reading, %.2f C", self._indoor_c
+                "indoor sensor faulted; predicting on the model alone from "
+                "%.2f C (last reading %.2f C)", self._open_loop_c, self._indoor_c
             )
         elif not faulted and self._open_loop_c is not None:
             self._open_loop_c = None
+            self._indoor_onset_ts = None
+            self._recent.clear()
             # The last trusted reading predates the fault. Pairing it with the
             # first reading after would fit an interval the model never saw.
             self._horizon.clear()
@@ -205,6 +245,62 @@ class ThermalEstimatorService:
             self._indoor_c = None
             self._indoor_ts = None
             LOGGER.info("indoor sensor trusted again; predicting from readings")
+
+    def _reanchored_c(self) -> float:
+        """Where the model should start predicting from (FR-27).
+
+        The last reading before the fault was *confirmed* is not the last good
+        one: a stuck sensor is frozen for D2's whole window before D2 can say
+        so, and a drifting one has been wrong since D4's change point. Starting
+        there restated the fault -- measured, a +0.5 C bias carried through the
+        whole degraded period. So the model restarts from the last reading
+        taken before the onset the detector reported, and is stepped forward
+        through the inputs actually applied since. With no onset, or none
+        within reach, the last reading stands.
+        """
+        if self._indoor_onset_ts is None or not self._recent:
+            return self._indoor_c
+        steps = list(self._recent)
+        # Half a period of margin: the detector and this service timestamp
+        # the same arrival separately, and on hardware they differ slightly.
+        cutoff_ts = self._indoor_onset_ts - self._config.loop.sensor_period_s / 2.0
+        before = [step for step in steps if step.arrival_ts < cutoff_ts]
+        if before:
+            start = steps.index(before[-1])
+            self._roll_back_to(steps[start])
+        else:
+            LOGGER.warning(
+                "fault onset precedes the %d steps kept; predicting from the "
+                "oldest of them", len(steps)
+            )
+            start = 0
+        predicted_c = steps[start].measured_c
+        for step in steps[start + 1:]:
+            predicted_c = self._estimator.predict(
+                Regressor(
+                    indoor_c=predicted_c,
+                    outdoor_c=step.inputs.outdoor_c,
+                    command=step.inputs.command,
+                    occupancy=step.inputs.occupancy,
+                )
+            )
+        return predicted_c
+
+    def _roll_back_to(self, step: _Step) -> None:
+        """Undo what was learned from the faulted readings (FR-29).
+
+        Adaptation freezes when a fault is *confirmed*, but a stuck sensor was
+        fitted for D2's whole window before that: measured, a reading frozen
+        3 C below the room taught the model a room that was falling, and the
+        prediction restarted from the right reading still headed the wrong
+        way. The estimate goes back to where it stood at the anchor.
+        """
+        try:
+            self._estimator.restore(step.theta, step.covariance)
+        except ValueError as exc:
+            LOGGER.warning("could not roll the estimate back: %s", exc)
+            return
+        LOGGER.warning("coefficients rolled back to before the fault's onset")
 
     def _on_mode(self, _topic: str, state: ModeState) -> None:
         self._mode = state.mode
@@ -270,6 +366,7 @@ class ThermalEstimatorService:
         if not self._interval_is_usable(previous_ts, reading.ts):
             self._skipped_pairs += 1
             self._horizon.clear()
+            self._recent.clear()
             return
         # A usable pair makes the previous reading a usable instrument for
         # the next one: one step earlier, on a uniform step.
@@ -284,6 +381,15 @@ class ThermalEstimatorService:
         )
         result = self._estimator.update(regressor, reading.value)
         self._horizon.append(regressor)
+        self._recent.append(
+            _Step(
+                arrival_ts=self._clock.now(),
+                measured_c=reading.value,
+                inputs=regressor,
+                theta=self._estimator.theta,
+                covariance=self._estimator.covariance,
+            )
+        )
         self._measure_horizon(reading.value)
         self._publish(result, reading.value)
         self._maybe_persist()
@@ -431,7 +537,7 @@ class ThermalEstimatorService:
             }
         )
         LOGGER.error(
-            "model divergence after %d consecutive rejections",
+            "model divergence: a sustained rate of rejections (%d in a row now)",
             result.consecutive_rejections,
         )
         self._blackboard.publish(topics.FAULT, event, fault_id=fault_id)

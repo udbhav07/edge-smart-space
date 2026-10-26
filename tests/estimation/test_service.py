@@ -679,3 +679,97 @@ class TestRunLoop:
         before = len(transport.on("space/estimate/thermal"))
         run(service, clock, config.loop.sensor_period_s, wakes=20)
         assert len(transport.on("space/estimate/thermal")) == before
+
+
+STUCK_C = 25.0
+
+
+def _fault_with_onset(board, clock, subject: str, onset_ts: float | None) -> None:
+    evidence = {"variance": 0.0}
+    if onset_ts is not None:
+        evidence["onset_ts"] = onset_ts
+    event = FaultEvent.model_validate(
+        {
+            "fault_id": "f_temp01_stuck_1",
+            "detector": "D2_STUCK_AT",
+            "subject": subject,
+            "class": "sensor",
+            "confidence": 1.0,
+            "detected_ts": clock.now(),
+            "evidence": evidence,
+            "mode_impact": Mode.DEGRADED_SENSOR,
+        }
+    )
+    board.dispatch(
+        topics.FAULT.format(fault_id=event.fault_id), event.model_dump_json(by_alias=True).encode()
+    )
+
+
+class TestReanchoringAtTheOnset:
+    """FR-27: predict from before the fault began, not from before it was confirmed.
+
+    A stuck sensor is frozen for D2's whole window before D2 can say so;
+    starting from the last reading before confirmation restated the fault.
+    """
+
+    GOOD_SAMPLES = 10
+    STUCK_SAMPLES = 6
+
+    def _stuck_then_confirmed(self, config, subject=INDOOR, with_onset=True):
+        service, _, clock, board, estimator, _ = _service(config)
+        _feed(service, board, clock, self.GOOD_SAMPLES, config.loop.sensor_period_s)
+        self.theta_before_onset = estimator.theta
+        onset_ts = clock.now()
+        for _ in range(self.STUCK_SAMPLES):
+            _indoor(board, clock, STUCK_C)
+            clock.advance(config.loop.sensor_period_s)
+        _fault_with_onset(board, clock, subject, onset_ts if with_onset else None)
+        _health(board, clock, INDOOR, Quality.FAULTED)
+        return service, estimator
+
+    def _stepped(self, estimator, start_c: float, steps: int) -> float:
+        value = start_c
+        for _ in range(steps):
+            value = estimator.predict(
+                Regressor(indoor_c=value, outdoor_c=FED_OUTDOOR_C, command=COOLING_OFF, occupancy=0.0)
+            )
+        return value
+
+    def test_the_prediction_restarts_from_the_last_reading_before_the_onset(self, config):
+        service, estimator = self._stuck_then_confirmed(config)
+        start_c = self._stepped(estimator, _last_fed_c(self.GOOD_SAMPLES), self.STUCK_SAMPLES)
+        assert service.tick().t_pred == pytest.approx(self._stepped(estimator, start_c, 1))
+
+    def test_the_stuck_value_is_not_where_it_starts(self, config):
+        service, estimator = self._stuck_then_confirmed(config)
+        restating = self._stepped(estimator, STUCK_C, 1)
+        assert service.tick().t_pred != pytest.approx(restating)
+
+    def test_without_an_onset_the_last_reading_stands(self, config):
+        service, estimator = self._stuck_then_confirmed(config, with_onset=False)
+        assert service.tick().t_pred == pytest.approx(self._stepped(estimator, STUCK_C, 1))
+
+    def test_another_subjects_onset_is_ignored(self, config):
+        service, estimator = self._stuck_then_confirmed(config, subject=OUTDOOR)
+        assert service.tick().t_pred == pytest.approx(self._stepped(estimator, STUCK_C, 1))
+
+    def test_an_onset_beyond_the_history_starts_from_the_oldest_kept(self, config):
+        kept = 3
+        short = config.model_copy(
+            update={"estimator": config.estimator.model_copy(update={"reanchor_history_samples": kept})}
+        )
+        service, estimator = self._stuck_then_confirmed(short)
+        # Only stuck steps are kept: the oldest is the first stuck reading.
+        start_c = self._stepped(estimator, STUCK_C, kept - 1)
+        assert service.tick().t_pred == pytest.approx(self._stepped(estimator, start_c, 1))
+
+
+    def test_what_was_learned_from_the_stuck_readings_is_undone(self, config):
+        """Adaptation freezes on confirmation; the frozen window before it was
+        still fitted, and taught the model a room that was not there."""
+        service, estimator = self._stuck_then_confirmed(config)
+        assert estimator.theta == pytest.approx(self.theta_before_onset)
+
+    def test_without_an_onset_nothing_is_rolled_back(self, config):
+        service, estimator = self._stuck_then_confirmed(config, with_onset=False)
+        assert estimator.theta != pytest.approx(self.theta_before_onset)

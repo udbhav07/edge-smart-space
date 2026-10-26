@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.10 |
+| Version | 1.12 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,8 @@
 
 | Version | Change |
 |---|---|
+| 1.12 | **FR-52 built: speaker profiles, and what the room remembers about each person** (§5.8.3). The speech pipeline judges whose voice an utterance was, from the buffer it already holds and before dropping it, and the hint carries a `profile_id`; only feature statistics are stored, never audio. Long-term memory is one Markdown file per person, short-term context one expiring JSON file per person; facts are written only through two new `write` tools, `remember` and `forget`, whose `profile_id` is supplied by the system and never shown to the model. Each person's context is published retained on `space/context/profile/{profile_id}`. Recognition personalises and permits nothing, and the first reply of a conversation says so. `tools.enroll` and `tools.profiles` enrol voices and manage what is kept. |
+| 1.11 | Weeks 6–7 in software, and defects found by running the experiments rather than the tests. **Experiments made meaningful:** the simulated unit could not hold its own room (a healthy 24 h run was out of band 20 % of the day), so it is resized to 3500 W, a 1-ton split (§8.5); the ambient cycle follows the site's day rather than the launch time; local time is `site.utc_offset_h`, never the machine's zone, so a seed replays identically on any machine; and the harness scores both systems against the setpoint each was actually tracking, peak tariff included, with the baseline given the same schedule (§8.2). E5's criterion 4 is now met (§8.5). **Safety:** SAFE_HOLD stops the compressor instead of freezing it running, and V-5 always admits a stop (§5.3, §5.4); a re-asserted state is not a V-4 change. **FR-27:** a degraded prediction restarts from the last reading before the fault's reported *onset* and rolls back what the frozen window taught the estimator (§5.2.3); D2 and D4 publish that onset (§5.5). **Advisory faults:** a sensor fault on an instrument the loop does not control on — humidity, the power meter — is published but no longer degrades the mode; a dropped humidity sensor had driven a healthy system to SAFE_HOLD (§5.6). **Week 6–7 software:** the air conditioner's power meter (`pwr_01`) and an acknowledgement from its draw (R-02); non-finite device values are absence, not readings; `tools.calibrate` re-derives D1, D2 and D4 from a recorded healthy run (R-04, §9.4) into a configuration layer (`extends:`); the node reads `site.yaml` over `calibration.yaml` over the reference. The coil no longer dries a room below its dew point, which had faulted a healthy humidity sensor. |
 | 1.10 | Weeks 5 and 6, and the gaps of Weeks 1–6 closed. **Week 6:** the Environmental Supervisor (§5.7.2; FR-40, FR-41), the assistant that acts on what the speech pipeline heard (FR-42), the goal path from a spoken preference to a gated setpoint — pursued step by step when V-2 only part-grants it, and outranking the supervisor for `goals.preference_hold_s` with a new `PREFERENCE_HOLD` verdict (§5.4) — the assistance executor with a local calendar and a mock travel desk (§5.7.6; FR-54, FR-55, FR-58, FR-70 to FR-75), and Fault Diagnosis (§6.3; FR-25, FR-43). Every reasoning call is audited (FR-46, FR-63) on `space/audit/reasoning`, and replies go to a new `space/context/reply`. The day an occupant names is resolved from their words, not by the model, and a tool call on the wrong day is corrected (FR-44). **FR-16:** a peak-tariff schedule and a new `space/tariff/state`. **FR-23:** D4 now runs on a horizon residual accumulated once per non-overlapping horizon (§5.5), which exposed and forced a fix of the errors-in-variables bias in §5.2.1 — the ambient gap is measured from `T[k−1]` — with a2's edge crossings weighed by the heat flow they imply before they count toward divergence (§5.2.3); D5 no longer blames the unit for a reading that rose faster than a dead unit allows. A stalled estimate now counts as divergence. **Week 5 software:** `devices.source` selects the simulator or an ESPHome bridge (`python -m src.io`), `deploy/systemd` holds one unit per service, and `start.py` restarts a service that exits (NFR-08). The actuator fault is injectable (`tools.inject ac dead`; FR-31). **FR-62:** `tools.record` and `sim/replay.py`. **E3** and **E6** exist and pass (§8.3). |
 | 1.9 | Defects found by running the whole system live against a broker and a served model. **FR-27 was not what it claimed:** the prediction substituted in `DEGRADED_SENSOR` was one step ahead of the previous *reading*, so it restated the fault — a stuck value, something derived from 999 °C, or a value frozen through a dropout. The estimator now steps the model forward on its own output from the last trusted reading, once per sensor period (§5.2.3). Readings a sensor flags `suspect` are no longer fitted, and the simulated sensors now flag them as the real adapter does. §5.5 gains three more cases of one broken thing being blamed on another: D5 skips suspect readings, is suspended on every tick rather than on reading arrival, and a D5 fault raised within one window of D1–D3 confirming the indoor sensor is withdrawn; D4 is suspended while the actuator is faulted. §5.6: `DEGRADED_ACTUATOR` is released once no actuator fault holds it. §7.1's divergence response is now implemented — `MODEL_DIVERGENCE` reached nothing that decides the mode, and the coefficients were never reset — and a restarted detector bank withdraws faults retained by its predecessor. §8.4's E1 figures were one seed's; they are restated over nine, and `a3` misses its tolerance. Two more found in the final live run: `P0` falls from 100 to 0.01, because near-collinear regressors at startup let the first samples throw the estimate anywhere in the box (live, `a2` = 0.997 within 35 s); and D5 no longer faults a working unit at capacity, which every healthy two-hour run had done. The simulator's actuator state now reports the last state-changing command rather than echoing `MAINTAIN`. |
 | 1.8 | Audit of Weeks 1–4 against the requirement tables, and three defects found by running the system rather than by testing components. FR-01's humidity and FR-02's vacancy hold-off were specified and configured but never implemented; both now exist, and §5.5 gains D4's measured warm-up, the per-sample cap on its cumulative sum, and the rule that D4 and D5 are suspended while the sensor they read is faulted — without which one broken sensor manufactures a second fault and switches off FR-27. |
@@ -224,6 +226,17 @@ feature safe to ship at all.
 | FR-73 | An invocation whose arguments do not satisfy the declared parameter list shall be refused before any provider is reached, and the refusal shall be published with the parameter at fault. | M | T |
 | FR-74 | A tool declared `commit` shall be executed only after explicit occupant confirmation (FR-54). A tool declared `read` or `write` shall be executed on the reasoning layer's own authority. The gate shall follow the declaration, so that a tool added later is covered by having declared what it does. | M | D |
 | FR-75 | Every invocation and every outcome shall be published to the blackboard, refusals and provider failures included. | M | T |
+| FR-76 | When configured to listen continuously, the system shall transcribe every utterance on-device. An utterance not addressed with the wake word shall be published as ambient speech, shall never be answered or acted on as a request, and shall be used only as FR-77 and FR-78 allow. No audio shall be kept or published (FR-51 holds); ambient transcripts shall not be retained on the blackboard. Revises FR-50, which continues to govern the `wake_word` mode. | S | T |
+| FR-77 | A plan overheard in ambient speech — a meeting, an appointment, a trip — shall be pencilled into the local calendar without confirmation, marked tentative and shown as distinct from a firm entry, with the words that suggested it. The occupant shall be able to keep it, making it firm, or discard it. No booking or other commit tool shall be invoked from ambient speech. | S | T |
+| FR-78 | A fact overheard about a recognised person shall be held as a suggestion and remembered only if that person keeps it; a dismissed suggestion is deleted. Nothing overheard from a guest shall be held. | S | T |
+| FR-79 | Replies to spoken requests shall be spoken aloud on this node, with a voice that runs here and fetches nothing at runtime. While the room speaks, the microphone shall be ignored, so its own voice is never heard as someone talking. Typed replies and changes of mode may be spoken too, as the occupant chooses. | S | D |
+| FR-80 | The console shall open on a Home page for the occupant: the room's temperature and humidity in plain words, a target that can be stepped, slid or set by preset, warmer and cooler, the day's calendar, anything waiting for a yes, and the energy used today. The engineering pages remain. | S | D |
+| FR-81 | The occupant shall be able to hand the temperature back to the system ("back to automatic") and to turn cooling off for a chosen time. Both are preferences gated like any other; cooling off asks for the safety gate's upper bound, never beyond it. | S | T |
+| FR-82 | The occupant shall be able to mute listening from the console. Muted means nothing is captured, and the status says so. The choice survives a restart. | M | T |
+| FR-83 | Quiet hours shall stop the room speaking unprompted. A reply the occupant asked for is still spoken. | C | T |
+| FR-84 | The occupant may connect a Google account from the console. Only then, and only to Google's APIs, does the node make outbound requests (revises NFR-06). Tokens stay in a local file and are never published. | S | D |
+| FR-85 | With an account connected, calendar entries shall also be written to Google Calendar, tentative ones as tentative, and Google-side entries shall appear in the room's calendar; a confirmed mail shall be sent through Gmail and still require the occupant's yes (FR-54). A confirmed mock booking shall add a calendar entry and email its itinerary to the occupant. | S | D |
+| FR-86 | Anything bound for Google while the node is offline shall be queued, kept across restarts, sent once Google is reachable, and never sent twice. The console shall show what is waiting. | S | T |
 
 ### 3.7 Functional Requirements — Observability
 
@@ -243,7 +256,7 @@ feature safe to ship at all.
 | NFR-03 | Environmental Supervisor end-to-end latency shall be under 15 s on the Jetson AGX Orin at MAXN. | M | M |
 | NFR-04 | Wake-word to transcript latency shall be under 3 s for utterances up to 10 s. | S | M |
 | NFR-05 | Total resident memory of all system processes shall remain under 20 GB, leaving headroom on the 32 GB module. | M | M |
-| NFR-06 | The system shall operate with no outbound internet connectivity. | M | D |
+| NFR-06 | The system shall operate with no outbound internet connectivity. The one exception is FR-84: after the occupant connects a Google account, requests to Google's APIs only; without it, none. | M | D |
 | NFR-07 | The system shall recover to a running state within 60 s of an unclean restart, restoring persisted coefficients. | S | T |
 | NFR-08 | All components shall run under process supervision and restart automatically on crash. | S | T |
 | NFR-09 | The full stack shall run in simulation on a development laptop with no hardware attached. | M | D |
@@ -643,6 +656,8 @@ These implement FR-06 and are the difference between "we ran RLS" and "we ran RL
 | Faulted inputs | Freeze adaptation entirely while any regressor sensor is faulted (FR-29). A reading its own sensor flags `suspect` is never fitted either. Never adapt to bad data. |
 | Prediction on a faulted sensor | While the indoor sensor is faulted, the one-step prediction would be built from the faulted reading and restate it. The model instead steps forward on its own output from the last trusted reading, once per sensor period and independently of readings, since a dropped sensor delivers none. This is what `DEGRADED_SENSOR` controls on (FR-27). |
 | A stalled estimate | Because a rejection reverts `P` as well as `θ`, an estimate that lands where every update breaks a bound cannot move again. A full `divergence_window_samples` of *consecutive* rejections, on any coefficient, is therefore divergence (v1.10). Healthy runs reach at most 11 in a row. |
+| Restarting at the onset (v1.11) | The last reading before a fault is *confirmed* is not the last good one: a stuck sensor is frozen for D2's whole window first, and a drifting one is wrong from D4's change point. The prediction therefore restarts from the last kept reading before the onset the detector reported (`onset_ts`, §5.5), stepped forward through the inputs applied since; with no onset, the last reading stands. `reanchor_history_samples` bounds what is kept and must exceed D2's window. Measured on a sensor stuck at the setpoint: the degraded-period error fell from about +0.5 °C to +0.03…+0.28 °C. |
+| Undoing the frozen window (v1.11) | FR-29 freezes adaptation on confirmation, but every frozen reading before it was fitted. A reading stuck 3 °C below the room taught the model a falling room. Each kept step carries the estimate as it stood, and restarting at the onset restores it. Error over the degraded period, stuck 3 °C low: −1.5…−2.0 °C before, −0.6…−1.0 °C after; what remains is the solar gain the model has no regressor for (R-04). |
 | Edge noise on `a2` | `a2` sits unbiased on its lower bound once §5.2.1's gap is taken from `T[k−1]`, and noise crosses it. An `a1`/`a2` rejection counts toward divergence only when the heat flow against the gradient it implies — the excursion times the gap — exceeds `edge_noise_c_per_step`: healthy runs never claim more than 0.083 °C per step, a room warming while cooled claims a median 0.13. `a3` rejections always count. |
 
 ##### Why divergence is a rate and not a run
@@ -684,6 +699,9 @@ inputs:   T_in (measured or substituted), T_sp (validated), mode, T_pred
 state:    compressor_state, last_transition_time
 
 on tick (every 5 s):
+    if mode == SAFE_HOLD and (compressor_state == ON or reassert due):
+        compressor_state = OFF
+        emit OFF; return                    # v1.11: stop, then hold
     if mode in {DEGRADED_ACTUATOR, SAFE_HOLD}:
         emit HOLD; return
 
@@ -710,6 +728,10 @@ on tick (every 5 s):
 
 The `DEGRADED_SENSOR` substitution is the concrete payoff of having a model: closed-loop control continues on a prediction rather than collapsing to open-loop. It is bounded — see §7.2.
 
+**SAFE_HOLD stops the unit (v1.11).** A hold once froze the compressor in whatever state it was in, and in SAFE_HOLD nothing is trusted to say when to stop cooling. Measured: a stuck sensor ridden past its budget entered SAFE_HOLD with the compressor on, and an hour later the room was 2.4 °C below setpoint and still falling. Off is the one state that is safe unsupervised — it cannot breach dwell, and its worst case is a room drifting toward ambient — so SAFE_HOLD stops the unit once and re-asserts the stop on the R-02 interval. `DEGRADED_ACTUATOR` still holds the unit as it is, so D5 can see a working unit cool and release the mode (§5.6).
+
+**Intent is re-asserted.** The controller re-sends COOL or OFF every `controller.reassert_interval_s` (60 s), because an IR command can be lost (R-02) and a controller that sent OFF once and then MAINTAIN forever has no way back from losing it.
+
 ### 5.4 Safety Validator
 
 The validator is the only component permitted to be paranoid. It has no knowledge of intent and applies rules unconditionally (FR-13, FR-14).
@@ -719,8 +741,8 @@ The validator is the only component permitted to be paranoid. It has no knowledg
 | V-1 Absolute bounds | `18.0 ≤ T_sp ≤ 30.0` | Clamp to nearest bound. Reason: `BOUND_CLAMP`. |
 | V-2 Rate limit | `\|T_sp − T_sp_prev\| ≤ 2.0 °C` per invocation | Clamp to max step. Reason: `RATE_LIMIT`. |
 | V-3 Compressor dwell | No ON command within `min_off_s` of last OFF | Downgrade to `MAINTAIN`. Reason: `DWELL`. |
-| V-4 Command rate | ≤ 1 actuator command per 30 s | Suppress. Reason: `CMD_RATE`. |
-| V-5 Mode consistency | No actuation command while mode is `DEGRADED_ACTUATOR` or `SAFE_HOLD` | Block. Reason: `MODE_BLOCK`. |
+| V-4 Command rate | ≤ 1 change of compressor state per 30 s. A re-assertion of the state in force is not a change (v1.11) | Suppress. Reason: `CMD_RATE`. |
+| V-5 Mode consistency | No COOL while mode is `DEGRADED_ACTUATOR` or `SAFE_HOLD`. A stop is always admitted and never throttled (v1.11): stopping is not driving the plant | Block. Reason: `MODE_BLOCK`. |
 | V-6 Staleness | Reject any goal whose source timestamp is older than 600 s | Retain previous goal. Reason: `STALE_GOAL`. |
 
 Every verdict is published to `space/audit/validation` with the proposal, the verdict, the reason code, and the applied value. A clamped supervisor proposal is a finding, not a failure — it is evidence the gate works, and the review deck should present it that way.
@@ -868,6 +890,12 @@ ambient the room must still cool. The change over a window is also now the
 slope of a least-squares line through every reading in it rather than the
 difference of the two ends, which carried the sensor noise twice.
 
+**When the readings went bad (v1.11).** D2 and D4 publish, under the evidence key `onset_ts`, the instant from which their own evidence says the readings were already wrong: D2 the oldest sample of the *first* window it found frozen (the confirming window has slid on by then, and its oldest sample is itself frozen), D4 the textbook CUSUM change point, the last time the tripping sum stood at zero. D1 needs none — silence has no bad readings — and D3's suspect readings are already flagged by the adapter. The estimator restarts its prediction from before that instant (§5.2.3).
+
+**D5 publishes what it judged against (v1.11).** Whether a warming room is blamed on the unit rests on the identified `a2`, the ambient and the passive-warming bound they imply, and all three now travel in the evidence. That is how a drift trial named the unit first was explained: thirty minutes after start `a2` was 0.004 against a truth of 0.0024, widening the bound to 6.13 °C, just past the 6.09 °C a 0.6 °C/min drift had reached (§8.5).
+
+**The power meter decides between the unit and the reading (v1.14, S-02).** Live, a thermometer drifting at 0.01 C/s beside a working unit fell inside the passive-warming bound on a warm day — about 4.5 C over the window — and D5 put the healthy unit on hold. The temperature alone cannot separate a dead unit from a reading drifting up; the meter on the unit's supply (`devices.ac_power_sensor_id`) can. D5 now keeps the meter's samples across its window. If 80 % show standby while the unit was told to cool, it is not running, and that is D5's fault whatever the bound says. If at least 80 % show running power (`devices.ac_running_power_w`) and the reading still rose by `min_cooling_c` or more, the meter alone cannot say whether the compressor runs and cools nothing (lost refrigerant) or the thermometer drifted. **Humidity can** (`detectors.actuator.humidity_sensor_id`): at constant vapour a room that truly warms one degree loses about `humidity_per_degree_pct` (3 %RH). If relative humidity fell by at least `humidity_agreement` of that, the room warmed and the unit is blamed. If not, the reading rose on its own, the unit is not blamed, and the warming is handed to D4 on the indoor sensor as a *plant contradiction* — a second route to D4's verdict, for the drift the CUSUM is blind to once the estimator has absorbed it. With no meter, a split one, or no humidity in the window, the earlier test stands. E3, seeds 1–3: drift found by D4 in 525–600 s, a dead unit by D5 in 600 s; a unit running and cooling nothing (`cooling_power_w: 0`) is still D5's; five healthy one-hour runs raised nothing.
+
 **On D5's parameters:** the 600 s window is long because a room's thermal time constant is long. This is an honest limit — actuator faults are detected on the order of ten minutes, not seconds, and NFR-02 deliberately does not promise otherwise.
 
 ### 5.6 Mode State Machine
@@ -899,7 +927,7 @@ stateDiagram-v2
 | `NORMAL` | active | full closed loop | none |
 | `DEGRADED_SENSOR` | frozen (FR-29) | closed loop on prediction, time-boxed | banner |
 | `DEGRADED_ACTUATOR` | frozen | blocked, hold state | alert + reason |
-| `SAFE_HOLD` | frozen | blocked | alert, manual reset required |
+| `SAFE_HOLD` | frozen | stopped, then blocked (v1.11) | alert, manual reset required |
 
 **What counts as "multiple faults".** Distinct *subjects*, not distinct
 findings. A stuck temperature sensor raises D2, and its frozen reading then
@@ -907,6 +935,8 @@ grows the model residual until D4 raises as well: two faults, one broken
 sensor. Counting findings would send every single sensor failure to SAFE_HOLD
 with actuation blocked, and FR-27 — the whole reason for identifying a model —
 would never once be exercised.
+
+**Advisory faults (v1.11).** The transitions above are on the *temperature* sensor and the unit, and until v1.11 every sensor fault carried `DEGRADED_SENSOR` whatever the sensor. Measured: a dropped humidity sensor — or the power meter — switched a system with a healthy temperature sensor onto prediction, spent the 1800 s budget and ended in `SAFE_HOLD`. The aggregator now knows which subjects the loop controls on, the indoor sensor and the air conditioner. A sensor fault on any other is *advisory*: published with its evidence and `mode_impact: NORMAL`, listed in the mode's active faults, its health still `faulted` — so FR-29 still freezes adaptation if it feeds the regressor — but it changes no mode and counts toward no escalation. The mode's published reason follows the fault set, so `NORMAL` with an advisory fault says so rather than "no active faults".
 
 **Leaving `DEGRADED_ACTUATOR` as written is unreachable, found at v1.7.** The
 transition above is "actuator ack restored and response observed". On an
@@ -1065,6 +1095,7 @@ available in this design, so the field is required and has no default.
 | `schedule_event` | write | `starts_at`, `subject`, `duration_min?` | the local calendar (FR-58) |
 | `get_events` | read | `from_time`, `to_time` | the local calendar |
 | `book_travel` | commit | `kind`, `destination`, `depart_on`, `origin?`, `nights?` | the mock endpoint (FR-55) |
+| `send_mail` | commit | `to`, `subject`, `body` | a mock outbox; nothing is sent (FR-55, NFR-06) |
 
 Timestamps in a tool argument are ISO-8601 strings rather than the epoch
 seconds every message in §6.2 carries. The inconsistency is deliberate and is
@@ -1177,6 +1208,18 @@ in `src/assistance/` and nowhere else: a calendar client is I/O, and
 `src/reasoning/` must not import it any more than it may import `src/io/`
 (§5.10).
 
+#### 5.7.7 Google Calendar and Gmail, offline first (v1.15; FR-84 to FR-86)
+
+**Sign-in belongs to the console; every call to Google belongs to the assistance service.** The console runs OAuth 2.0 for a *web application* client with PKCE (`src/console/google_signin.py`): **Connect Google** redirects to Google's consent page, and `/api/google/callback` exchanges the code and writes `token.json`, plus the address in `account.json`, under `state/google/`. The scopes are `calendar.events` and `gmail.send` (with `openid email` to name the account), so the node can manage events and send mail but never read the inbox. The token is never on the blackboard. The assistance service reads it from the file on every use (`GoogleAccount`), so connecting, reconnecting or disconnecting takes effect without a restart, and a refused refresh marks the account *needs reconnect* until a new token is written. What the rest of the system learns is the retained `space/assist/google` (`GoogleStatus`): configured, connected, account, outbox size, online, last sync, last error.
+
+**The calendar stays local-first.** `LocalCalendar` remains the source of truth, so it works offline and keeps everything §5.8.4 built on it: tentative entries, keep, entry ids. `SyncedCalendar` wraps it: each local change also queues the matching Google operation. Every Google event id is derived from the local entry (`"ss" + sha1(event_id|subject|starts_at)`), so a retry after a lost response finds the event already there (409) rather than making a second one. Tentative entries go to Google as `status: tentative`. On its own interval (`google.pull_interval_s`, over `google.pull_days`), `GoogleSync` lists the Google calendar and mirrors it into the local one with `origin: google`, so "what's on Thursday" includes what was added on a phone. Removing such an entry here queues its deletion there. Concurrent edits resolve as last write wins, logged.
+
+**The outbox is what makes offline safe** (FR-86). Operations (`calendar.insert`, `calendar.patch`, `calendar.delete`, `gmail.send`) are appended to `state/google/outbox.json` (bounded by `outbox_max`, written atomically) and drained by one thread. An HTTP 408, 429 or 5xx, or no network at all, is *offline*: the operation stays, with exponential backoff from `retry_min_s` to `retry_max_s`, and the pull is skipped until a drain gets through. A 401 is *needs reconnect*; a 404 or 410 on a delete is already done; another 4xx is a rejection, logged and dropped rather than retried forever. A delete cancels an insert still waiting, and a patch folds into one, so a plan pencilled and discarded while offline never reaches Google at all.
+
+**Mail and bookings.** With an account connected, `send_mail` is bound to `GmailOrMock`. It is still a COMMIT tool, so the occupant's yes (FR-54) comes first; the reply then says *sent* or *queued, it will send when the system is back online*. Without one, the FR-55 mock is unchanged. `book_travel` stays a labelled mock, but a confirmed booking (`TravelWithItinerary`) also adds its calendar entry (a flight at 09:00, a hotel check-in at 14:00) and queues the itinerary to the connected address.
+
+**NFR-06, revised.** Before sign-in the node makes no outbound request. After it, it reaches Google's APIs and nothing else, and disconnecting returns it to the first state. Testing-mode consent screens end refresh tokens after seven days; the console then shows **Reconnect**, and nothing queued is lost.
+
 ### 5.8 Speech Pipeline
 
 ```mermaid
@@ -1256,6 +1299,26 @@ a number edited upward to make a sentence true.
 Speech is the lowest-priority feature set (R-05) and FR-50 to FR-55 are
 cuttable, so this does not affect success criteria 1 to 5.
 
+#### 5.8.3 Speaker profiles and memory (v1.12)
+
+FR-52 is built, in the shape the requirement allows: recognising a voice selects whose profile the assistant answers with and **grants nothing**. No tool, setpoint, confirmation or mode is gated on it, a booking from a recognised voice waits for confirmation like any other, and the first reply of each conversation says that the voice was recognised and that this only personalises. That is what makes a modest recogniser acceptable: its worst error is a reply addressed to the wrong name.
+
+**Recognition** (`src/speech/speaker_profile.py`, Layer 1). The pipeline judges the utterance from the buffer it already holds for transcription, in memory, before the buffer is dropped (FR-51), and the hint carries a `profile_id` — empty for a guest. The features are numpy only: liftered cepstral mean and spread over the voiced frames, and the median and range of pitch, behind a `SpeakerEmbedder` seam a neural embedding can take over. Cosine similarity was measured first and could not separate voices (same-speaker minimum 0.906, different-speaker maximum 0.991), so a voice is matched by its distance in the enrolled voice's own spread, `exp(−mean(z²)/2)`, after at least three enrolment utterances. On synthetic voices (`tests/speech/voices.py`) at the shipped threshold of 0.15: 79 of 90 household utterances recognised, **none attributed to the wrong person**, 3 of 60 strangers mistaken. A guest is the safe error and the threshold is set for it; real voices are a bring-up measurement, and `tools.enroll` reports how close each new voice is to those already enrolled. Only feature statistics are stored, never audio.
+
+**Memory** (`src/assistance/`, Layer 1, beside the calendar — it is system-owned data the reasoning layer may write):
+
+| Kind | Where | Format | Kept |
+|---|---|---|---|
+| Long-term | `profiles.directory/<id>.md` | Markdown: name, preferences, facts | until forgotten; ≤ 50 facts, ≤ 8 people |
+| Short-term | `profiles.context_directory/<id>.json` | JSON: recent exchanges | 30 min, ≤ 10 exchanges |
+| Voiceprint | `speech.voiceprints_path` | JSON: feature statistics | until the person is deleted |
+
+Long-term memory is Markdown because memory about a person should be legible to that person: they can read it, correct it and delete it with no tool. It is parsed tolerantly — a section added by hand survives the next write — and a fact cannot carry Markdown that rewrites its own file. A full memory refuses a new fact rather than silently dropping an old one. A guest has short-term context and never long-term memory.
+
+**Writing it** goes through the tool surface (§5.7.6): `remember` and `forget`, effect `write`, so they run on the reasoning layer's authority and are removable afterwards. Their `profile_id` parameter is `supplied_by_system`: it is absent from the schema the model is shown, required by the executor, and filled in by the assistant from the voice, overruling anything the model wrote — a model naming another profile cannot write into it. A guest is offered neither tool.
+
+**Reading it** goes through the blackboard (FR-60). The assistance service publishes each person's `ProfileContext` retained on `space/context/profile/{profile_id}` after every change and on `profiles.publish_interval_s`, so a hand edit arrives without a restart and a deleted person is withdrawn. Every reply the assistant publishes becomes the speaker's short-term context, so no second path writes conversation. The assistant tells the model who it is speaking with, their facts and preferences, and the conversation so far; a guest is told nothing about anyone.
+
 #### 5.8.2 Compute placement
 
 Wake-word detection and transcription select CUDA first and fall back to CPU
@@ -1263,6 +1326,28 @@ Wake-word detection and transcription select CUDA first and fall back to CPU
 difference between running on the GPU and having quietly dropped to the CPU is
 the difference between meeting NFR-04 and missing it, and §9.2 records that a
 silent fallback is the failure most likely to be mistaken for slow code.
+
+#### 5.8.4 Always listening: ambient speech (v1.14; FR-76 to FR-78)
+
+`speech.listen_mode: continuous` is the default. The voice-activity detector runs on every frame, not only after the wake word, and a short pre-roll (`ambient_preroll_ms`) keeps the first word. An utterance is **addressed** if the wake word fires before or during it; it then takes the FR-50 path unchanged and gets a reply. Otherwise it is **ambient**: transcribed, its speaker judged, and — if it holds at least `ambient_min_words` words — published on `space/context/ambient` and nowhere else. The audio is dropped on close in both cases (FR-51).
+
+This is a deliberate revision of FR-50's privacy position, not an erosion of it by threshold (§5.8.1): the room's words are now transcribed. What limits it is what happens next. Ambient speech is never answered and never reaches the assistant's tools. The reasoning layer's `AmbientMiner` (`src/reasoning/ambient.py`) keeps a short window of each voice's recent lines (`ambient.context_s`, `max_lines`) so a plan split across sentences reads as one, and makes one rate-limited, validated model call per line (`ambient.max_calls_per_min`; FR-44, FR-46) asking for plans and facts — nothing else. A plan becomes `pencil_event`, a fact `suggest_fact`; both are `write` tools with requester `ambient`, declared `offered_to_assistant: false` so no reply can call them, and refused by the assistant if a model names them anyway.
+
+**Plans are pencilled, not booked** (FR-77). The calendar keeps the entry with `tentative: true` and the words heard; a repeat mention of the same subject on the same day adds nothing. The console shows it hatched and labelled *model tentative*, with **Keep** (`keep_event`) and **Discard**. A trip overheard is a tentative entry, never a `book_travel`: committing to a third party still needs FR-54's yes.
+
+**Room audio is not a plan (v1.14, S-01).** Live, with the real microphone, an hour of background audio became nine tentative entries — "Going home", "Check water", "Good night" — from Whisper hallucinating on noise and looping on itself. Three guards now stand between room audio and the calendar. Overheard speech, and only overheard speech, keeps just the segments Whisper itself is confident in: no-speech probability at most `ambient_max_no_speech_prob`, mean log-probability at least `ambient_min_avg_logprob`, compression ratio at most `ambient_max_compression_ratio` (Whisper's own thresholds). A transcript of six words or more whose distinct words fall below `ambient_min_distinct_ratio` is a loop and is dropped. And a plan must rest on a day or a time *said in the words* — a named day, "at four", "6 pm", "noon", or "in N minutes" at least half an hour ahead; none of the nine had one.
+
+**Facts are offered, not remembered** (FR-78). A suggestion is held in the person's Markdown profile under *Suggested (overheard)* — legible and hand-editable like the rest — and published in `ProfileContext.suggestions`, which the assistant is not told as memory. `settle_fact` keeps it (it becomes a fact) or dismisses it (it is deleted). A guest has no long-term memory, so nothing overheard from a guest is held.
+
+#### 5.8.5 The room speaks (v1.15; FR-79, FR-82, FR-83)
+
+The speech service owns the loudspeaker as well as the microphone, so the one process that must not hear the room's own voice is the one that knows when it is talking. `Voice` (`src/speech/voice.py`) synthesises with **Piper** (`speech.voice_engine: piper`; `en_US-lessac-medium`, fetched once by `setup_models.py` and loaded from disk, NFR-06) and plays through PyAudio. A warm sentence takes about 0.1 to 0.25 s on the reference machine. If the model is missing it falls back to the system's voices (pyttsx3), and with neither it publishes `voice: ""` and answers on screen only. Speech is never what breaks.
+
+**What is said.** It subscribes to `space/context/reply`. `AssistantReply.spoken` is set from the request (`not PreferenceHint.typed`), so a spoken question is answered aloud (`speak_replies`) and a typed one only if `speak_typed` is on. A change of mode is said in the same plain sentence the console's inbox shows (`src/common/plain.py`), so the occupant never hears one thing and reads another; the first mode seen after start is not announced, and quiet hours (`quiet_from` to `quiet_to`, crossing midnight if need be) silence it (FR-83). Sentences queue, bounded at four; when the queue is full the oldest is dropped, since a stale alert is worth less than the current one.
+
+**No echo.** While a sentence plays, and for `speech.speaking_tail_ms` after, the capture loop calls `pipeline.pause()`: buffered audio and pre-roll are dropped and the end-pointer and wake-word detector reset, and the status reads `speaking`. Measured live: a typed question answered aloud (`speaking` for 4.3 s) produced no `space/context/ambient` message.
+
+**Settings and mute.** The console publishes the retained `space/speech/settings` (`SpeechSettings`: listening, the three speak switches, volume, quiet hours) and the speech service obeys it. Retained, a restart of either keeps the choice (FR-82). `listening: false` stops capture outright: frames are read and discarded before the detector sees them, and the status reads `muted`. It is a privacy switch, not a filter.
 
 ### 5.9 Key Sequences
 
@@ -1426,7 +1511,13 @@ edge-smart-space/
 └── tests/
 ```
 
-As of v1.10 the following are specified above but **not yet implemented**: `speaker_profile.py` (FR-52) — the speech pipeline is left untouched until it is re-verified on the microphone — `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, and `deploy/esphome/` (node firmware is written at bring-up). They are named so the gap is explicit.
+As of v1.12 the following are specified above but **not yet implemented**: `simulated_actuators.py` (the fan and switch are Protocols only), `grammars/*.gbnf` and `prompts/` (the served endpoint's JSON response format stands in for GBNF, §5.7.3, and prompts live beside the code that sends them), `docs/adr/`, `deploy/docker-compose.yml`, and `sim/scenarios/`. They are named so the gap is explicit. `deploy/esphome/room-node.yaml` exists and is marked unverified: no node has been flashed. `speaker_profile.py` exists (§5.8.3) and has been measured on synthetic voices only; it has not been run against the microphone.
+
+Added as of v1.13: the local console (FR-56 to FR-58) -- `src/console/` (a Layer 1 blackboard client: `state.py` folds every topic into a view, `actions.py` publishes only what speech and the operator tools already publish, `server.py` serves the page and a WebSocket push stream) and `console/web/` (the React frontend, built into `src/console/static/` so nothing is fetched at runtime). Typed words travel on `space/context/utterance` and are extracted by the reasoning layer exactly as speech is (`src/reasoning/utterances.py`); the speech pipeline publishes `space/speech/status`. Standing prompts (FR-57) are not built; the comfort setting is.
+
+Added as of v1.12: `src/speech/speaker_profile.py`; `src/assistance/memory.py`, `src/assistance/profiles.py` and `src/assistance/providers/profile_memory.py`; `tools/enroll.py` and `tools/profiles.py`.
+
+Added as of v1.11: `src/common/localtime.py` (the room's one conversion from epoch to wall time); `eval/baseline_thermostat.py`, `eval/harness.py`, `eval/metrics.py` and E2, E4, E5; `tools/calibrate.py` (R-04), `tools/bringup.py` and `tools/confirm.py`; `deploy/provision.sh`, `deploy/llama-server.service` and `deploy/mosquitto.conf`.
 
 Added beyond the v1.1 layout, as of v1.10: `src/reasoning/` holds `supervisor_agent.py`, `supervisor_tools.py`, `assistant.py` (acting on what the speech pipeline heard), `diagnosis.py` (§6.3), `chat.py` (one timed, counted completion) and `dates.py` (the day an occupant named); `src/control/goal_manager.py`; `src/assistance/` with `executor.py`, `providers/local_calendar.py` and `providers/mock_travel.py`; `src/io/devices.py` with `python -m src.io` (Week 5); `src/common/tariff.py`; `deploy/systemd/`; `sim/replay.py`; `tools/say.py` (a typed stand-in for a voice, publishing exactly what the speech pipeline does) and `tools/record.py`; and `eval/system.py` with E3 and E6.
 
@@ -1457,7 +1548,7 @@ startup, which NFR-06 forbids.
 | `space/estimate/thermal` | pub | yes | 0 | `ThermalEstimate` |
 | `space/estimate/coefficients` | pub | yes | 1 | `Coefficients` |
 | `space/fault/{fault_id}` | pub | yes | 1 | `FaultEvent` |
-| `space/diagnosis/{fault_id}` | pub | no | 1 | `FaultDiagnosis` |
+| `space/diagnosis/{fault_id}` | pub | yes | 1 | `FaultDiagnosis` |
 | `space/system/mode` | pub | yes | 1 | `ModeState` |
 | `space/goal/proposed` | pub | no | 1 | `Goal` |
 | `space/goal/active` | pub | yes | 1 | `Goal` |
@@ -1465,16 +1556,21 @@ startup, which NFR-06 forbids.
 | `space/actuator/ac/state` | pub | yes | 1 | `ActuatorState` |
 | `space/actuator/{sim_id}/state` | pub | yes | 1 | `ActuatorState` with `simulated: true` |
 | `space/system/reset` | pub | no | 1 | `ModeReset` |
-
 | `space/inject/{subject}` | pub | yes | 1 | `InjectionCommand` |
-
 | `space/context/preference` | pub | no | 1 | `PreferenceHint` |
 | `space/context/reply` | pub | no | 1 | `AssistantReply` |
+| `space/context/profile/{profile_id}` | pub | yes | 1 | `ProfileContext` |
+| `space/context/utterance` | pub | no | 1 | `ConsoleUtterance` |
+| `space/context/ambient` | pub | no | 1 | `AmbientUtterance` |
+| `space/speech/status` | pub | yes | 1 | `SpeechStatus` |
+| `space/speech/settings` | pub | yes | 1 | `SpeechSettings` |
 | `space/tariff/state` | pub | yes | 1 | `TariffState` |
+| `space/control/tracking` | pub | yes | 1 | `TrackingState` |
 | `space/assist/proposed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/confirmed` | pub | no | 1 | `ToolInvocation` |
 | `space/assist/result` | pub | no | 1 | `ToolResult` |
 | `space/assist/catalogue` | pub | yes | 1 | `ToolCatalogue` |
+| `space/assist/google` | pub | yes | 1 | `GoogleStatus` |
 | `space/audit/validation` | pub | no | 1 | `ValidationVerdict` |
 | `space/audit/reasoning` | pub | no | 1 | `ReasoningRecord` |
 
@@ -1485,8 +1581,8 @@ startup, which NFR-06 forbids.
 {
   "sensor_id": "temp_01",
   "ts": 1756032000.123,          // unix epoch, monotonic-derived
-  "value": 27.4,
-  "unit": "C",
+  "value": 27.4,                 // finite, always (v1.11): a failed read is no reading
+  "unit": "C",                   // C | %RH | bool | W
   "quality": "ok"                // ok | suspect | faulted
 }
 
@@ -1518,8 +1614,8 @@ startup, which NFR-06 forbids.
   "class": "sensor",             // sensor | actuator | model
   "confidence": 0.94,
   "detected_ts": 1756032300.0,
-  "evidence": { "window_s": 300, "variance": 0.0002 },
-  "mode_impact": "DEGRADED_SENSOR"
+  "evidence": { "window_s": 300, "variance": 0.0002, "onset_ts": 1756032000.0 },
+  "mode_impact": "DEGRADED_SENSOR"  // NORMAL for an advisory fault (section 5.6)
 }
 
 // ModeReset -- an operator clearing SAFE_HOLD by hand (section 5.6)
@@ -1566,7 +1662,8 @@ startup, which NFR-06 forbids.
   "target_c": 24.0,              // null when no temperature was named
   "rationale": "it is too warm in here",
   "spoken_reply": "I have passed that on.",
-  "transcript": "it is too warm in here, can you cool it down"
+  "transcript": "it is too warm in here, can you cool it down",
+  "profile_id": "ravi"           // the recognised voice; "" for a guest (FR-52)
 }
 
 // TariffState
@@ -1583,7 +1680,21 @@ startup, which NFR-06 forbids.
   "intent": "service",
   "reply": "Added design review at 15:00 on 4 September.",
   "invocation_ids": ["inv_1756032000_0"],
-  "awaiting_confirmation": ""      // invocation id of a booking put to the occupant
+  "awaiting_confirmation": "",     // invocation id of a booking put to the occupant
+  "profile_id": "ravi"
+}
+
+// ProfileContext -- what is known about one person (section 5.8.3)
+{
+  "ts": 1756032003.4,
+  "profile_id": "ravi",
+  "display_name": "Ravi",
+  "preferences": { "comfort_c": "23" },
+  "facts": ["prefers meetings after ten"],
+  "recent": [
+    { "ts": 1756032003.2, "said": "put the design review in my calendar at three",
+      "replied": "Added design review at 15:00 on 4 September." }
+  ]
 }
 
 // ReasoningRecord
@@ -1726,6 +1837,8 @@ Stating this budget explicitly — rather than claiming indefinite ride-through 
 
 The baseline is deliberately not a straw man: it gets the same deadband, the same dwell protection, and the same setpoint schedule. The only things it lacks are the two contributions.
 
+"The same setpoint schedule" includes the peak-tariff shift (FR-16), and both systems are scored against the setpoint each was actually tracking. Until v1.11 the harness scored the real system against the unshifted setpoint while it tracked the shifted one, and the baseline ignored the tariff, so every peak sample was a violation of a target nobody had been given.
+
 ### 8.3 Experiment Plan
 
 | Exp | Question | Method | Metric |
@@ -1759,6 +1872,24 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 4. The system maintains the comfort bound under injected sensor fault in at least one scenario where the baseline does not (E5).
 5. All latency budgets in NFR-01 through NFR-04 are met at MAXN, with measurements reported at all three power modes.
 
+### 8.5 Measured Results (v1.11, simulation)
+
+Every number here is from the simulator, with its adversarial defaults on, at the configuration in the repository. Nothing has run on the hardware; E7 has not run at all.
+
+**The plant had to be able to hold its own room.** Before E5 can ask whether the baseline fails where this system does not, a healthy system must hold the comfort band. At 2500 W it could not: fault-free over 24 h it was out of band 20.0 % of the time, every afternoon (12:00–17:00). At 3000 W, 4.6 %; at 3500 W — a 1-ton split, the ordinary size for one room — 0.0 %, which is the shipped plant. The room's UA is 1/R = 286 W/K, so a 35 °C afternoon is a 3.1 kW load before sun and occupant; 2500 W was a sizing error, not an adversarial default.
+
+| Exp | Result | Against |
+|---|---|---|
+| E1 | worst coefficient error 0.0046 (`a3`) over 24 h | §8.4 tolerances: all met on the default seed |
+| E2 | RMS error 0.284 °C adapting and frozen alike, 0 % out of band | expected: the deadband acts on the measurement while the sensor is healthy; adaptation pays off in E4 and E5 |
+| E3 | dropout, stuck-at, out-of-range, actuator 10/10 by the right detector; drift at 0.6 °C/min 8/10, two seeds naming the unit first (§5.5); 0 faults in 10 healthy hours | criterion 3: met |
+| E4 | stuck at 25.0 °C: prediction within half the band for 3540 s; the room left the band at 2470 s, after the budget had expired and SAFE_HOLD had stopped the unit | §7.2's 1800 s: about half of what the prediction sustains, so conservative |
+| E5 | dropout: ours 0.0 % of 1800 s out of band, baseline 69.4 %; stuck high (26 °C): 9.4 % against 69.4 %; stuck low (22 °C): 28.9 % against 83.1 % | criterion 4: met (dropout) |
+
+Under the calibrated overlay from §9.4 E3 is unchanged in rate — every class 10/10, drift included — with drift found sooner (median 462 s against 648 s) and dropout a little later (20 s against 15 s, within NFR-02), and still no fault in 10 healthy hours.
+
+Stuck high was 0.0 % out of band before the estimate was rolled back at the onset (§5.2.3), and 9.4 % after. That is recorded rather than reverted: the coefficients fitted to the frozen readings happened to offset the solar gain the model cannot represent, and keeping a corrupted estimate because it was lucky once is not a property worth claiming.
+
 ---
 
 ## 9. Deployment and Build
@@ -1789,6 +1920,20 @@ E6 is where the distinction in §5.7.4 matters. Reporting "100% schema validity"
 
 Each component runs as a separate `systemd` unit with `Restart=always`. Restart independence is a design requirement (FR-11, FR-47), not a convenience — the demonstration includes killing the reasoning process mid-run and showing the regulatory loop continue.
 
+### 9.4 Calibration and Configuration Layers (v1.11)
+
+R-04 requires every detector threshold re-derived from the room's measured noise. That is a configuration change with a reason attached, so it lives in a file of its own: a configuration may `extends:` another, mappings merge key by key, and lists are replaced whole. On the node there are three layers, each with one owner — `default.yaml` (the repository; never edited on the node), `calibration.yaml` (`tools.calibrate`) and `site.yaml` (the node: `devices.source`, topics) — and every unit reads `site.yaml`.
+
+`tools.calibrate` reads a `tools.record` recording of a healthy room and derives:
+
+| Setting | From | Margin |
+|---|---|---|
+| D1 `timeout_periods` | longest gap between arrivals, per sensor, in its own period | ×1.5 |
+| D2 `variance_epsilon` | quietest 60-sample window of any temperature or humidity sensor | ×0.25 |
+| D4 `threshold_sigma` | the D4 detector replayed over the recorded estimates: its healthy peak | ×1.3, never below two capped samples |
+
+It refuses a recording holding a fault — calibrating from it would set the thresholds to accept the fault — and reports, rather than accommodates, a link dropping past NFR-02. D3's bounds are the instruments' limits and D5's window the room's time constant; neither is noise, and neither is derived. From two healthy simulated hours: timeout 3 → 4.5 periods, epsilon 0.001 → 0.004, threshold 8 → 6 (a healthy peak of 1.77, where the persistence floor applies). One recording's peak is a weak estimate of the tail; a longer recording is the remedy, and the floor is what stops a short one from producing a threshold alarm.
+
 ---
 
 ## 10. Risks
@@ -1817,6 +1962,8 @@ Each component runs as a separate `systemd` unit with `Restart=always`. Restart 
 | FR-50 to FR-55 | §5.8 | Demonstration |
 | FR-60 to FR-63 | §4.4, §6.1 | Inspection + E7 |
 | FR-70 to FR-75 | §5.7.6, §6.1, §6.2 | Unit + demonstration |
+| FR-76 to FR-78 | §5.8.4, §6.1 | Unit + demonstration |
+| FR-79 to FR-86 | §5.8.5, §5.7.7, §6.1 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

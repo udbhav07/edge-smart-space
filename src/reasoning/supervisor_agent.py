@@ -50,6 +50,12 @@ _VERDICT_WAIT_S = 3.0
 _POLL_S = 0.05
 _VERDICTS_KEPT = 32
 
+#: Said back to a proposal made before any reading had been returned.
+_PROPOSED_UNREAD = (
+    "not proposed: it was written before any reading came back. The readings "
+    "are above now; apply the policy to them and call propose_setpoint again."
+)
+
 SUPERVISOR_PROMPT = (
     "You supervise the temperature of one room. It is now {now}. Each cycle: "
     "call get_thermal_state, get_occupancy, get_tariff_state and "
@@ -125,7 +131,7 @@ class SupervisorAgent:
             {
                 "role": "system",
                 "content": SUPERVISOR_PROMPT.format(
-                    now=local_now(self._clock),
+                    now=local_now(self._clock, self._state.utc_offset_h),
                     vacant=self._config.vacant_setpoint_c,
                     occupied=self._config.occupied_setpoint_c,
                 ),
@@ -135,6 +141,11 @@ class SupervisorAgent:
         turns: list[ChatTurn] = []
         verdict_text = "no proposal; previous goal retained"
         applied = ""
+        # Whether the model has been shown the room yet. A proposal written in
+        # the same turn as the first reads was written blind: live, on every
+        # fault cycle, it arrived as setpoint 0, mode "" and no rationale, was
+        # rightly discarded, and the cycle ended with nothing (FR-41, FR-44).
+        has_read = False
         try:
             for _ in range(self._config.max_steps):
                 turn = self._chat.complete(messages, self._tools)
@@ -144,12 +155,18 @@ class SupervisorAgent:
                 messages.append(assistant_message(turn))
                 proposed = False
                 for call in turn.tool_calls:
-                    if call.name == PROPOSE_SETPOINT.name:
+                    if call.name == PROPOSE_SETPOINT.name and not has_read:
+                        answer = _PROPOSED_UNREAD
+                        LOGGER.info("supervisor proposed before reading the room; asked again")
+                    elif call.name == PROPOSE_SETPOINT.name:
                         answer, verdict_text, applied = self._propose(call.arguments, trigger)
                         proposed = True
                     else:
                         answer = self._read(call.name)
                     messages.append(tool_message(call, answer))
+                has_read = has_read or any(
+                    call.name != PROPOSE_SETPOINT.name for call in turn.tool_calls
+                )
                 if proposed:
                     break
         except ReasoningUnavailableError as exc:

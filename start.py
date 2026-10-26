@@ -35,12 +35,19 @@ import socket
 import subprocess
 import sys
 import threading
+import json
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from src.common import topics
 from src.common.config import Config, ConfigError, DeviceSource, load_config
+from src.common.injection import InjectedFault
+from src.common.localtime import local_time
+from src.common.mqtt_client import topic_matches
+from src.common.schemas import InjectionCommand
 
 LOGGER = logging.getLogger("start")
 
@@ -128,6 +135,11 @@ SERVICES = (
         description="Supervisor agent and assistant (needs the inference server)",
     ),
     Service(
+        name="console",
+        module="src.console",
+        description="Occupant console on the local network (FR-56); no authority",
+    ),
+    Service(
         name="speech",
         module="src.speech",
         description="Wake word, transcription, and the Personal Context call",
@@ -197,6 +209,13 @@ def preflight(config: Config, system: str) -> bool:
             LOGGER.info(
                 "ok       %s at %s:%s", dependency.name, dependency.host, dependency.port
             )
+            if dependency.name == _INFERENCE:
+                LOGGER.info("         %s", describe_model_state(config))
+            if dependency.required:
+                for line in describe_injections(
+                    active_injections(config), time.time(), config.site.utc_offset_h
+                ):
+                    LOGGER.warning("INJECTED %s", line)
             continue
 
         level = LOGGER.error if dependency.required else LOGGER.warning
@@ -219,6 +238,152 @@ def preflight(config: Config, system: str) -> bool:
                 "depend on reasoning (FR-47)"
             )
     return satisfied
+
+
+_INFERENCE = "inference server"
+
+#: Ollama's list of models held in memory. Other servers lack it, and then
+#: nothing can be said about loading, which is reported as such.
+_LOADED_MODELS_PATH = "/api/ps"
+
+
+def loaded_models(config: Config) -> tuple[str, ...] | None:
+    """Models the inference server holds in memory, or None if it cannot say."""
+    endpoint = urlparse(config.reasoning.base_url)
+    url = f"{endpoint.scheme}://{endpoint.netloc}{_LOADED_MODELS_PATH}"
+    try:
+        with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT_S) as response:
+            listing = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return tuple(str(item.get("name", "")) for item in listing.get("models", ()))
+
+
+def describe_model_state(config: Config, loaded: tuple[str, ...] | None = ...) -> str:
+    """Whether the first reply will be quick (U-09)."""
+    if loaded is ...:
+        loaded = loaded_models(config)
+    model = config.reasoning.model
+    if loaded is None:
+        return f"cannot tell whether {model} is loaded"
+    if model in loaded:
+        return f"{model} is loaded"
+    return (
+        f"{model} is not loaded yet; reasoning loads it at startup, and a reply "
+        f"before that finishes takes about a minute"
+    )
+
+
+#: A topic each periodic service publishes on every tick, live rather than
+#: retained, so traffic on it means a copy is running now (U-12).
+LIVE_SIGNATURES = {
+    "simulator": topics.SENSOR_STATE,
+    "devices": topics.SENSOR_STATE,
+    "estimator": topics.ESTIMATE_THERMAL,
+    "control": topics.ACTUATOR_COMMAND,
+}
+
+
+def already_running(
+    services: tuple[Service, ...], live_topics: set[str]
+) -> dict[str, str]:
+    """Services about to start whose output is already on the broker.
+
+    :param live_topics: topics heard as live traffic, not retained replay.
+    :returns: service name -> the topic that gave it away.
+    """
+    found = {}
+    for service in services:
+        signature = LIVE_SIGNATURES.get(service.name)
+        if signature is None:
+            continue
+        heard = sorted(topic for topic in live_topics if topic_matches(signature.wildcard(), topic))
+        if heard:
+            found[service.name] = heard[0]
+    return found
+
+
+def active_injections(config: Config, seconds: float = 1.0) -> list[InjectionCommand]:
+    """Injections the broker still holds, which every adapter obeys on start.
+
+    ``space/inject/{subject}`` is retained so it always answers what is being
+    injected now -- including a unit made "dead" in last week's demonstration.
+    """
+    import paho.mqtt.client as mqtt
+
+    held: list[InjectionCommand] = []
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"start-injections-{id(held)}")
+
+    def on_connect(_client, _userdata, _flags, _reason_code, _properties=None) -> None:
+        client.subscribe(topics.INJECT.wildcard(), 0)
+
+    def on_message(_client, _userdata, message) -> None:
+        if not message.payload:
+            return
+        try:
+            command = InjectionCommand.model_validate_json(message.payload)
+        except ValueError:
+            return
+        if command.kind is not InjectedFault.NONE:
+            held.append(command)
+
+    client.on_connect = on_connect
+    client.on_message = on_message
+    try:
+        client.connect(config.mqtt.host, config.mqtt.port, int(config.mqtt.keepalive_s))
+    except OSError:
+        return held
+    client.loop_start()
+    try:
+        time.sleep(seconds)
+    finally:
+        client.loop_stop()
+        client.disconnect()
+    return held
+
+
+def describe_injections(
+    held: list[InjectionCommand], now_ts: float, utc_offset_h: float
+) -> list[str]:
+    """One warning line per injection still in force, with how to clear it."""
+    lines = []
+    for command in sorted(held, key=lambda item: item.subject):
+        age_h = (now_ts - command.ts) / 3600.0
+        when = local_time(command.ts, utc_offset_h).strftime("%Y-%m-%d %H:%M")
+        lines.append(
+            f"{command.subject} is being injected {command.kind.value} since {when} "
+            f"({age_h:.0f} h ago); clear it with: python -m tools.inject {command.subject} clear"
+        )
+    return lines
+
+
+def listen_live(config: Config, seconds: float) -> set[str]:
+    """Topics with live (not retained) traffic during a short listen."""
+    import paho.mqtt.client as mqtt
+
+    heard: set[str] = set()
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"start-probe-{id(heard)}")
+
+    def on_connect(_client, _userdata, _flags, _reason_code, _properties=None) -> None:
+        client.subscribe(topics.ALL_TOPICS, 0)
+
+    def on_message(_client, _userdata, message) -> None:
+        if not message.retain:
+            heard.add(message.topic)
+
+    client.on_connect = on_connect
+    client.on_message = on_message
+    try:
+        client.connect(config.mqtt.host, config.mqtt.port, int(config.mqtt.keepalive_s))
+    except OSError:
+        return heard
+    client.loop_start()
+    try:
+        time.sleep(seconds)
+    finally:
+        client.loop_stop()
+        client.disconnect()
+    return heard
 
 
 def select(
@@ -366,6 +531,11 @@ def main(argv: list[str] | None = None) -> int:
         "--no-preflight", action="store_true", help="Start without checking anything."
     )
     parser.add_argument(
+        "--allow-running",
+        action="store_true",
+        help="Start even if a copy of a service is already publishing.",
+    )
+    parser.add_argument(
         "--no-restart",
         action="store_true",
         help="Leave a service down if it exits (the default restarts it, NFR-08).",
@@ -398,11 +568,21 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.error("no services selected")
         return 2
 
+    if not arguments.allow_running:
+        # Two simulators publish two rooms onto one set of topics, and the
+        # estimator then fits a model to both (U-12).
+        busy = already_running(services, listen_live(config, config.loop.sensor_period_s + 1.0))
+        if busy:
+            for name, topic in busy.items():
+                LOGGER.error("%s is already running: live traffic on %s", name, topic)
+            LOGGER.error("stop the running copy first, or pass --allow-running")
+            return 1
+
     running: dict[str, subprocess.Popen] = {}
     try:
         for service in services:
             running[service.name] = launch(service, arguments.config)
-        LOGGER.info("watch the blackboard with: mosquitto_sub -t 'space/#' -v")
+        LOGGER.info("watch the blackboard with: python -m tools.blackboard_view")
         by_name = {service.name: service for service in services}
         return supervise(
             running,

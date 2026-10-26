@@ -152,6 +152,8 @@ class ToolRequester(str, Enum):
     PERSONAL_CONTEXT = "personal_context"
     CONSOLE = "console"
     OPERATOR = "operator"
+    #: Speech overheard without the wake word (FR-76): no one asked.
+    AMBIENT = "ambient"
 
 
 # --- Errors ----------------------------------------------------------------
@@ -224,6 +226,12 @@ class ToolParameter(BaseModel):
     required: bool = True
     choices: tuple[str, ...] = Field(
         default=(), description="Permitted values; empty means unrestricted"
+    )
+    supplied_by_system: bool = Field(
+        default=False,
+        description="Filled in by the requester, never by the model, and so "
+        "never shown to it: whose memory a fact goes into is decided by who "
+        "was speaking, not by what a model wrote",
     )
 
     @model_validator(mode="after")
@@ -327,6 +335,13 @@ class ToolSpec(BaseModel):
     purpose: str = Field(min_length=1, description="What the model is told it does")
     effect: ToolEffect
     parameters: tuple[ToolParameter, ...] = ()
+    offered_to_assistant: bool = Field(
+        default=True,
+        description="Whether the conversational model may call it. The tools "
+        "behind overheard speech and the console's review buttons are run by "
+        "their own requesters only, so a reply can never pencil, keep or "
+        "settle anything (FR-77, FR-78)",
+    )
 
     @model_validator(mode="after")
     def _parameter_names_are_unique(self) -> ToolSpec:
@@ -353,9 +368,8 @@ class ToolSpec(BaseModel):
         provider, the transport, or the confirmation flow appears here,
         because none of it is the model's business (FR-70, FR-71).
         """
-        required = [
-            parameter.name for parameter in self.parameters if parameter.required
-        ]
+        shown = [parameter for parameter in self.parameters if not parameter.supplied_by_system]
+        required = [parameter.name for parameter in shown if parameter.required]
         return {
             "type": "function",
             "function": {
@@ -364,8 +378,7 @@ class ToolSpec(BaseModel):
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        parameter.name: parameter.as_schema()
-                        for parameter in self.parameters
+                        parameter.name: parameter.as_schema() for parameter in shown
                     },
                     "required": required,
                     "additionalProperties": False,
@@ -629,6 +642,71 @@ GET_EVENTS = ToolSpec(
     ),
 )
 
+#: Which entry exactly, when the requester knows it (S-03): two entries named
+#: alike made "move it" ask "which one?". Filled in by the requester from the
+#: entry it last put in or moved, never by the model.
+_ENTRY_ID_PARAMETER = ToolParameter(
+    name="event_id",
+    type=ParameterType.STRING,
+    description="The entry's id, when known.",
+    required=False,
+    supplied_by_system=True,
+)
+CANCEL_EVENT = ToolSpec(
+    name="cancel_event",
+    purpose=(
+        "Remove an entry from the occupant's calendar, when they ask to "
+        "cancel, delete or drop one. Never add an entry for a cancellation."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="Words from the entry's title, such as 'meeting with Ravi'.",
+        ),
+        ToolParameter(
+            name="on",
+            type=ParameterType.TIMESTAMP,
+            description="When the entry is, if they said; omit otherwise.",
+            required=False,
+        ),
+        _ENTRY_ID_PARAMETER,
+    ),
+)
+
+MOVE_EVENT = ToolSpec(
+    name="move_event",
+    purpose=(
+        "Move an entry in the occupant's calendar to a new time, when they "
+        "ask to move, reschedule or change one -- including a follow-up such "
+        "as 'move it to 4' about an entry just discussed."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="Words from the entry's title, such as 'meeting with Ravi'.",
+        ),
+        ToolParameter(
+            name="starts_at",
+            type=ParameterType.TIMESTAMP,
+            description="The new start, as an ISO-8601 local date and time.",
+        ),
+        ToolParameter(
+            name="keep_day",
+            type=ParameterType.BOOLEAN,
+            description="Keep the entry on its own day and change only the time.",
+            required=False,
+            # Decided from the words -- "move it to four" names no day -- and
+            # never by the model, which wrote today's date for that live.
+            supplied_by_system=True,
+        ),
+        _ENTRY_ID_PARAMETER,
+    ),
+)
+
 BOOK_TRAVEL = ToolSpec(
     name="book_travel",
     purpose=(
@@ -670,12 +748,206 @@ BOOK_TRAVEL = ToolSpec(
     ),
 )
 
+SEND_MAIL = ToolSpec(
+    name="send_mail",
+    purpose=(
+        "Send an email for the occupant. You cannot complete this yourself: it "
+        "is put to the occupant for confirmation first. It reaches a mock "
+        "outbox and nothing is ever actually sent; say so when reporting back."
+    ),
+    effect=ToolEffect.COMMIT,
+    parameters=(
+        ToolParameter(
+            name="to",
+            type=ParameterType.STRING,
+            description="Who it is for: a name or an email address.",
+        ),
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="A short subject line.",
+        ),
+        ToolParameter(
+            name="body",
+            type=ParameterType.STRING,
+            description="The message itself, written as the occupant would send it.",
+        ),
+    ),
+)
+
+#: Whose memory a fact belongs to. Filled in from the recognised speaker by
+#: the requester; a model choosing it could write into someone else's.
+_PROFILE_PARAMETER = ToolParameter(
+    name="profile_id",
+    type=ParameterType.STRING,
+    description="The recognised speaker's profile.",
+    supplied_by_system=True,
+)
+
+REMEMBER = ToolSpec(
+    name="remember",
+    purpose=(
+        "Keep a fact about the person you are speaking with, for later "
+        "conversations: a preference, a routine, something they asked you "
+        "to remember. Use it only when they ask you to remember something "
+        "or state a lasting preference. It is their own memory and they can "
+        "remove it again."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        _PROFILE_PARAMETER,
+        ToolParameter(
+            name="fact",
+            type=ParameterType.STRING,
+            description=(
+                "The fact, as one short sentence about them in the third "
+                "person, without their name: 'Likes meetings after 10am.', "
+                "not 'I like ...' or 'Ravi likes ...'."
+            ),
+        ),
+    ),
+)
+
+FORGET = ToolSpec(
+    name="forget",
+    purpose=(
+        "Remove what you remembered about the person you are speaking with, "
+        "when they ask you to forget something."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        _PROFILE_PARAMETER,
+        ToolParameter(
+            name="about",
+            type=ParameterType.STRING,
+            description="A word or phrase from what is to be forgotten.",
+        ),
+    ),
+)
+
+# --- Overheard speech (FR-76 to FR-78) -------------------------------------
+
+#: What was overheard, kept with what it caused so the person can see why.
+_HEARD_PARAMETER = ToolParameter(
+    name="heard",
+    type=ParameterType.STRING,
+    description="The words overheard that suggested it.",
+    required=False,
+)
+
+PENCIL_EVENT = ToolSpec(
+    name="pencil_event",
+    purpose=(
+        "Pencil a tentative entry into the occupant's calendar for a plan "
+        "overheard in conversation: a meeting, an appointment, a trip. It is "
+        "shown as tentative until they keep or discard it."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="starts_at",
+            type=ParameterType.TIMESTAMP,
+            description="When it starts, as an ISO-8601 local date and time.",
+        ),
+        ToolParameter(
+            name="subject",
+            type=ParameterType.STRING,
+            description="Short title for the entry.",
+        ),
+        ToolParameter(
+            name="duration_min",
+            type=ParameterType.INTEGER,
+            description=f"How long it lasts, in minutes; {DEFAULT_EVENT_DURATION_MIN} if not said.",
+            required=False,
+        ),
+        _HEARD_PARAMETER,
+    ),
+    offered_to_assistant=False,
+)
+
+KEEP_EVENT = ToolSpec(
+    name="keep_event",
+    purpose="Make a tentative calendar entry a firm one: the occupant kept it.",
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="event_id",
+            type=ParameterType.STRING,
+            description="The entry's id, such as ev_0003.",
+        ),
+    ),
+    offered_to_assistant=False,
+)
+
+SUGGEST_FACT = ToolSpec(
+    name="suggest_fact",
+    purpose=(
+        "Offer a fact overheard about the person speaking for them to keep. "
+        "It is not remembered until they accept it."
+    ),
+    effect=ToolEffect.WRITE,
+    parameters=(
+        _PROFILE_PARAMETER,
+        ToolParameter(
+            name="fact",
+            type=ParameterType.STRING,
+            description="The fact, as one short sentence about them in the third person.",
+        ),
+        _HEARD_PARAMETER,
+    ),
+    offered_to_assistant=False,
+)
+
+SETTLE_FACT = ToolSpec(
+    name="settle_fact",
+    purpose="Keep or dismiss a fact that was offered for remembering.",
+    effect=ToolEffect.WRITE,
+    parameters=(
+        ToolParameter(
+            name="profile_id",
+            type=ParameterType.STRING,
+            description="Whose suggestion it is.",
+        ),
+        ToolParameter(
+            name="fact",
+            type=ParameterType.STRING,
+            description="The suggestion, exactly as offered.",
+        ),
+        ToolParameter(
+            name="keep",
+            type=ParameterType.BOOLEAN,
+            description="True to remember it, false to dismiss it.",
+        ),
+    ),
+    offered_to_assistant=False,
+)
+
 #: The declared assistance surface (section 5.7.6). Adding a tool is one
 #: entry here plus a provider binding, and touches nothing else (FR-72).
-ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (SCHEDULE_EVENT, GET_EVENTS, BOOK_TRAVEL)
+ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
+    SCHEDULE_EVENT,
+    GET_EVENTS,
+    CANCEL_EVENT,
+    MOVE_EVENT,
+    BOOK_TRAVEL,
+    SEND_MAIL,
+    REMEMBER,
+    FORGET,
+    PENCIL_EVENT,
+    KEEP_EVENT,
+    SUGGEST_FACT,
+    SETTLE_FACT,
+)
+
+#: Tools that only make sense for a recognised person. A guest has no
+#: long-term memory to keep anything in, nor to offer anything for.
+PROFILE_TOOLS = frozenset({REMEMBER.name, FORGET.name, SUGGEST_FACT.name, SETTLE_FACT.name})
 
 
 # --- Registry --------------------------------------------------------------
+
+#: What an occupant hears when a provider failed for a reason of its own.
+_INTERNAL_FAILURE = "Sorry, I couldn't do that just now."
 
 
 class ToolRegistry:
@@ -801,7 +1073,12 @@ class ToolRegistry:
             LOGGER.warning(
                 "provider %s failed on %s: %s", provider.name, invocation.tool, exc
             )
-            raise ToolFailedError(f"{provider.name} could not do it: {exc}") from exc
+            # The message reaches the occupant (U-19). A provider raising
+            # ValueError has written a sentence for them -- "nothing in your
+            # calendar matches that" -- and it is passed on; anything else is
+            # an internal failure, apologised for, with the detail in the log.
+            spoken = str(exc) if isinstance(exc, ValueError) else _INTERNAL_FAILURE
+            raise ToolFailedError(spoken) from exc
 
         return ToolResult(
             ts=self._clock.now(),

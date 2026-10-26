@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -153,8 +154,20 @@ def _excited_config(config: Config, identifiable: bool) -> Config:
 
 
 def run(config: Config, hours: float, identifiable: bool, label: str) -> E1Result:
-    """Drive the simulator and the estimator through one another over MQTT."""
-    run_config = _excited_config(config, identifiable)
+    """Drive the simulator and the estimator through one another over MQTT.
+
+    The estimate is persisted, as in service, but to a directory of its own:
+    written to ``state/`` it carried a simulated timestamp from 2025 into
+    the live room's next start, which discarded it as 410 days old (U-28).
+    """
+    with tempfile.TemporaryDirectory(prefix="e1-") as directory:
+        return _run(config, hours, identifiable, label, Path(directory))
+
+
+def _run(config: Config, hours: float, identifiable: bool, label: str, directory: Path) -> E1Result:
+    excited = _excited_config(config, identifiable)
+    persistence = excited.persistence.model_copy(update={"path": str(directory / "coefficients.json")})
+    run_config = excited.model_copy(update={"persistence": persistence})
     clock = SimClock()
     transport = LoopbackTransport()
 

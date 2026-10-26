@@ -18,11 +18,11 @@ Two properties hold whatever tools are attached:
   and nothing is published, which is the specified behaviour rather than a
   fallback.
 
-**Not yet wired:** section 5.7.6's tool surface exists in
-``src/common/tools.py``, and this module does not yet call it. The extraction
-below is the v1.4 behaviour -- a transcript in, a PreferenceHint out -- and a
-SERVICE intent is still only reported. Stated here rather than left to be
-discovered, because FR-42 now permits more than this does.
+This module is the extraction only -- a transcript in, a PreferenceHint out
+-- and holds no tools. Acting on a SERVICE intent is the assistant's job
+(``src/reasoning/assistant.py``): it takes the published hint and makes the
+one bounded round of tool calls FR-42 allows, through the executor (section
+5.7.6). The speech pipeline depends on this module exactly as it is.
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ from pydantic import ValidationError
 
 from src.common.clock import Clock
 from src.common.config import ReasoningConfig
-from src.common.schemas import Comfort, Intent, PreferenceHint
+from src.common.schemas import Comfort, ContextTurn, Intent, PreferenceHint
+from src.reasoning.understanding import understood
 
 LOGGER = logging.getLogger(__name__)
 
@@ -50,23 +51,39 @@ PERSONAL_CONTEXT_PROMPT = (
     "You understand what someone asked of their smart space. You do not "
     "control anything: you describe the request so the control system can "
     "weigh it. Reply with a JSON object and nothing else, with keys: "
-    '"intent" (one of "environment" for a request about the space, '
-    '"service" for anything about their calendar, schedule, reminders, '
-    "meetings or bookings -- including a question about what is planned -- "
-    'or "none" when nothing was asked), '
-    '"subject" (a short noun for what it was about, such as "temperature", '
-    '"lights" or "booking", or "" for none), '
-    '"comfort" (one of "warmer", "cooler", "unchanged"; use "unchanged" '
-    "unless a temperature preference was expressed), "
-    '"target_c" (the exact number of degrees they said, or null if no '
-    "temperature was named; never adjust it to something sensible or safe, "
+    '"intent", one of: "environment" for a request to change the room\'s '
+    'temperature or comfort; "service" for anything about their calendar, '
+    "schedule, reminders, meetings or bookings -- adding, moving, cancelling "
+    "or asking about them -- and for asking you to remember or forget "
+    'something about them; "question" for a question about the room, its '
+    "temperature, the system, or what you remember about them, and for a "
+    'greeting or small talk; or "none" when nothing was said to you. '
+    '"subject": a short noun for what it was about, such as "temperature", '
+    '"lights", "calendar", "booking" or "memory", or "" for none. '
+    '"comfort": one of "warmer", "cooler", "unchanged"; "unchanged" unless '
+    "they said they are too hot or too cold, or asked for warmer or cooler. "
+    "Stuffy, muggy, humid or sticky means cooler. "
+    '"target_c": the exact number of degrees they asked for, or null if they '
+    "named no temperature; never adjust it to something sensible or safe, "
     "because limits are enforced by the control system and it must see what "
-    "was actually asked), "
-    '"rationale" (a short quote of what they asked for), and '
-    '"spoken_reply" (one short sentence of plain English to say back). '
+    "was actually asked. A question never has a target. "
+    '"rationale": a short quote of what they asked for. '
+    '"spoken_reply": one short sentence of plain English to say back. '
     "Never claim anything has been changed or switched: say a request has "
-    "been passed on, because that is all that has happened."
+    "been passed on, because that is all that has happened. Examples: "
+    '"it\'s a bit stuffy in here" -> environment, cooler; '
+    '"make it 22 degrees" -> environment, target_c 22; '
+    '"why is it so warm" -> question; "what\'s the temperature" -> question; '
+    '"hello" -> question; "what do you know about me" -> question; '
+    '"remember that I am vegetarian" -> service, memory; '
+    '"forget what I said about meetings" -> service, memory; '
+    '"cancel the meeting with Ravi" -> service, calendar; '
+    '"move it to 4", just after a calendar entry was discussed -> service, '
+    "calendar, target_c null."
 )
+
+#: Exchanges shown to the model so a follow-up can be read against them.
+_RECENT_SHOWN = 3
 
 
 def _is_empty(hint: PreferenceHint) -> bool:
@@ -78,7 +95,7 @@ def _is_empty(hint: PreferenceHint) -> bool:
     """
     if hint.intent is Intent.NONE:
         return True
-    if hint.intent is Intent.SERVICE:
+    if hint.intent in (Intent.SERVICE, Intent.QUESTION):
         return False
     return (
         hint.comfort is Comfort.UNCHANGED
@@ -94,9 +111,19 @@ _BLANK_COMFORT = (None, "")
 def _comfort_field(decoded: dict) -> object:
     """The comfort answer, with a blank one read as "unchanged".
 
-    A missing key is passed through as None so the enum rejects it.
+    A missing key is passed through as None so the enum rejects it -- for an
+    environment request, the one intent where comfort is the answer. For any
+    other intent comfort can only be "unchanged", and the served model leaves
+    the key out: "remember that I like tea" was dropped as invalid for want
+    of a field that could hold one value (U-07, measured live).
     """
     if "comfort" in decoded and decoded["comfort"] in _BLANK_COMFORT:
+        return Comfort.UNCHANGED.value
+    if "comfort" not in decoded and decoded.get("intent") not in (None, Intent.ENVIRONMENT.value):
+        return Comfort.UNCHANGED.value
+    if "comfort" not in decoded and isinstance(decoded.get("target_c"), (int, float)):
+        # "Make it 22 again" came back with a target and no comfort key. A
+        # named number is the answer to the question comfort asks.
         return Comfort.UNCHANGED.value
     return decoded.get("comfort")
 
@@ -118,8 +145,7 @@ class PersonalContext:
     would make one call's output depend on an earlier one, which an
     extraction is not.
 
-    Holds no tool registry yet; see the module docstring for what that
-    changes when it does.
+    Holds no tool registry: the assistant acts on what this extracts.
     """
 
     def __init__(
@@ -148,9 +174,13 @@ class PersonalContext:
             timeout=config.timeout_s,
         )
 
-    def extract(self, transcript: str) -> PreferenceHint | None:
+    def extract(
+        self, transcript: str, recent: tuple[ContextTurn, ...] = ()
+    ) -> PreferenceHint | None:
         """Read a preference out of one utterance.
 
+        :param recent: the conversation so far, newest last, so a follow-up
+            ("move it to 4") is read against what it follows.
         :returns: the hint, or None when nothing actionable was said or the
             output failed validation. None is the ordinary case, not an
             error.
@@ -159,20 +189,31 @@ class PersonalContext:
         if not transcript.strip():
             return None
 
-        raw = self._complete(transcript)
+        raw = self._complete(transcript, recent[-_RECENT_SHOWN:])
         hint = self._validate(raw)
         if hint is None:
             return None
+        # FR-44 again, against the words this time: the model's classification
+        # is checked deterministically, and only ever moved away from the plant.
+        hint = understood(hint, transcript, recent)
+        if _is_empty(hint):
+            return None
         # The words themselves travel with the hint, so whatever acts on it --
-        # a calendar entry needs the exact time -- need not trust a paraphrase.
+        # a calendar entry needs the exact time said -- need not trust a paraphrase.
         return hint.model_copy(update={"transcript": transcript.strip()})
 
-    def _complete(self, transcript: str) -> str:
+    def _complete(self, transcript: str, recent: tuple[ContextTurn, ...] = ()) -> str:
+        prompt = PERSONAL_CONTEXT_PROMPT
+        if recent:
+            lines = "\n".join(
+                f"- They said: {turn.said} / The system replied: {turn.replied}" for turn in recent
+            )
+            prompt += f"\nEarlier in this conversation:\n{lines}"
         try:
             response = self._client.chat.completions.create(
                 model=self._config.model,
                 messages=[
-                    {"role": "system", "content": PERSONAL_CONTEXT_PROMPT},
+                    {"role": "system", "content": prompt},
                     {"role": "user", "content": transcript},
                 ],
                 response_format=_JSON_RESPONSE_FORMAT,
@@ -224,4 +265,4 @@ class PersonalContext:
             LOGGER.warning("discarding extraction failing validation: %s", exc)
             return None
 
-        return None if _is_empty(hint) else hint
+        return hint

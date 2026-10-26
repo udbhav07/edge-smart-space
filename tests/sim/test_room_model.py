@@ -184,3 +184,36 @@ class TestIndependenceFromTheEstimator:
         assert not fields & {"a1", "a2", "a3", "a4", "initial_theta"}
         assert "thermal_resistance_k_per_w" in fields
         assert "thermal_capacitance_j_per_k" in fields
+
+
+class TestHumidity:
+    """FR-01 measures humidity; D3 watches it. The plant must not fake a fault."""
+
+    DAY_S = 86_400.0
+
+    def _run(self, room: RoomModel, clock: SimClock, cooling: float, seconds: float):
+        lowest = room.relative_humidity_pct
+        for _ in range(int(seconds / STEP_S)):
+            room.step(STEP_S, cooling, occupied=False, outdoor_c=OUTDOOR_C)
+            clock.advance(STEP_S)
+            lowest = min(lowest, room.relative_humidity_pct)
+        return lowest
+
+    def test_a_running_coil_dries_the_room(self, room_config):
+        dry, dry_clock = _room(room_config)
+        idle, idle_clock = _room(room_config)
+        self._run(dry, dry_clock, FULL_COOLING, 3600.0)
+        self._run(idle, idle_clock, NO_COOLING, 3600.0)
+        # Compared at the same temperature-driven saturation would need the
+        # same temperature; the coil's own contribution is what is checked.
+        assert dry._condensed_humidity_pct > idle._condensed_humidity_pct
+
+    def test_a_day_of_continuous_cooling_never_dries_past_the_coil(self, room_config):
+        """Unbounded condensation once reached 0 %, and noise read -0.1 %."""
+        room, clock = _room(room_config)
+        assert self._run(room, clock, FULL_COOLING, self.DAY_S) >= 35.0 - 1e-9
+
+    def test_humidity_stays_a_physical_fraction(self, room_config):
+        room, clock = _room(room_config)
+        self._run(room, clock, FULL_COOLING, self.DAY_S)
+        assert 0.0 <= room.relative_humidity_pct <= 100.0

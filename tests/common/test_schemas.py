@@ -501,3 +501,156 @@ class TestInjectionCommand:
             requester="operator",
         )
         assert command.requester == "operator"
+
+
+class TestReadingsAreFinite:
+    """A NaN slips past every comparison, D3's range test included."""
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_reading_is_rejected(self, value):
+        with pytest.raises(ValueError):
+            SensorReading(ts=1.0, sensor_id="temp_01", value=value, unit=Unit.CELSIUS)
+
+
+class TestProfiles:
+    """FR-52: a profile id is both a topic level and a file name."""
+
+    @pytest.mark.parametrize("profile_id", ["ravi", "a", "guest", "ravi_2"])
+    def test_a_safe_id_is_accepted(self, profile_id):
+        from src.common.schemas import ProfileContext
+
+        assert ProfileContext(ts=1.0, profile_id=profile_id).profile_id == profile_id
+
+    @pytest.mark.parametrize("profile_id", ["", "Ravi", "../etc", "a/b", "a+", "2ravi", "x" * 33])
+    def test_an_unsafe_id_is_refused(self, profile_id):
+        from src.common.schemas import ProfileContext
+
+        with pytest.raises(ValueError):
+            ProfileContext(ts=1.0, profile_id=profile_id)
+
+    def test_a_hint_from_a_guest_carries_no_profile(self):
+        from src.common.schemas import Comfort, Intent, PreferenceHint
+
+        hint = PreferenceHint(ts=1.0, intent=Intent.NONE, comfort=Comfort.UNCHANGED)
+        assert hint.profile_id == ""
+
+    def test_a_hint_cannot_name_a_path_as_its_speaker(self):
+        from src.common.schemas import Comfort, Intent, PreferenceHint
+
+        with pytest.raises(ValueError):
+            PreferenceHint(
+                ts=1.0, intent=Intent.NONE, comfort=Comfort.UNCHANGED, profile_id="../x"
+            )
+
+    def test_a_profile_context_round_trips_the_wire(self):
+        from src.common.schemas import ContextTurn, ProfileContext
+
+        context = ProfileContext(
+            ts=1.0,
+            profile_id="ravi",
+            display_name="Ravi",
+            preferences={"comfort_c": "23"},
+            facts=("prefers meetings after ten",),
+            recent=(ContextTurn(ts=1.0, said="hi", replied="hello"),),
+        )
+        assert ProfileContext.model_validate_json(context.model_dump_json()) == context
+
+
+class TestConsoleMessages:
+    """FR-56, FR-57: what the console and the speech pipeline publish."""
+
+    def test_an_utterance_carries_words_and_a_speaker(self):
+        from src.common.schemas import ConsoleUtterance
+        said = ConsoleUtterance(ts=1.0, utterance_id="u1", text="make it cooler", profile_id="ravi")
+        assert said.text == "make it cooler" and said.profile_id == "ravi"
+
+    def test_an_empty_utterance_is_refused(self):
+        from src.common.schemas import ConsoleUtterance
+        with pytest.raises(ValueError):
+            ConsoleUtterance(ts=1.0, utterance_id="u1", text="")
+
+    def test_an_unsafe_profile_id_is_refused(self):
+        from src.common.schemas import ConsoleUtterance
+        with pytest.raises(ValueError):
+            ConsoleUtterance(ts=1.0, utterance_id="u1", text="hi", profile_id="../etc")
+
+    def test_speech_status_states_its_heartbeat(self):
+        from src.common.schemas import SpeechActivity, SpeechStatus
+        status = SpeechStatus(ts=1.0, activity=SpeechActivity.LISTENING, heartbeat_s=15.0)
+        assert status.activity.value == "listening"
+
+    def test_a_status_without_a_heartbeat_is_refused(self):
+        from src.common.schemas import SpeechActivity, SpeechStatus
+        with pytest.raises(ValueError):
+            SpeechStatus(ts=1.0, activity=SpeechActivity.WAITING, heartbeat_s=0.0)
+
+
+class TestAmbientUtterance:
+    """FR-76: what continuous listening publishes, and only that."""
+
+    def test_carries_words_and_a_voice(self):
+        from src.common.schemas import AmbientUtterance
+
+        heard = AmbientUtterance(ts=1.0, transcript="dentist on thursday at four", profile_id="ravi")
+        assert heard.transcript.startswith("dentist") and heard.profile_id == "ravi"
+
+    def test_a_guest_has_no_profile(self):
+        from src.common.schemas import AmbientUtterance
+
+        assert AmbientUtterance(ts=1.0, transcript="hello there").profile_id == ""
+
+    def test_empty_speech_is_refused(self):
+        from src.common.schemas import AmbientUtterance
+
+        with pytest.raises(ValidationError):
+            AmbientUtterance(ts=1.0, transcript="")
+
+    def test_status_says_whether_the_room_listens_continuously(self):
+        from src.common.schemas import ListenMode, SpeechActivity, SpeechStatus
+
+        status = SpeechStatus(ts=1.0, activity=SpeechActivity.WAITING, heartbeat_s=15.0, listen_mode=ListenMode.CONTINUOUS)
+        assert status.listen_mode is ListenMode.CONTINUOUS
+
+    def test_a_profile_carries_its_suggestions_apart_from_its_facts(self):
+        from src.common.schemas import ProfileContext
+
+        context = ProfileContext(ts=1.0, profile_id="ravi", facts=("Likes tea.",), suggestions=("Hates the cold.",))
+        assert context.suggestions == ("Hates the cold.",) and "Hates the cold." not in context.facts
+
+
+class TestSpeakingAndGoogle:
+    """FR-79 to FR-86: the new messages carry what is needed and nothing secret."""
+
+    def test_settings_default_to_listening_and_speaking_replies(self):
+        from src.common.schemas import SpeechSettings
+
+        settings = SpeechSettings(ts=1.0)
+        assert settings.listening and settings.speak_replies and not settings.speak_typed
+
+    def test_quiet_hours_must_be_a_time(self):
+        from src.common.schemas import SpeechSettings
+
+        with pytest.raises(ValidationError):
+            SpeechSettings(ts=1.0, quiet_from="10pm")
+
+    def test_volume_is_bounded(self):
+        from src.common.schemas import SpeechSettings
+
+        with pytest.raises(ValidationError):
+            SpeechSettings(ts=1.0, volume=1.5)
+
+    def test_google_status_has_no_place_for_a_token(self):
+        from src.common.schemas import GoogleStatus
+
+        assert not any("token" in name or "secret" in name for name in GoogleStatus.model_fields)
+
+    def test_a_reply_can_say_it_was_spoken(self):
+        from src.common.schemas import AssistantReply, Intent
+
+        assert AssistantReply(ts=1.0, transcript="hi", intent=Intent.QUESTION, reply="Hello.", spoken=True).spoken
+
+    def test_a_hint_can_hand_the_temperature_back(self):
+        from src.common.schemas import Comfort, PreferenceHint
+
+        hint = PreferenceHint(ts=1.0, comfort=Comfort.UNCHANGED, subject="temperature", release=True)
+        assert hint.release

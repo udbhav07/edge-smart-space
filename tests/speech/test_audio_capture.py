@@ -181,3 +181,82 @@ class TestShutdown:
         capture = _capture(config, stream=AwkwardStream())
         capture.stop()
         assert capture.is_running is False
+
+
+class TestChoosingTheMicrophone:
+    """Indices move when a headset connects, and the default can vanish."""
+
+    DEVICES = [
+        (1, "MME", "Microphone (C-Media(R) Audio)"),
+        (12, "Windows DirectSound", "Microphone (C-Media(R) Audio)"),
+        (29, "Windows WASAPI", "Microphone (C-Media(R) Audio)"),
+        (3, "MME", "Headset (soundcore Q20i)"),
+    ]
+
+    def _config(self, config, **changes):
+        return config.model_copy(update=changes)
+
+    def test_a_name_picks_the_device_on_the_api_that_resamples(self, config):
+        from src.speech.audio_capture import choose_device
+        assert choose_device(self.DEVICES, self._config(config, device_name="c-media", device_index=None)) == 1
+
+    def test_an_index_wins_over_a_name(self, config):
+        from src.speech.audio_capture import choose_device
+        assert choose_device(self.DEVICES, self._config(config, device_name="c-media", device_index=3)) == 3
+
+    def test_no_name_means_the_system_default(self, config):
+        from src.speech.audio_capture import choose_device
+        assert choose_device(self.DEVICES, self._config(config, device_name=None, device_index=None)) is None
+
+    def test_a_missing_microphone_names_the_ones_there_are(self, config):
+        from src.speech.audio_capture import MicrophoneError, choose_device
+        with pytest.raises(MicrophoneError, match="soundcore"):
+            choose_device(self.DEVICES, self._config(config, device_name="Blue Yeti", device_index=None))
+
+
+class TestResampling:
+    """A microphone that refuses 16 kHz is opened at its own rate and converted."""
+
+    @staticmethod
+    def _tone(rate, seconds=1.0, hz=1000.0):
+        t = np.arange(int(rate * seconds)) / rate
+        return (8000 * np.sin(2 * np.pi * hz * t)).astype(np.int16)
+
+    @pytest.mark.parametrize("rate", [48000, 44100])
+    def test_a_tone_keeps_its_pitch(self, rate):
+        from src.speech.audio_capture import Resampler
+        out = Resampler(rate, 16000).process(self._tone(rate))
+        spectrum = np.abs(np.fft.rfft(out[1000:-1000]))
+        peak_hz = np.argmax(spectrum) * 16000 / len(out[1000:-1000])
+        assert abs(peak_hz - 1000) < 20
+        assert abs(len(out) - 16000) <= 64
+
+    def test_chunks_join_without_a_seam(self):
+        """Converting in reads of 1536 must equal converting all at once."""
+        from src.speech.audio_capture import Resampler
+        tone = self._tone(48000)
+        whole = Resampler(48000, 16000).process(tone)
+        streamed = Resampler(48000, 16000)
+        parts = np.concatenate([streamed.process(tone[i:i + 1536]) for i in range(0, len(tone), 1536)])
+        assert np.allclose(parts[: len(whole)], whole[: len(parts)], atol=1e-6)
+
+    def test_capture_at_48k_yields_pipeline_frames(self, config):
+        class Stream:
+            def __init__(self):
+                self.tone = TestResampling._tone(48000, seconds=0.5)
+                self.at = 0
+            def read(self, n, exception_on_overflow=False):
+                chunk = self.tone[self.at:self.at + n]
+                self.at += n
+                return np.pad(chunk, (0, n - len(chunk))).tobytes()
+        capture = AudioCapture(config, SimClock(), stream=Stream(), stream_rate_hz=48000)
+        assert capture._read_samples == 1536
+        frames = [frame for _ in range(10) for frame in capture._reframed(capture._resampler.process(np.frombuffer(capture._stream.read(1536), dtype=np.int16)))]
+        assert frames and all(frame.dtype == np.int16 and len(frame) == config.chunk_samples for frame in frames)
+
+
+class TestEveryMatchIsTried:
+    def test_matches_are_offered_in_host_api_order(self, config):
+        from src.speech.audio_capture import candidate_devices
+        devices = [(29, "Windows WASAPI", "Microphone (C-Media)"), (12, "Windows DirectSound", "Microphone (C-Media)"), (1, "MME", "Microphone (C-Media)")]
+        assert candidate_devices(devices, config.model_copy(update={"device_name": "c-media", "device_index": None})) == [1, 12, 29]

@@ -95,3 +95,37 @@ def test_a_turn_goes_back_into_the_conversation_with_its_calls(config):
     rendered = assistant_message(turn)
     assert rendered["tool_calls"][0]["function"]["name"] == "get_events"
     assert tool_message(turn.tool_calls[0], "none")["tool_call_id"] == "c1"
+
+
+def test_warming_asks_for_one_token(config):
+    """U-09: the load is paid at startup, cheaply."""
+    completions = FakeCompletions(SimpleNamespace(content="", tool_calls=None))
+    ChatClient(config, SimClock(), _client(completions)).warm()
+    assert completions.requests[0]["max_tokens"] == 1
+
+
+def test_warming_reports_how_long_the_load_took(config):
+    clock = SimClock()
+    completions = FakeCompletions(SimpleNamespace(content="", tool_calls=None), delay_s=85.0, clock=clock)
+    assert ChatClient(config, clock, _client(completions)).warm() == pytest.approx(85.0)
+
+
+def test_a_failed_warm_up_is_reported_as_unavailable(config):
+    completions = FakeCompletions(None, error=ConnectionError("refused"))
+    with pytest.raises(ReasoningUnavailableError):
+        ChatClient(config, SimClock(), _client(completions)).warm()
+
+
+def test_a_call_written_as_bare_json_is_recovered(config):
+    """Live: the opening tag was lost and "portun {...} </tool_call>" was spoken."""
+    content = 'portun\n{"name": "schedule_event", "arguments": {"subject": "dentist"}}\n</tool_call>'
+    completions = FakeCompletions(SimpleNamespace(content=content, tool_calls=None))
+    turn = ChatClient(config, SimClock(), _client(completions)).complete([])
+    assert [call.name for call in turn.tool_calls] == ["schedule_event"]
+    assert turn.content == ""
+
+
+def test_json_that_is_not_a_call_stays_text(config):
+    completions = FakeCompletions(SimpleNamespace(content='The reading is {"t": 27}.', tool_calls=None))
+    turn = ChatClient(config, SimClock(), _client(completions)).complete([])
+    assert turn.tool_calls == () and "27" in turn.content

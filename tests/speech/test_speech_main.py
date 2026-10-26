@@ -199,3 +199,57 @@ class TestWiringAgainstTheRealInterfaces:
         clock = SimClock()
         runner.build_pipeline(config, clock, FakeCapture([]))
         assert captured["clock"] is clock
+
+
+class TestOverheardSpeech:
+    """FR-76: overheard words go to their own topic, never to the preference topic."""
+
+    def test_overheard_speech_is_published_as_ambient(self, config):
+        from src.common.schemas import AmbientUtterance
+
+        heard = AmbientUtterance(ts=TS, transcript="dentist on thursday at four")
+        _, _, blackboard = _run(config, [heard])
+        assert [spec for spec, _ in blackboard.published] == [topics.CONTEXT_AMBIENT]
+
+    def test_the_ambient_topic_is_not_retained(self):
+        assert topics.CONTEXT_AMBIENT.retain is False
+
+
+class _PausingPipeline(FakePipeline):
+    def __init__(self, results):
+        super().__init__(results)
+        self.paused = 0
+
+    def pause(self):
+        self.paused += 1
+
+
+class _HeldVoice:
+    def __init__(self, listening=True, busy=False):
+        from src.common.schemas import SpeechSettings
+
+        self.settings = SpeechSettings(ts=1.0, listening=listening)
+        self.busy = busy
+
+
+class TestTheMicrophoneIsHeld:
+    """FR-79, FR-82: frames are dropped unheard while speaking or muted."""
+
+    def _run(self, config, voice, results):
+        capture = FakeCapture(["f"] * len(results))
+        pipeline = _PausingPipeline(results)
+        blackboard = RecordingBlackboard()
+        runner.run(config, SimClock(), capture, pipeline, blackboard, frames=len(results), voice=voice)
+        return pipeline, blackboard
+
+    def test_while_speaking_nothing_reaches_the_pipeline(self, config):
+        pipeline, blackboard = self._run(config, _HeldVoice(busy=True), [_hint(), _hint()])
+        assert pipeline.seen == 0 and pipeline.paused == 2 and blackboard.published == []
+
+    def test_muted_nothing_reaches_the_pipeline(self, config):
+        pipeline, _ = self._run(config, _HeldVoice(listening=False), [_hint()])
+        assert pipeline.seen == 0 and pipeline.paused == 1
+
+    def test_otherwise_frames_flow_as_before(self, config):
+        pipeline, blackboard = self._run(config, _HeldVoice(), [_hint()])
+        assert pipeline.seen == 1 and len(blackboard.published) == 1

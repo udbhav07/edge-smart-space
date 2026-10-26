@@ -417,10 +417,21 @@ class TestInvocationOutcomes:
         result = registry.invoke(_invocation(clock), confirmed=True)
         assert result.status is ToolStatus.FAILED
 
-    def test_a_failure_says_what_went_wrong(self, registry, clock):
+    def test_an_internal_failure_is_apologised_for_not_recited(self, registry, clock):
+        """U-19: 'profile_memory could not do it: ...' was read out to a person."""
         registry.bind("schedule_event", BrokenProvider())
         result = registry.invoke(_invocation(clock), confirmed=True)
-        assert "unreachable" in result.message
+        assert result.message == "Sorry, I couldn't do that just now."
+        assert "broken_calendar" not in result.message
+
+    def test_a_providers_own_sentence_reaches_the_occupant(self, registry, clock):
+        class Refusing(BrokenProvider):
+            def invoke(self, tool, arguments):
+                raise ValueError("Nothing in your calendar matches that.")
+
+        registry.bind("schedule_event", Refusing())
+        result = registry.invoke(_invocation(clock), confirmed=True)
+        assert result.message == "Nothing in your calendar matches that."
 
     def test_a_refusal_names_no_provider(self, registry, clock):
         result = registry.invoke(_invocation(clock), confirmed=False)
@@ -659,3 +670,71 @@ class TestNoAuthority:
         assert not any(
             name in parameters for name in ("setpoint_c", "temperature", "command")
         )
+
+
+class TestSystemSuppliedParameters:
+    """FR-52: whose memory a fact goes into is decided by who spoke."""
+
+    def test_the_model_is_never_shown_whose_memory_it_writes(self):
+        from src.common.tools import REMEMBER
+
+        properties = REMEMBER.as_schema()["function"]["parameters"]["properties"]
+        assert "profile_id" not in properties
+        assert "fact" in properties
+
+    def test_nor_is_it_listed_as_required_of_the_model(self):
+        from src.common.tools import REMEMBER
+
+        required = REMEMBER.as_schema()["function"]["parameters"]["required"]
+        assert required == ["fact"]
+
+    def test_the_executor_still_requires_it(self):
+        from src.common.tools import REMEMBER, ToolArgumentError
+
+        with pytest.raises(ToolArgumentError, match="profile_id"):
+            REMEMBER.validate_arguments({"fact": "likes it cool"})
+
+    def test_memory_tools_write_and_never_commit(self):
+        """Their own memory, removable again: no confirmation (FR-74)."""
+        from src.common.tools import FORGET, REMEMBER, ToolEffect
+
+        assert REMEMBER.effect is ToolEffect.WRITE and FORGET.effect is ToolEffect.WRITE
+
+
+class TestOverheardTools:
+    """FR-77, FR-78: what overheard speech may do, and that a reply may not."""
+
+    def test_they_are_declared(self):
+        from src.common.tools import KEEP_EVENT, PENCIL_EVENT, SETTLE_FACT, SUGGEST_FACT
+
+        assert {PENCIL_EVENT, KEEP_EVENT, SUGGEST_FACT, SETTLE_FACT} <= set(ASSISTANCE_TOOLS)
+
+    def test_none_is_offered_to_the_assistant(self):
+        from src.common.tools import KEEP_EVENT, PENCIL_EVENT, SETTLE_FACT, SUGGEST_FACT
+
+        assert not any(spec.offered_to_assistant for spec in (PENCIL_EVENT, KEEP_EVENT, SUGGEST_FACT, SETTLE_FACT))
+
+    def test_every_other_tool_still_is(self):
+        hidden = {"pencil_event", "keep_event", "suggest_fact", "settle_fact"}
+        assert all(spec.offered_to_assistant for spec in ASSISTANCE_TOOLS if spec.name not in hidden)
+
+    def test_they_write_and_never_commit(self):
+        """A plan overheard is pencilled, never booked (FR-77)."""
+        from src.common.tools import KEEP_EVENT, PENCIL_EVENT, SETTLE_FACT, SUGGEST_FACT
+
+        for spec in (PENCIL_EVENT, KEEP_EVENT, SUGGEST_FACT, SETTLE_FACT):
+            assert spec.effect is ToolEffect.WRITE and not spec.requires_confirmation
+
+    def test_whose_suggestion_it_is_comes_from_the_voice(self):
+        from src.common.tools import SUGGEST_FACT
+
+        assert "profile_id" not in SUGGEST_FACT.as_schema()["function"]["parameters"]["properties"]
+
+    def test_settling_takes_a_yes_or_no(self):
+        from src.common.tools import SETTLE_FACT
+
+        accepted = SETTLE_FACT.validate_arguments({"profile_id": "ravi", "fact": "Likes tea.", "keep": True})
+        assert accepted["keep"] is True
+
+    def test_overheard_speech_is_a_requester_of_its_own(self):
+        assert ToolRequester.AMBIENT.value == "ambient"

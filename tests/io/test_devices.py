@@ -100,6 +100,19 @@ class TestSensors:
         _device(board, config, "temp_01", "nan-ish")
         assert _readings(transport, "temp_01") == []
 
+    @pytest.mark.parametrize("text", ["nan", "NaN", "inf", "-inf"])
+    def test_a_failed_sensor_read_is_absence_not_a_value(self, wired, config, text):
+        """ESPHome publishes "nan" when the sensor itself failed to read."""
+        _, transport, board, _ = wired
+        _device(board, config, "temp_01", text)
+        assert _readings(transport, "temp_01") == []
+
+    def test_a_failed_read_does_not_hide_the_value_before_it(self, wired, config):
+        _, transport, board, _ = wired
+        _device(board, config, "temp_01", "27.4")
+        _device(board, config, "temp_01", "nan")
+        assert [reading.value for reading in _readings(transport, "temp_01")] == [27.4]
+
     def test_no_health_is_published_here(self, wired, config):
         """The detector bank owns health; two publishers would fight."""
         _, transport, board, _ = wired
@@ -199,3 +212,58 @@ class TestInjection:
         self._inject(board, clock, "ac", InjectedFault.NONE)
         TestTheUnit()._command(board, clock, CommandKind.COOL, 23.0)
         assert transport.on(config.devices.ac_mode_command_topic)[-1] == b"cool"
+
+
+class TestAcknowledgementFromTheMeter:
+    """R-02: with no mode readback, the unit's draw says whether it obeyed."""
+
+    @pytest.fixture(name="metered")
+    def _metered(self):
+        config = load_config(Path("config/default.yaml"))
+        clock = SimClock()
+        transport = Transport()
+        board = Blackboard(config.mqtt, transport)
+        bridge = DeviceBridge(config, clock, board)
+        bridge.subscribe()
+        board.on_connected()
+        return bridge, transport, board, clock, config
+
+    def _ack(self, metered, kind, draw_w, wait_s=None):
+        bridge, transport, board, clock, config = metered
+        command = Command(
+            ts=clock.now(), actuator_id="ac", kind=kind,
+            setpoint_c=23.0 if kind is CommandKind.COOL else None,
+        )
+        board.dispatch("space/actuator/ac/command", command.model_dump_json().encode())
+        clock.advance(config.devices.ac_ack_grace_s if wait_s is None else wait_s)
+        _device(board, config, "pwr_01", f"{draw_w:.1f}")
+        bridge.tick()
+        return ActuatorState.model_validate_json(transport.on("space/actuator/ac/state")[-1]).ack
+
+    def test_a_cool_drawing_running_power_is_acknowledged(self, metered):
+        assert self._ack(metered, CommandKind.COOL, 1150.0) is AckStatus.ACKNOWLEDGED
+
+    def test_a_cool_drawing_standby_has_failed(self, metered):
+        """The IR command was lost, or the unit is dead: either way it did not obey."""
+        assert self._ack(metered, CommandKind.COOL, 4.0) is AckStatus.FAILED
+
+    def test_an_off_drawing_standby_is_acknowledged(self, metered):
+        assert self._ack(metered, CommandKind.OFF, 4.0) is AckStatus.ACKNOWLEDGED
+
+    def test_an_off_still_drawing_running_power_has_failed(self, metered):
+        assert self._ack(metered, CommandKind.OFF, 1150.0) is AckStatus.FAILED
+
+    def test_a_reasserted_cool_stays_acknowledged(self, metered):
+        """Live: the controller re-asserts COOL every 60 s, the grace is 60 s,
+        and restarting the grace on each re-assertion kept the ack UNKNOWN."""
+        self._ack(metered, CommandKind.COOL, 1150.0)
+        for _ in range(3):
+            assert self._ack(metered, CommandKind.COOL, 1150.0, wait_s=1.0) is AckStatus.ACKNOWLEDGED
+
+    def test_a_change_of_state_still_restarts_the_grace(self, metered):
+        self._ack(metered, CommandKind.COOL, 1150.0)
+        assert self._ack(metered, CommandKind.OFF, 1150.0, wait_s=5.0) is AckStatus.UNKNOWN
+
+    def test_inside_the_grace_period_it_is_unknown(self, metered):
+        """A compressor takes time to start; judging sooner would fail it."""
+        assert self._ack(metered, CommandKind.COOL, 4.0, wait_s=5.0) is AckStatus.UNKNOWN

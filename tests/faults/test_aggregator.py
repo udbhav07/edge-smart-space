@@ -383,3 +383,37 @@ class TestAdopting:
         aggregator.adopt(self._divergence(aggregator))
         assert len(aggregator.retire_all()) == 1
         assert aggregator.active == ()
+
+
+class TestAdvisoryFaults:
+    """Section 5.6 degrades on the temperature sensor, not on every instrument."""
+
+    CONTROLLING = frozenset({SUBJECT, "ac"})
+
+    @pytest.fixture(name="scoped")
+    def _scoped(self, clock) -> FaultAggregator:
+        return FaultAggregator(
+            clock=clock, clear_confirm_s=CONFIRM_S, controlling_subjects=self.CONTROLLING
+        )
+
+    def test_a_sensor_fault_on_a_controlling_subject_degrades(self, scoped):
+        event = scoped.ingest([_finding(subject=SUBJECT)]).raised[0]
+        assert event.mode_impact is Mode.DEGRADED_SENSOR
+
+    def test_a_sensor_fault_elsewhere_is_advisory(self, scoped):
+        event = scoped.ingest([_finding(subject="hum_01")]).raised[0]
+        assert event.mode_impact is Mode.NORMAL
+
+    def test_an_advisory_fault_keeps_its_evidence(self, scoped):
+        event = scoped.ingest([_finding(subject="hum_01")]).raised[0]
+        assert event.evidence["variance"] == 0.0002
+
+    def test_an_advisory_fault_never_outranks_one_that_matters(self, scoped, clock):
+        scoped.ingest([_finding(subject="hum_01")])
+        clock.advance(10.0)
+        scoped.ingest([_finding(subject="hum_01"), _finding(subject=SUBJECT)])
+        assert scoped.dominant.subject == SUBJECT
+
+    def test_without_a_scope_every_subject_controls(self, aggregator):
+        event = aggregator.ingest([_finding(subject="hum_01")]).raised[0]
+        assert event.mode_impact is Mode.DEGRADED_SENSOR

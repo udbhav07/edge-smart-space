@@ -51,7 +51,7 @@ chasing the fault while the system decides what to do about it.
 from __future__ import annotations
 
 from src.common.config import DriftDetectorConfig
-from src.common.schemas import DetectorId, ThermalEstimate
+from src.common.schemas import ONSET_KEY, DetectorId, ThermalEstimate
 from src.faults.detectors.base import Finding, Judgment
 
 #: A cumulative sum cannot go negative: the test is "has evidence accumulated",
@@ -80,9 +80,16 @@ class DriftDetector:
         self._accumulate_every = accumulate_every
         self._high = _SUM_FLOOR
         self._low = _SUM_FLOOR
+        #: Estimate timestamps at which each sum last stood at the floor.
+        self._high_since_ts: float | None = None
+        self._low_since_ts: float | None = None
         self._samples = 0
         self._normalised = 0.0
         self._sigma_c = 0.0
+        #: D5's finding that the room warmed while the unit demonstrably ran
+        #: (S-02): evidence against this reading the residual cannot give
+        #: once the estimator has absorbed the drift.
+        self._contradiction: dict[str, float] | None = None
 
     @property
     def subject(self) -> str:
@@ -129,6 +136,22 @@ class DriftDetector:
         slack = self._config.slack_sigma
         self._high = max(_SUM_FLOOR, self._high + bounded - slack)
         self._low = max(_SUM_FLOOR, self._low - bounded - slack)
+        # The textbook CUSUM change-point estimate: the drift began after the
+        # last time its sum stood at the floor.
+        if self._high == _SUM_FLOOR:
+            self._high_since_ts = estimate.ts
+        if self._low == _SUM_FLOOR:
+            self._low_since_ts = estimate.ts
+
+    def observe_contradiction(self, evidence: dict[str, float]) -> None:
+        """The room warmed while the unit was demonstrably cooling it.
+
+        A second route to the same verdict, for the case the CUSUM is blind
+        to: an estimator that adapted to the drift leaves no residual, but a
+        working compressor beside a rising reading is a contradiction no
+        adaptation explains. Held until the detector is reset.
+        """
+        self._contradiction = dict(evidence)
 
     @staticmethod
     def _residual(estimate: ThermalEstimate) -> tuple[float, float]:
@@ -169,6 +192,15 @@ class DriftDetector:
         """
         self._high = _SUM_FLOOR
         self._low = _SUM_FLOOR
+        self._high_since_ts = None
+        self._low_since_ts = None
+        self._contradiction = None
+
+    def _onset_ts(self) -> float | None:
+        """When the side that tripped last stood at zero, or None if unknown."""
+        if self._high >= self._low:
+            return self._high_since_ts
+        return self._low_since_ts
 
     def evaluate(self) -> Finding:
         """Judge the subject on the evidence accumulated so far.
@@ -177,6 +209,8 @@ class DriftDetector:
         the sums are zero because nothing was measured, which must not be
         reported as a sensor observed to be drift-free.
         """
+        if self._contradiction is not None:
+            return self._finding(Judgment.FAULTED)
         if self._samples <= self._config.warmup_samples:
             return self._finding(Judgment.UNKNOWN)
 
@@ -191,6 +225,8 @@ class DriftDetector:
         (FR-26). On a clear finding it reads as progress towards detection,
         which is the number worth watching during a demonstration.
         """
+        if self._contradiction is not None:
+            return 1.0
         worst = max(self._high, self._low)
         return min(1.0, worst / self._config.threshold_sigma)
 
@@ -210,5 +246,15 @@ class DriftDetector:
                 "residual_sigma_c": self._sigma_c,
                 "samples": float(self._samples),
                 "warmup_samples": float(self._config.warmup_samples),
+                **(
+                    {ONSET_KEY: self._onset_ts()}
+                    if judgment is Judgment.FAULTED and self._onset_ts() is not None
+                    else {}
+                ),
+                **(
+                    {f"plant_{key}": value for key, value in self._contradiction.items()}
+                    if self._contradiction is not None
+                    else {}
+                ),
             },
         )

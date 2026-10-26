@@ -97,6 +97,31 @@ class TestSensors:
         indoor = next(v for v in room.monitor.sensors() if v.sensor_id == "temp_01")
         assert indoor.problem.startswith("OUT OF LIMITS")
 
+    def test_a_frozen_sensor_is_flagged(self, config):
+        """U-13: a sensor that reports one value forever is not healthy."""
+        room = Room(config)
+        room.injector.inject("temp_01", InjectedFault.STUCK_AT, 23.0)
+        room.run_for(60.0)
+        indoor = next(v for v in room.monitor.sensors() if v.sensor_id == "temp_01")
+        assert indoor.problem.startswith("FROZEN")
+
+    def test_a_frozen_occupancy_sensor_is_not_flagged(self, config):
+        """A binary sensor holding one value is an empty room, not a fault."""
+        room = Room(config)
+        room.run_for(60.0)
+        occupancy = next(v for v in room.monitor.sensors() if v.sensor_id == "pir_01")
+        assert not occupancy.problem.startswith("FROZEN")
+
+    def test_a_missing_value_keeps_the_columns_aligned(self, config):
+        room = Room(config)
+        room.injector.inject("hum_01", InjectedFault.DROPOUT)
+        room.run_for(30.0)
+        header, *rows = room.monitor.report().splitlines()
+        column = header.index("verdict")
+        sensor_rows = [row for row in rows if row.split()[0] in {"temp_01", "hum_01"}]
+        assert len(sensor_rows) == 2
+        assert all(row[column - 2:column] == "  " and row[column] != " " for row in sensor_rows)
+
     def test_sigma_is_measured_for_r04(self, config):
         """The number Week 7 sets detector thresholds from."""
         room = Room(config)
@@ -134,6 +159,34 @@ class TestActuation:
     def test_a_room_with_no_meter_says_so_rather_than_guessing(self, config):
         """An IR path cannot acknowledge (R-02); with no power meter wired
         there is nothing to judge the command by, and the check says so."""
-        room = Room(config, with_control=True)
+        sensors = config.sensors.model_copy(
+            update={
+                "adapters": tuple(
+                    sensor for sensor in config.sensors.adapters if sensor.sensor_id != "pwr_01"
+                )
+            }
+        )
+        room = Room(config.model_copy(update={"sensors": sensors}), with_control=True)
         room.monitor.begin_actuation()
         assert "no power meter" in room.monitor.actuation().problem
+
+
+class TestActuationAgainstTheMeter:
+    """With the meter on the unit's supply, the check judges the draw (R-02)."""
+
+    def test_a_working_unit_passes(self, config):
+        room = Room(config, with_control=True)
+        room.run_for(10.0)
+        room.monitor.begin_actuation()
+        room.run_for(config.bringup.actuation_window_s)
+        verdict = room.monitor.actuation()
+        assert verdict.ok, verdict.problem
+        assert verdict.peak_w - verdict.baseline_w >= config.bringup.min_power_rise_w
+
+    def test_a_dead_unit_fails(self, config):
+        room = Room(config, with_control=True)
+        room.run_for(10.0)
+        room.simulator._actuator.inject_failure(True)
+        room.monitor.begin_actuation()
+        room.run_for(config.bringup.actuation_window_s)
+        assert not room.monitor.actuation().ok

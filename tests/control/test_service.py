@@ -393,13 +393,17 @@ class TestSpokenPreferences:
 class TestPeakTariff:
     """FR-16: during peak the loop tracks a shifted setpoint, within bounds."""
 
-    def _at_hour(self, hour: int) -> SimClock:
+    def _at_hour(self, config, hour: int) -> SimClock:
         from datetime import datetime
 
-        return SimClock(start_epoch_s=datetime(2026, 10, 1, hour, 0).timestamp())
+        from src.common.localtime import epoch_of
+
+        return SimClock(
+            start_epoch_s=epoch_of(datetime(2026, 10, 1, hour, 0), config.site.utc_offset_h)
+        )
 
     def _wired_at(self, config, hour: int):
-        clock = self._at_hour(hour)
+        clock = self._at_hour(config, hour)
         transport = FakeTransport()
         blackboard = Blackboard(config.mqtt, transport)
         service = build_service(config, clock, blackboard)
@@ -427,6 +431,45 @@ class TestPeakTariff:
         assert len(tariff) == 1 and tariff[0][1] is True
         assert b'"peak"' in tariff[0][0]
 
+    def _tracking(self, transport):
+        from src.common.schemas import TrackingState
+
+        return [
+            (TrackingState.model_validate_json(payload), retain)
+            for topic, payload, _, retain in transport.published
+            if topic == "space/control/tracking"
+        ]
+
+    def test_what_the_room_is_held_to_is_published_retained(self, config):
+        """U-04: told 22 while held at 23, with nothing to show the difference."""
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        state, retained = self._tracking(transport)[-1]
+        assert retained
+        assert state.tracked_c == state.setpoint_c + config.tariff.peak_offset_c
+
+    def test_the_difference_is_explained(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        reason = self._tracking(transport)[-1][0].reason
+        assert "peak tariff" in reason and "22:00" in reason
+
+    def test_outside_peak_there_is_nothing_to_explain(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 12)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        state = self._tracking(transport)[-1][0]
+        assert state.tracked_c == state.setpoint_c and state.reason == ""
+
+    def test_tracking_is_republished_only_on_change(self, config):
+        service, transport, blackboard, clock = self._wired_at(config, 19)
+        _send_reading(blackboard, clock, 27.0)
+        service.tick()
+        service.tick()
+        assert len(self._tracking(transport)) == 1
+
     def test_an_unchanged_band_is_not_republished(self, config):
         service, transport, blackboard, clock = self._wired_at(config, 19)
         _send_reading(blackboard, clock, 27.0)
@@ -451,3 +494,31 @@ class TestPursuingAPreference:
             clock.advance(5.0)
             service.tick()
         assert service.setpoint_c == 20.0
+
+
+class TestBackToAutomatic:
+    """FR-81: the occupant hands the temperature back."""
+
+    def _release(self, blackboard, clock):
+        hint = PreferenceHint(ts=clock.now(), comfort="unchanged", subject="temperature", release=True, transcript="back to automatic")
+        blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
+
+    def test_the_default_comes_back_through_the_gate(self, wired, clock, config):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=22.0)
+        self._release(blackboard, clock)
+        assert service.setpoint_c == config.controller.default_setpoint_c
+        assert transport.verdicts()[-1].proposed["source"] == "default"
+
+    def test_the_supervisor_may_plan_again(self, wired, clock):
+        service, transport, blackboard = wired
+        _send_preference(blackboard, clock, target_c=22.0)
+        self._release(blackboard, clock)
+        _send_goal(blackboard, clock, 25.0)
+        assert service.setpoint_c == 25.0
+
+    def test_cooling_off_is_bounded_by_the_gate(self, wired, clock, config):
+        service, transport, blackboard = wired
+        hint = PreferenceHint(ts=clock.now(), comfort="unchanged", subject="temperature", target_c=config.console.cooling_off_c, hold_s=3 * 3600.0, transcript="cooling off for three hours")
+        blackboard.dispatch("space/context/preference", hint.model_dump_json().encode())
+        assert transport.verdicts()[-1].applied["setpoint_c"] <= config.validator.setpoint_bounds_c.high

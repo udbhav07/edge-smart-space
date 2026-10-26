@@ -22,6 +22,7 @@ from src.common import topics
 from src.common.injection import InjectedFault
 from src.common.schemas import (
     AssistantReply,
+    ProfileContext,
     ReasoningRecord,
     TariffState,
     FaultDiagnosis,
@@ -75,7 +76,7 @@ FAULT_EVENT_PAYLOAD = {
     "class": "sensor",
     "confidence": 0.94,
     "detected_ts": 1756032300.0,
-    "evidence": {"window_s": 300, "variance": 0.0002},
+    "evidence": {"window_s": 300, "variance": 0.0002, "onset_ts": 1756032000.0},
     "mode_impact": "DEGRADED_SENSOR",
 }
 
@@ -119,6 +120,7 @@ PREFERENCE_HINT_PAYLOAD = {
     "rationale": "it is too warm in here",
     "spoken_reply": "I have passed that on.",
     "transcript": "it is too warm in here, can you cool it down",
+    "profile_id": "ravi",
 }
 
 FAULT_DIAGNOSIS_PAYLOAD = {
@@ -146,6 +148,22 @@ ASSISTANT_REPLY_PAYLOAD = {
     "reply": "Added design review at 15:00 on 4 September.",
     "invocation_ids": ["inv_1756032000_0"],
     "awaiting_confirmation": "",
+    "profile_id": "ravi",
+}
+
+PROFILE_CONTEXT_PAYLOAD = {
+    "ts": 1756032003.4,
+    "profile_id": "ravi",
+    "display_name": "Ravi",
+    "preferences": {"comfort_c": "23"},
+    "facts": ["prefers meetings after ten"],
+    "recent": [
+        {
+            "ts": 1756032003.2,
+            "said": "put the design review in my calendar at three",
+            "replied": "Added design review at 15:00 on 4 September.",
+        }
+    ],
 }
 
 REASONING_RECORD_PAYLOAD = {
@@ -203,6 +221,7 @@ DOCUMENTED_PAYLOADS = [
     (ReasoningRecord, REASONING_RECORD_PAYLOAD),
     (TariffState, TARIFF_STATE_PAYLOAD),
     (FaultDiagnosis, FAULT_DIAGNOSIS_PAYLOAD),
+    (ProfileContext, PROFILE_CONTEXT_PAYLOAD),
 ]
 
 # --- Section 6.1 topic table, verbatim -------------------------------------
@@ -224,7 +243,14 @@ DOCUMENTED_TOPICS = frozenset(
         "space/actuator/{actuator_id}/state",
         "space/context/preference",
         "space/context/reply",
+        "space/context/profile/{profile_id}",
+        "space/context/utterance",
+        "space/context/ambient",
+        "space/speech/status",
+        "space/speech/settings",
+        "space/assist/google",
         "space/tariff/state",
+        "space/control/tracking",
         "space/assist/proposed",
         "space/assist/confirmed",
         "space/assist/result",

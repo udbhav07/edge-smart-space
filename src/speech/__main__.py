@@ -27,12 +27,17 @@ from pathlib import Path
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, load_config
+from src.common.conversation import Conversations
 from src.common.device import resolve
 from src.common.mqtt_client import Blackboard, build_transport
+from src.common.schemas import AmbientUtterance, AssistantReply, ModeState, SpeechActivity, SpeechSettings
 from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
 from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
 from src.speech.pipeline import SpeechPipeline
+from src.speech.speaker_profile import SpeakerIdentifier
+from src.speech.status import StatusPublisher
+from src.speech.voice import Voice, build_speaker
 from src.speech.wakeword import WakeWordDetector
 
 LOGGER = logging.getLogger(__name__)
@@ -46,7 +51,11 @@ _FRAME_WAIT_S = 0.5
 
 
 def build_pipeline(
-    config: Config, clock: Clock, capture: AudioCapture
+    config: Config,
+    clock: Clock,
+    capture: AudioCapture,
+    conversations: Conversations | None = None,
+    on_activity=None,
 ) -> SpeechPipeline:
     """Assemble the pipeline from configuration.
 
@@ -62,12 +71,20 @@ def build_pipeline(
         utterance=UtteranceDetector(config.speech),
         transcriber=Transcriber(config.speech),
         personal_context=PersonalContext(config.reasoning, clock),
+        speaker=SpeakerIdentifier(config.speech),
+        conversations=conversations,
+        on_activity=on_activity,
     )
 
 
-def _publish(blackboard: Blackboard, hint) -> None:
-    blackboard.publish(topics.CONTEXT_PREFERENCE, hint)
-    LOGGER.info("published preference hint: %s", hint.model_dump_json())
+def _publish(blackboard: Blackboard, heard) -> None:
+    """An addressed request is a hint (FR-53); anything else was overheard (FR-76)."""
+    if isinstance(heard, AmbientUtterance):
+        blackboard.publish(topics.CONTEXT_AMBIENT, heard)
+        LOGGER.info("published overheard speech (%d words)", len(heard.transcript.split()))
+        return
+    blackboard.publish(topics.CONTEXT_PREFERENCE, heard)
+    LOGGER.info("published preference hint: %s", heard.model_dump_json())
 
 
 def run(
@@ -77,6 +94,8 @@ def run(
     pipeline: SpeechPipeline,
     blackboard: Blackboard,
     frames: int | None = None,
+    status: StatusPublisher | None = None,
+    voice: Voice | None = None,
 ) -> int:
     """Pump audio frames through the pipeline until interrupted.
 
@@ -84,13 +103,26 @@ def run(
         what lets an integration test drive this without a microphone.
     """
     processed = 0
+    if status is not None:
+        status.changed(status.activity)
     while frames is None or processed < frames:
+        if status is not None:
+            status.heartbeat()
         try:
             frame = capture.frames.get(timeout=_FRAME_WAIT_S)
         except queue.Empty:
             continue
 
         processed += 1
+        held = _held(voice)
+        if held is not None:
+            # Speaking, or muted: the frame is dropped unheard (FR-79, FR-82).
+            pipeline.pause()
+            if status is not None and status.activity is not held:
+                status.changed(held)
+            continue
+        if status is not None and status.activity in (SpeechActivity.SPEAKING, SpeechActivity.MUTED):
+            status.changed(SpeechActivity.WAITING)
         try:
             hint = pipeline.accept(frame)
         except ReasoningUnavailableError as exc:
@@ -102,6 +134,17 @@ def run(
         if hint is not None:
             _publish(blackboard, hint)
     return processed
+
+
+def _held(voice: Voice | None) -> SpeechActivity | None:
+    """Why the microphone must be ignored right now, if it must."""
+    if voice is None:
+        return None
+    if not voice.settings.listening:
+        return SpeechActivity.MUTED
+    if voice.busy:
+        return SpeechActivity.SPEAKING
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,17 +168,34 @@ def main(argv: list[str] | None = None) -> int:
     holder.append(blackboard)
 
     capture = AudioCapture(config.speech, clock)
-    pipeline = build_pipeline(config, clock, capture)
+    conversations = Conversations()
+    conversations.subscribe(blackboard)
+    voice = Voice(
+        build_speaker(config.speech),
+        clock,
+        utc_offset_h=config.site.utc_offset_h,
+        tail_s=config.speech.speaking_tail_ms / 1000.0,
+    )
+    # Replies, the occupant's settings and changes of mode reach the voice;
+    # it says what they ask for on a thread of its own (FR-79).
+    blackboard.subscribe(topics.CONTEXT_REPLY, AssistantReply, voice.on_reply)
+    blackboard.subscribe(topics.SPEECH_SETTINGS, SpeechSettings, voice.on_settings)
+    blackboard.subscribe(topics.SYSTEM_MODE, ModeState, voice.on_mode)
+    voice.start()
+    status = StatusPublisher(config.speech, clock, blackboard, capture.microphone, voice=voice.engine)
+    pipeline = build_pipeline(config, clock, capture, conversations, on_activity=status.changed)
 
     blackboard.start()
     capture.start()
     LOGGER.info(
-        "listening for %r; hints publish to %s",
+        "listening for %r (%s); hints publish to %s, overheard speech to %s",
         config.speech.wake_word,
+        config.speech.listen_mode.value,
         topics.CONTEXT_PREFERENCE.pattern,
+        topics.CONTEXT_AMBIENT.pattern,
     )
     try:
-        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames)
+        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames, status=status, voice=voice)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:

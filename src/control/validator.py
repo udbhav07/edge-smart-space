@@ -185,16 +185,37 @@ class CommandValidator:
         """Admit, downgrade, or block a command.
 
         Rules apply in order V-5, V-3, V-4: most restrictive first, so a mode
-        that forbids actuation is never overridden by a timing rule.
+        that forbids actuation is never overridden by a timing rule. A stop is
+        the exception V-5 makes: always admitted, never throttled.
         """
         now = self._clock.now()
 
-        if mode in NON_ACTUATING_MODES and command.kind in _STATE_CHANGING_COMMANDS:
+        if mode in NON_ACTUATING_MODES and command.kind is CommandKind.COOL:
             return self._verdict(
                 now, command, _BLOCKED_COMMAND, Verdict.BLOCKED, ReasonCode.MODE_BLOCK
             )
 
+        if mode in NON_ACTUATING_MODES and command.kind is CommandKind.OFF:
+            # V-5 forbids driving the plant, and stopping it is not driving
+            # it: an OFF cannot breach dwell and its worst case is a room
+            # drifting toward ambient. Neither throttled nor refused, because
+            # a suppressed stop would leave the unit running unsupervised.
+            self._record_admitted(command.kind, now)
+            return self._verdict(
+                now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
+            )
+
         if command.kind not in _STATE_CHANGING_COMMANDS:
+            return self._verdict(
+                now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
+            )
+
+        if self._is_reassertion(command.kind):
+            # The controller re-sends its intended state because an IR command
+            # can be lost (R-02). Re-sending changes nothing, so it is neither
+            # throttled nor counted: counting it reset the V-4 window, and a
+            # genuine OFF arriving within 30 s of a refresh was suppressed,
+            # leaving the compressor running for up to another interval.
             return self._verdict(
                 now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
             )
@@ -213,6 +234,10 @@ class CommandValidator:
         return self._verdict(
             now, command, command.kind, Verdict.ACCEPTED, ReasonCode.NONE
         )
+
+    def _is_reassertion(self, kind: CommandKind) -> bool:
+        """Whether a command asks for the state the compressor is already in."""
+        return (kind is CommandKind.COOL) is self._compressor_on
 
     def _violates_dwell(self, kind: CommandKind, now: float) -> bool:
         """V-3. No restart until the compressor has been off long enough."""

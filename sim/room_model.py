@@ -56,6 +56,12 @@ _CONDENSATION_RATE_PCT_PER_S = 0.004
 _RECOVERY_RATE_PCT_PER_S = 0.0008
 _OCCUPANT_MOISTURE_PCT_PER_S = 0.0012
 
+#: A coil can only condense water down to its own dew point, so an air
+#: conditioner dries a room to somewhere around this and no further. Without
+#: the floor a compressor running for hours drove the true humidity to 0 %,
+#: noise reported -0.1 %, and D3 faulted a healthy humidity sensor.
+_COIL_DRY_LIMIT_PCT = 35.0
+
 
 class RoomModel:
     """The room, as physics rather than as a model of physics.
@@ -180,6 +186,10 @@ class RoomModel:
         the right reason" would be precision nobody reads.
         """
         removed = cooling_fraction * _CONDENSATION_RATE_PCT_PER_S * duration_s
+        # Never below what the coil can reach, and never more than the step
+        # needs to reach it, so the floor holds at any step size.
+        removable = max(0.0, self.relative_humidity_pct - _COIL_DRY_LIMIT_PCT)
+        removed = min(removed, removable)
         recovered = _RECOVERY_RATE_PCT_PER_S * duration_s
         if occupied:
             recovered += _OCCUPANT_MOISTURE_PCT_PER_S * duration_s

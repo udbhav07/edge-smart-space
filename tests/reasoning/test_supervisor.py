@@ -183,6 +183,29 @@ class TestProposing:
         assert room.published(topics.GOAL_PROPOSED, Goal) == []
         assert "previous goal retained" in record.verdict
 
+    def test_a_proposal_made_before_reading_is_asked_again(self, config):
+        """Live, every fault cycle proposed setpoint 0 with no rationale in the
+        same turn as its reads, and the cycle ended with nothing."""
+        blind = calling(
+            call("get_thermal_state"), call("get_active_faults"),
+            call("propose_setpoint", setpoint_c=0, mode="", rationale=""),
+        )
+        informed = calling(call("propose_setpoint", setpoint_c=25.0, mode="NORMAL", rationale="no faults"))
+        room = Room(config, ScriptedChat(blind, informed))
+        room.estimate()
+        room.mode()
+        record = room.supervisor.maybe_run()
+        assert [goal.setpoint_c for goal in room.published(topics.GOAL_PROPOSED, Goal)] == [25.0]
+        assert "discarded" not in record.verdict
+
+    def test_the_blind_proposal_is_not_judged(self, config):
+        blind = calling(call("get_thermal_state"), call("propose_setpoint", setpoint_c=26.0, mode="NORMAL", rationale="guess"))
+        room = Room(config, ScriptedChat(blind, saying("done")))
+        room.estimate()
+        room.mode()
+        room.supervisor.maybe_run()
+        assert room.published(topics.GOAL_PROPOSED, Goal) == []
+
     def test_the_loop_stops_at_its_step_bound(self, config):
         endless = [calling(call("get_thermal_state")) for _ in range(20)]
         chat = ScriptedChat(*endless)

@@ -45,6 +45,15 @@ from src.common.schemas import Command, CommandKind, Mode
 #: HOLD rather than falling silent, so downstream state stays observable.
 _HOLD_MODES = frozenset({Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD})
 
+#: The hold that also stops the compressor. SAFE_HOLD means nothing can be
+#: trusted to say when to stop cooling, and a hold that froze a running unit
+#: left it cooling indefinitely: measured, a stuck sensor ridden past its
+#: budget ended with the room 2.4 C below setpoint and still falling. Off is
+#: the one state that is safe without supervision. DEGRADED_ACTUATOR keeps
+#: the unit as it is, so D5 can still see a working unit cool and release it
+#: (section 5.6).
+_STOPPING_MODE = Mode.SAFE_HOLD
+
 #: The mode in which the model's prediction stands in for the measurement.
 _SUBSTITUTING_MODE = Mode.DEGRADED_SENSOR
 
@@ -112,6 +121,13 @@ class RegulatoryController:
         """
         now = self._clock.now()
         self._setpoint_c = setpoint_c
+
+        if mode is _STOPPING_MODE and (self._compressor_on or self._reassert_due(now)):
+            # Stopped once, then re-asserted on the R-02 interval in case the
+            # OFF itself was lost on the IR path.
+            if self._compressor_on:
+                self._transition(to_on=False, now=now)
+            return self._assert_state(now, setpoint_c)
 
         if mode in _HOLD_MODES:
             return self._command(now, CommandKind.HOLD)

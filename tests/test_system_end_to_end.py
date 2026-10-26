@@ -237,9 +237,11 @@ class TestTheSubstitutionIsBounded:
         before = len(system.commands())
         system.run_for(60.0)
         issued = system.commands_since(before)
+        # Holding, or re-asserting the stop; never driving the plant.
         assert issued and all(
-            command.kind is CommandKind.HOLD for command in issued
+            command.kind in (CommandKind.HOLD, CommandKind.OFF) for command in issued
         )
+        assert not any(command.kind is CommandKind.COOL for command in issued)
 
 
 class TestRecovery:

@@ -114,3 +114,36 @@ class TestTheNode:
         node = NODE.read_text(encoding="utf-8")
         assert config.devices.ac_mode_command_topic in node
         assert config.devices.ac_target_command_topic in node
+
+
+def _written(script: str, variable: str) -> str:
+    """The content provision.sh writes once to ``$VARIABLE``."""
+    match = re.search(rf'write_once "\${variable}" "(.*?)"\n', script, re.DOTALL)
+    assert match, f"provision.sh writes no {variable}"
+    return match.group(1)
+
+
+class TestConfigurationLayers:
+    """R-04: the reference, the calibration and the node each own one file."""
+
+    def test_the_reference_config_is_never_edited_on_the_node(self, script):
+        assert "config/default.yaml" not in script.split("# --- 9. Layer 1")[1]
+
+    def test_the_layers_written_load_as_one_config(self, script, tmp_path):
+        (tmp_path / "default.yaml").write_text(
+            Path("config/default.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        (tmp_path / "calibration.yaml").write_text(
+            _written(script, "CALIBRATION"), encoding="utf-8"
+        )
+        (tmp_path / "site.yaml").write_text(
+            _written(script, "CONFIG").replace("$SOURCE", "esphome"), encoding="utf-8"
+        )
+        assert load_config(tmp_path / "site.yaml").devices.source.value == "esphome"
+
+    def test_the_node_file_sits_above_the_calibration(self, script):
+        assert "extends: calibration.yaml" in _written(script, "CONFIG")
+        assert "extends: default.yaml" in _written(script, "CALIBRATION")
+
+    def test_reprovisioning_keeps_what_was_decided(self, script):
+        assert "write_once()" in script and "kept" in script

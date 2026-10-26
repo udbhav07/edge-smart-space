@@ -21,7 +21,18 @@ from src.common.schemas import (
     AdaptationState,
     Coefficients,
     CommandKind,
+    DiagnosisConfidence,
+    FaultDiagnosis,
+    Goal,
+    GoalSource,
+    Intent,
+    Hypothesis,
+    Mode,
+    Quality,
+    SensorHealth,
     SensorReading,
+    TariffBand,
+    TrackingState,
     ThermalEstimate,
     Unit,
 )
@@ -183,7 +194,98 @@ class TestSummary:
         assert "3 msgs" in summarise(view)
 
 
+class TestWhatTheOccupantWasNotTold:
+    """U-04, U-14, U-21: the view shows what matters even when it is absent."""
+
+    def test_an_expected_sensor_that_never_spoke_is_listed_as_silent(self, clock):
+        view = BlackboardView(clock=clock, expected_sensors=("temp_01", "hum_01"))
+        view.accept("space/sensor/hum_01/state", _reading(clock).replace(b"temp_01", b"hum_01"))
+        assert any("temp_01" in line and "silent" in line for line in summarise(view).splitlines())
+
+    def test_a_troubled_sensor_is_listed_first(self, clock):
+        view = BlackboardView(clock=clock, expected_sensors=("hum_01", "temp_01"))
+        view.accept("space/sensor/hum_01/state", _reading(clock).replace(b"temp_01", b"hum_01"))
+        lines = summarise(view).splitlines()
+        first = lines[lines.index("SENSORS") + 1]
+        assert first.split()[0] == "temp_01"
+
+    def test_a_healthy_sensor_not_yet_heard_is_waiting_not_silent(self, clock):
+        """The outdoor sensor reports once a minute and sat at the top as silent."""
+        view = BlackboardView(clock=clock, expected_sensors=("outdoor_01", "temp_01"))
+        view.accept(TEMP_TOPIC, _reading(clock))
+        health = SensorHealth(ts=clock.now(), sensor_id="outdoor_01", quality=Quality.OK)
+        view.accept("space/sensor/outdoor_01/health", health.model_dump_json().encode())
+        lines = summarise(view).splitlines()
+        outdoor = next(line for line in lines if "outdoor_01" in line)
+        assert "awaiting its next reading" in outdoor and "silent" not in outdoor
+
+    def test_a_silent_sensor_sorts_above_a_waiting_one(self, clock):
+        view = BlackboardView(clock=clock, expected_sensors=("outdoor_01", "pir_01"))
+        health = SensorHealth(ts=clock.now(), sensor_id="outdoor_01", quality=Quality.OK)
+        view.accept("space/sensor/outdoor_01/health", health.model_dump_json().encode())
+        lines = summarise(view).splitlines()
+        assert lines[lines.index("SENSORS") + 1].split()[0] == "pir_01"
+
+    def test_a_faulted_sensor_names_its_fault(self, view, clock):
+        view.accept(TEMP_TOPIC, _reading(clock))
+        health = SensorHealth(ts=clock.now(), sensor_id="temp_01", quality=Quality.FAULTED, active_fault_id="f_d2")
+        view.accept("space/sensor/temp_01/health", health.model_dump_json().encode())
+        assert "fault f_d2" in summarise(view)
+
+    def test_a_diagnosis_is_shown_to_a_late_viewer(self, view, clock):
+        diagnosis = FaultDiagnosis(
+            ts=clock.now(),
+            fault_id="f_d2",
+            primary_hypothesis=Hypothesis.SENSOR_STUCK,
+            confidence=DiagnosisConfidence.HIGH,
+            recommended_mode=Mode.DEGRADED_SENSOR,
+            user_message="The thermometer is stuck.",
+        )
+        view.accept("space/diagnosis/f_d2", diagnosis.model_dump_json().encode())
+        assert "f_d2: The thermometer is stuck." in summarise(view)
+
+    def test_a_withdrawn_retained_message_is_forgotten_not_a_failure(self, view, clock):
+        view.accept("space/diagnosis/f_d2", b"")
+        assert "DECODE FAILURES" not in summarise(view) and "DIAGNOSIS" not in summarise(view)
+
+    def test_the_held_setpoint_is_shown_beside_the_asked_one(self, view, clock):
+        tracking = TrackingState(
+            ts=clock.now(), setpoint_c=22.0, tracked_c=23.0, band=TariffBand.PEAK, reason="peak tariff"
+        )
+        view.accept("space/control/tracking", tracking.model_dump_json().encode())
+        assert "HOLDING   23.0 C" in summarise(view) and "asked 22.0 C" in summarise(view)
+
+    def test_cool_beside_a_standby_draw_is_pointed_out(self, clock):
+        view = BlackboardView(clock=clock, power_sensor_id="pwr_01", running_power_w=200.0)
+        state = ActuatorState(
+            ts=clock.now(), actuator_id="ac", simulated=True, kind=CommandKind.COOL,
+            setpoint_c=24.0, ack=AckStatus.UNKNOWN,
+        )
+        meter = SensorReading(ts=clock.now(), sensor_id="pwr_01", value=16.0, unit=Unit.WATT)
+        view.accept("space/actuator/ac/state", state.model_dump_json().encode())
+        view.accept("space/sensor/pwr_01/state", meter.model_dump_json().encode())
+        assert "not running" in summarise(view)
+
+
 class TestStreamLines:
+    def test_a_goal_reads_naturally_not_as_a_repr(self, view, clock):
+        """U-22: no <GoalSource.PREFERENCE: 'preference'> in the stream."""
+        goal = Goal(ts=clock.now(), source=GoalSource.PREFERENCE, setpoint_c=23.0, mode=Mode.NORMAL, expires_ts=clock.now() + 60)
+        entry = view.accept("space/goal/active", goal.model_dump_json().encode())
+        line = describe("space/goal/active", entry)
+        assert line.startswith("[goal") and "<" not in line
+
+    def test_a_reply_reads_as_the_answer(self, view, clock):
+        """In voice mode the reply is not spoken; the stream is where it is read."""
+        from src.common.schemas import AssistantReply
+        reply = AssistantReply(ts=clock.now(), transcript="make it 500 degrees", intent=Intent.ENVIRONMENT, reply="30 degrees is the most I can do.")
+        entry = view.accept("space/context/reply", reply.model_dump_json().encode())
+        assert describe("space/context/reply", entry) == "[reply    ] 30 degrees is the most I can do."
+
+    def test_an_unknown_topic_is_shown_as_json(self, view):
+        entry = view.accept("space/other/thing", b'{"a": 1}')
+        assert describe("space/other/thing", entry).endswith('{"a": 1}')
+
     def test_a_sensor_reading_reads_naturally(self, view, clock):
         entry = view.accept(TEMP_TOPIC, _reading(clock))
         assert describe(TEMP_TOPIC, entry).startswith("[sensor")

@@ -32,6 +32,7 @@ from src.common.clock import Clock, RealClock
 from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.tools import ToolInvocation, ToolResult, ToolStatus
+from tools.console import quiet_connection_logs
 
 LOGGER = logging.getLogger("confirm")
 
@@ -134,6 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    quiet_connection_logs()
     try:
         config = load_config(arguments.config)
     except ConfigError as exc:
@@ -153,8 +156,11 @@ def main(argv: list[str] | None = None) -> int:
             # Nothing is retained on the assistance topics, so this lists what
             # is asked while it watches -- a short window, then out.
             clock.sleep(_LIST_WINDOW_S)
-            for invocation in desk.waiting():
+            waiting = desk.waiting()
+            for invocation in waiting:
                 print(describe(invocation))
+            if not waiting:
+                print("nothing is waiting for your confirmation")
             return 0
         print("watching for bookings that need your confirmation; Ctrl-C to stop")
         while True:

@@ -37,6 +37,7 @@ from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.schemas import (
+    Unit,
     ActuatorState,
     Goal,
     GoalSource,
@@ -45,6 +46,7 @@ from src.common.schemas import (
     SensorReading,
     ValidationVerdict,
 )
+from tools.console import quiet_connection_logs
 
 LOGGER = logging.getLogger("bringup")
 
@@ -57,6 +59,12 @@ MAX_READINGS_KEPT = 720
 #: The power meter, if one is configured. The actuation check needs it.
 POWER_SENSOR_ID = "pwr_01"
 
+
+#: Sensors whose readings must vary to be believed; the same set D2 watches.
+_VARIANCE_UNITS = frozenset({Unit.CELSIUS, Unit.PERCENT_RH})
+
+#: Readings needed before a missing spread means anything.
+_MIN_READINGS_FOR_SPREAD = 5
 
 @dataclass(frozen=True)
 class SensorVerdict:
@@ -159,14 +167,22 @@ class BringupMonitor:
         outside = sum(1 for value in values if not limits.contains(value))
 
         median = statistics.median(intervals) if intervals else None
+        tolerance = self._config.bringup.max_interval_factor
         jitter = None
-        if intervals:
-            deviations = sorted(abs(interval - period_s) for interval in intervals)
+        # A missing sample is a dropout, not jitter: counting the gap it
+        # leaves reported a whole period of "jitter" on a healthy sensor.
+        on_time = [interval for interval in intervals if interval <= period_s * tolerance]
+        if on_time:
+            deviations = sorted(abs(interval - period_s) for interval in on_time)
             jitter = deviations[min(len(deviations) - 1, int(0.95 * len(deviations)))]
         sigma = statistics.pstdev(values) if len(values) > 1 else None
 
         problem = ""
-        tolerance = self._config.bringup.max_interval_factor
+        frozen = (
+            self._config.sensors.by_id(sensor_id).unit in _VARIANCE_UNITS
+            and len(values) >= _MIN_READINGS_FOR_SPREAD
+            and statistics.pvariance(values) < self._config.detectors.stuck_at.variance_epsilon
+        )
         if median is None:
             problem = "ONE READING: listen longer to judge its rate"
         elif median > period_s * tolerance:
@@ -178,6 +194,14 @@ class BringupMonitor:
             problem = (
                 f"OUT OF LIMITS: {outside} reading(s) outside "
                 f"[{limits.low}, {limits.high}]; wiring or units"
+            )
+        elif frozen:
+            # Every reading the same: a sensor that reports but does not
+            # measure. Passing it "ok" was the one thing this check is for
+            # that it missed (U-13).
+            problem = (
+                f"FROZEN: {len(values)} readings with no spread; a sensor that "
+                f"reports but does not measure (D2 would call it stuck)"
             )
         return SensorVerdict(
             sensor_id, len(readings), period_s, median, jitter,
@@ -255,14 +279,19 @@ class BringupMonitor:
             f"{'p95 jit':>7} {'mean':>9} {'sigma':>8}  verdict"
         ]
         for verdict in self.sensors():
-            def fmt(value, spec):
-                return "--" if value is None else format(value, spec)
+            def fmt(value, spec, unit=""):
+                # A missing value keeps the column's width, so the rows
+                # below it stay aligned (U-13).
+                if value is None:
+                    width = int(spec.lstrip("<>^").split(".")[0])
+                    return "--".rjust(width) + " " * len(unit)
+                return format(value, spec) + unit
 
             lines.append(
                 f"{verdict.sensor_id:<11} {verdict.count:>5} "
                 f"{verdict.expected_period_s:>6.0f}s "
-                f"{fmt(verdict.median_interval_s, '>6.1f')}s "
-                f"{fmt(verdict.p95_jitter_s, '>6.2f')}s "
+                f"{fmt(verdict.median_interval_s, '>6.1f', 's')} "
+                f"{fmt(verdict.p95_jitter_s, '>6.2f', 's')} "
                 f"{fmt(verdict.mean, '>9.3f')} {fmt(verdict.sigma, '>8.4f')}  "
                 f"{'ok' if verdict.ok else verdict.problem}"
             )
@@ -292,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    quiet_connection_logs()
     try:
         config = load_config(arguments.config)
     except ConfigError as exc:

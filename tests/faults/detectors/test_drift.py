@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from src.common.config import DriftDetectorConfig, load_config
-from src.common.schemas import AdaptationState, DetectorId, ThermalEstimate
+from src.common.schemas import ONSET_KEY, AdaptationState, DetectorId, ThermalEstimate
 from src.faults.detectors.base import Judgment
 from src.faults.detectors.drift import DriftDetector
 
@@ -326,3 +326,66 @@ class TestNonOverlappingHorizons:
 
         with pytest.raises(ValueError):
             DriftDetector("temp_01", _config(warmup_samples=5), accumulate_every=0)
+
+
+def _timed(residual_c: float, ts: float) -> ThermalEstimate:
+    return _estimate(residual_c).model_copy(update={"ts": ts})
+
+
+class TestOnset:
+    """FR-27: a drift finding names its change point, the last time the
+    cumulative sum stood at zero."""
+
+    def _drift_from(self, detector, quiet: int, drifting: int) -> float:
+        for index in range(quiet):
+            detector.observe(_timed(0.0, TS + index))
+        for index in range(drifting):
+            detector.observe(_timed(SIGMA_C * 2.0, TS + quiet + index))
+        return TS + quiet - 1
+
+    def test_an_upward_drift_dates_from_the_last_zero(self, detector):
+        last_zero = self._drift_from(detector, quiet=10, drifting=10)
+        finding = detector.evaluate()
+        assert finding.faulted
+        assert finding.evidence[ONSET_KEY] == last_zero
+
+    def test_a_downward_drift_dates_its_own_side(self, detector):
+        for index in range(10):
+            detector.observe(_timed(0.0, TS + index))
+        for index in range(10):
+            detector.observe(_timed(-SIGMA_C * 2.0, TS + 10 + index))
+        assert detector.evaluate().evidence[ONSET_KEY] == TS + 9
+
+    def test_a_clear_finding_dates_nothing(self, detector):
+        _feed(detector, residual_c=0.0, samples=5)
+        assert ONSET_KEY not in detector.evaluate().evidence
+
+    def test_a_reset_forgets_the_change_point(self, detector):
+        self._drift_from(detector, quiet=10, drifting=10)
+        detector.reset()
+        assert ONSET_KEY not in detector.evaluate().evidence
+
+
+class TestThePlantContradicts:
+    """S-02: a working unit beside a rising reading convicts the reading."""
+
+    EVIDENCE = {"warmed_c": 4.0, "unit_running_w": 1200.0, "elapsed_s": 600.0}
+
+    def test_it_faults_the_sensor_even_before_warm_up(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        finding = detector.evaluate()
+        assert finding.judgment is Judgment.FAULTED and finding.detector is DetectorId.D4_DRIFT
+
+    def test_the_evidence_says_why(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        evidence = detector.evaluate().evidence
+        assert evidence["plant_warmed_c"] == 4.0 and evidence["plant_unit_running_w"] == 1200.0
+
+    def test_it_is_certain(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        assert detector.evaluate().confidence == 1.0
+
+    def test_a_reset_forgets_it(self, detector):
+        detector.observe_contradiction(self.EVIDENCE)
+        detector.reset()
+        assert detector.evaluate().judgment is not Judgment.FAULTED

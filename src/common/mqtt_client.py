@@ -303,8 +303,11 @@ def build_transport(config: MqttConfig, client_id: str, blackboard_ref: list):
         _client, _userdata, _flags=None, reason_code=None, _properties=None
     ) -> None:
         # paho reconnects on its own with the backoff set above; the
-        # regulatory loop holds its last validated setpoint meanwhile.
-        LOGGER.warning("disconnected from the broker: %s", reason_code)
+        # regulatory loop holds its last validated setpoint meanwhile. A
+        # normal disconnection -- a tool finishing -- is not a warning, and
+        # printed as one it interrupted every conversation (U-35).
+        level = logging.WARNING if getattr(reason_code, "is_failure", True) else logging.INFO
+        LOGGER.log(level, "disconnected from the broker: %s", reason_code)
         blackboard_ref[0].on_disconnected()
 
     client.on_message = _on_message

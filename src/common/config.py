@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.common.schemas import Unit
+from src.common.schemas import ListenMode, Unit
 
 #: Number of coefficients in the RC model (DESIGN.md section 5.2.1).
 COEFFICIENT_COUNT = 4
@@ -131,6 +131,12 @@ class EstimatorConfig(_Section):
         ge=0.0,
         description="Heat flow against the gradient, in C per step, an a2 "
         "rejection may imply and still count as edge noise, not divergence",
+    )
+    reanchor_history_samples: int = Field(
+        default=180,
+        gt=0,
+        description="Trusted steps kept so the open-loop prediction can restart "
+        "from before a fault's reported onset (FR-27); must cover D2's window",
     )
     drift_horizon_samples: int = Field(
         gt=0,
@@ -300,6 +306,10 @@ class OutOfRangeDetectorConfig(_Section):
 
     temperature_c: Bounds
     humidity_pct: Bounds
+    power_w: Bounds = Field(
+        description="An air conditioner cannot generate power, nor draw more "
+        "than its circuit; outside is a meter broken or wired backwards"
+    )
     debounce_samples: int = Field(gt=0, description="Consecutive samples before raising")
 
 
@@ -388,6 +398,24 @@ class ActuatorDetectorConfig(_Section):
     passive_warming_slack_c: float = Field(
         ge=0.0, description="Added to that bound, for noise and unmodelled gains, in C"
     )
+    humidity_sensor_id: str = Field(
+        default="hum_01",
+        description="The indoor humidity sensor: the second witness to whether the "
+        "room really warmed (S-02); empty for none",
+    )
+    humidity_per_degree_pct: float = Field(
+        default=3.0,
+        gt=0.0,
+        description="How far relative humidity falls per degree a room truly warms, "
+        "at constant vapour, in %RH/C; R-04 re-measures it on hardware",
+    )
+    humidity_agreement: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        description="Share of that fall that must be seen for the warming to count "
+        "as real, and the unit to be blamed",
+    )
 
 
 class DetectorsConfig(_Section):
@@ -470,7 +498,14 @@ class SpeechConfig(_Section):
     channels: int = Field(gt=0, description="Capture channels; mono for ASR")
     chunk_samples: int = Field(gt=0, description="Frame size; Silero VAD requires 512")
     device_index: int | None = Field(
-        default=None, description="Input device; None selects the system default"
+        default=None,
+        description="Input device by PortAudio index; wins over device_name. "
+        "Indices move when a device connects, so prefer the name",
+    )
+    device_name: str | None = Field(
+        default=None,
+        description="Input device by part of its name, case-insensitive; None "
+        "selects the system default",
     )
     queue_seconds: float = Field(
         gt=0.0, description="Audio buffered before the oldest frame is dropped"
@@ -487,6 +522,104 @@ class SpeechConfig(_Section):
     )
     command_timeout_s: float = Field(
         gt=0.0, description="Hard cap on one utterance (FR-50)"
+    )
+    status_interval_s: float = Field(
+        default=15.0,
+        gt=0.0,
+        description="How often the pipeline restates its status, so a console "
+        "can tell it from a pipeline that has died, in s",
+    )
+    listen_mode: ListenMode = Field(
+        default=ListenMode.CONTINUOUS,
+        description="continuous: every utterance is transcribed, and one without "
+        "the wake word is ambient (FR-76); wake_word: capture only after it (FR-50)",
+    )
+    ambient_min_words: int = Field(
+        default=4,
+        gt=0,
+        description="Overheard speech with fewer distinct words than this is "
+        "dropped unpublished: too little to hold a plan or a fact, and most of "
+        "it is noise -- Whisper hears room noise as one word repeated",
+    )
+    ambient_preroll_ms: int = Field(
+        default=300,
+        ge=0,
+        description="Audio kept from just before speech is detected, so the first "
+        "word of an unaddressed utterance is not clipped; dropped otherwise (FR-51)",
+    )
+    voice_engine: str = Field(
+        default="piper",
+        pattern=r"^(piper|pyttsx3|none)$",
+        description="What replies are spoken with (FR-79): piper, a neural voice "
+        "run on this node; pyttsx3, the system's own voices; none to stay silent",
+    )
+    voice_model_path: str = Field(
+        default="models/piper/en_US-lessac-medium.onnx",
+        description="The Piper voice, fetched once by setup_models.py; never at runtime (NFR-06)",
+    )
+    voice_length_scale: float = Field(
+        default=1.0, gt=0.0, description="Piper speaking pace; above 1 is slower"
+    )
+    speaking_tail_ms: int = Field(
+        default=400,
+        ge=0,
+        description="How long after speaking the microphone stays ignored, so the "
+        "room never hears its own voice as someone talking (FR-79)",
+    )
+    ambient_max_no_speech_prob: float = Field(
+        default=0.6,
+        gt=0.0,
+        le=1.0,
+        description="An overheard segment Whisper thinks is more likely silence "
+        "than this is dropped (Whisper's own no-speech threshold; S-01)",
+    )
+    ambient_min_avg_logprob: float = Field(
+        default=-1.0,
+        description="An overheard segment transcribed with less confidence than "
+        "this mean log-probability is dropped (Whisper's own threshold; S-01)",
+    )
+    ambient_max_compression_ratio: float = Field(
+        default=2.4,
+        gt=0.0,
+        description="An overheard segment more repetitive than this is dropped: "
+        "Whisper's hallucination on noise repeats itself (S-01)",
+    )
+    ambient_min_distinct_ratio: float = Field(
+        default=0.5,
+        gt=0.0,
+        le=1.0,
+        description="Distinct words over all words below which a longer overheard "
+        "transcript is taken as a hallucination loop and dropped (S-01)",
+    )
+    voiceprints_path: str = Field(
+        default="state/voiceprints.json",
+        description="Enrolled voiceprints: vectors only, never audio (FR-51)",
+    )
+    speaker_match_threshold: float = Field(
+        default=0.15,
+        gt=0.0,
+        lt=1.0,
+        description="Score a voice must reach to be recognised, as exp(-mean "
+        "z^2 / 2) in the enrolled voice's own spread; below it the speaker is "
+        "a guest (FR-52)",
+    )
+    speaker_min_enrolment_utterances: int = Field(
+        default=3,
+        ge=2,
+        description="Utterances a voice needs before it can be matched: one "
+        "has no spread to measure distance in",
+    )
+    speaker_min_speech_s: float = Field(
+        default=1.5,
+        gt=0.0,
+        description="Speech, as the voice-activity detector hears it, every "
+        "enrolment recording must hold, in s. A take with less is refused: "
+        "enrolling room noise as a voice was accepted once (U-05)",
+    )
+    speaker_min_audio_s: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Shortest utterance a speaker is judged from, in s",
     )
     asr_model: str = Field(min_length=1, description="Whisper model size")
     asr_device: str = Field(
@@ -578,6 +711,38 @@ class DevicesConfig(_Section):
     ac_target_command_topic: str = Field(default="")
     ac_mode_state_topic: str = Field(
         default="", description="Readback of the unit's mode, if the path has one (R-02)"
+    )
+    ac_power_sensor_id: str = Field(
+        default="",
+        description="The meter on the unit's supply, if any. Its draw is the "
+        "acknowledgement an IR path cannot give (R-02)",
+    )
+    ac_running_power_w: float = Field(
+        default=200.0,
+        gt=0.0,
+        description="Draw above which the compressor counts as running, in W",
+    )
+    ac_ack_grace_s: float = Field(
+        default=60.0,
+        gt=0.0,
+        description="How long after a command the draw must agree with it, in "
+        "s; longer than the unit's own start-up delay",
+    )
+
+
+class SiteConfig(_Section):
+    """Where the room is, as far as time is concerned.
+
+    One offset, read by everything that turns an epoch into a wall time: the
+    tariff, the date a model is told, and the times the supervisor reads. The
+    machine's own zone is never consulted (``src/common/localtime.py``).
+    """
+
+    utc_offset_h: float = Field(
+        default=0.0,
+        ge=-12.0,
+        le=14.0,
+        description="Local time minus UTC, in hours. Fixed: a room does not move",
     )
 
 
@@ -704,6 +869,26 @@ class RoomConfig(_Section):
     )
 
 
+class PowerMeterConfig(_Section):
+    """The simulated meter on the air conditioner's supply (R-02).
+
+    Draw follows the drive the room actually receives, so a dead unit reads
+    standby while still being told to cool: evidence about the actuator, not
+    an echo of the command.
+    """
+
+    rated_power_w: float = Field(gt=0.0, description="Draw with the compressor running")
+    standby_power_w: float = Field(ge=0.0, description="Draw with it stopped")
+    sigma_w: float = Field(ge=0.0, description="Meter noise, one standard deviation")
+    resolution_w: float = Field(ge=0.0, description="Reporting resolution")
+    dropout_probability: float = Field(ge=0.0, le=1.0)
+    seed_offset: int = Field(
+        ge=1,
+        description="Its own random stream, so adding the meter moves no other "
+        "instrument's noise and no seeded result already measured",
+    )
+
+
 class SimConfig(_Section):
     room: RoomConfig
     sensor_noise: SensorNoiseConfig
@@ -711,6 +896,15 @@ class SimConfig(_Section):
     outdoor_mean_c: float
     outdoor_amplitude_c: float = Field(ge=0.0)
     outdoor_period_s: float = Field(gt=0.0)
+    power_meter: PowerMeterConfig
+    outdoor_peak_hour: float = Field(
+        default=15.0,
+        ge=0.0,
+        lt=24.0,
+        description="Local hour of the hottest ambient. The cycle follows the "
+        "site's day, not the start of the run, so peak tariff and the hottest "
+        "hours relate as they do in a real room",
+    )
     random_seed: int = Field(
         ge=0, description="Fixed so a scenario replays identically (FR-62)"
     )
@@ -749,6 +943,188 @@ class BringupConfig(_Section):
     )
 
 
+class CalibrationConfig(_Section):
+    """How ``tools/calibrate.py`` turns measured noise into thresholds (R-04).
+
+    Margins, not thresholds: each says how far a derived setting sits from
+    what a healthy recording actually produced, so the derivation can be
+    argued with rather than taken on trust.
+    """
+
+    timeout_margin: float = Field(
+        default=1.5,
+        gt=1.0,
+        description="D1's timeout as a multiple of the longest healthy gap",
+    )
+    variance_fraction: float = Field(
+        default=0.25,
+        gt=0.0,
+        lt=1.0,
+        description="D2's epsilon as a fraction of the quietest healthy "
+        "window's variance",
+    )
+    cusum_margin: float = Field(
+        default=1.3,
+        gt=1.0,
+        description="D4's threshold as a multiple of the healthy CUSUM peak",
+    )
+    min_hours: float = Field(
+        default=1.0,
+        gt=0.0,
+        description="Shortest recording calibrated from; a shorter one has "
+        "not seen enough of the room to say what healthy looks like",
+    )
+    cusum_min_samples: int = Field(
+        default=2,
+        ge=2,
+        description="D4 must need at least this many maximal samples to trip; "
+        "a threshold one capped sample can clear is a threshold alarm",
+    )
+    dropout_latency_budget_s: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="NFR-02: injection to mode transition for a dropout. A "
+        "derived D1 timeout that cannot meet it is reported, not hidden",
+    )
+
+
+class ProfilesConfig(_Section):
+    """Speaker profiles and their memory (FR-52).
+
+    Long-term memory is one Markdown file per person, readable and editable
+    by hand; short-term context is one JSON file per person and expires.
+    Every collection is bounded, because a misheard utterance repeated in a
+    loop must not fill the disk (NFR-05).
+    """
+
+    directory: str = Field(default="state/profiles", description="Long-term memory, one .md per person")
+    context_directory: str = Field(
+        default="state/context", description="Short-term context, one .json per person"
+    )
+    short_term_ttl_s: float = Field(
+        default=1800.0, gt=0.0, description="An exchange older than this is forgotten, in s"
+    )
+    guest_short_term_ttl_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description="The same for the guest, in s: every unrecognised voice "
+        "shares it, so it lasts one conversation, not half an hour",
+    )
+    short_term_max_turns: int = Field(
+        default=10, gt=0, description="Exchanges kept per person"
+    )
+    max_facts: int = Field(default=50, gt=0, description="Long-term facts per person")
+    max_fact_chars: int = Field(default=200, gt=0, description="Longest fact kept")
+    max_turn_chars: int = Field(
+        default=500, gt=0, description="Longest utterance or reply kept as context"
+    )
+    max_profiles: int = Field(default=8, gt=0, description="People the room keeps memory for")
+    publish_interval_s: float = Field(
+        default=30.0,
+        gt=0.0,
+        description="How often every profile's context is republished, so an "
+        "edit made by hand reaches the blackboard, in s",
+    )
+
+
+class ConsoleConfig(_Section):
+    """The occupant's local console (FR-56 to FR-58).
+
+    A blackboard client with no authority: everything it does is published
+    as speech or the operator tools would publish it, and the rest of the
+    system neither knows nor cares whether it is running.
+    """
+
+    host: str = Field(
+        default="127.0.0.1",
+        min_length=1,
+        description="Interface to listen on. 127.0.0.1 keeps it on this node; "
+        "the node's LAN address opens it to the room's network, never beyond (FR-56)",
+    )
+    port: int = Field(default=8077, gt=0, lt=65536)
+    conversation_kept: int = Field(default=80, gt=0, description="Exchanges the console keeps")
+    activity_kept: int = Field(default=120, gt=0, description="Agent steps the console keeps")
+    calendar_days: int = Field(default=7, gt=0, description="How far ahead the calendar view looks")
+    history_kept: int = Field(
+        default=360, gt=0, description="Points kept per charted series; 360 is 30 min at 5 s"
+    )
+    operator_controls: bool = Field(
+        default=True,
+        description="Offer fault injection and reset in the console, for "
+        "demonstration (FR-31); off for an occupant-only console",
+    )
+    presets_c: dict[str, float] = Field(
+        default_factory=lambda: {"Cool": 22.0, "Comfort": 24.0, "Sleep": 25.0, "Eco": 26.0},
+        description="One-tap targets on Home (FR-80); each still passes the safety gate",
+    )
+    cooling_off_c: float = Field(
+        default=30.0,
+        description="What 'cooling off' asks for: the gate's upper bound, so the room "
+        "is never left to rise past what the gate allows (FR-81)",
+    )
+    price_per_kwh: dict[str, float] = Field(
+        default_factory=lambda: {"normal": 8.0, "peak": 12.0},
+        description="Electricity price per kWh by tariff band, for Home's energy card",
+    )
+    currency: str = Field(default="Rs", description="Shown beside the energy cost")
+    inbox_path: str = Field(
+        default="state/console/inbox.json",
+        description="Where the inbox is kept across restarts (S-10); the room's "
+        "own notes to the occupant, bounded like everything else",
+    )
+
+
+class GoogleConfig(_Section):
+    """Google Calendar and Gmail, after the occupant signs in (FR-84 to FR-86).
+
+    Nothing here reaches the internet until a client secret is in place and
+    the occupant has connected an account: NFR-06 holds until then.
+    """
+
+    client_secret_path: str = Field(
+        default="state/google/client_secret.json",
+        description="The OAuth client the occupant downloads from Google Cloud",
+    )
+    token_path: str = Field(
+        default="state/google/token.json",
+        description="Written at sign-in, read by the assistance service; never published",
+    )
+    outbox_path: str = Field(
+        default="state/google/outbox.json",
+        description="What is waiting to reach Google, kept across restarts (FR-86)",
+    )
+    outbox_max: int = Field(default=500, gt=0, description="Operations kept waiting at most")
+    redirect_uri: str = Field(
+        default="http://localhost:8077/api/google/callback",
+        description="Registered on the OAuth client; must match the console's address",
+    )
+    calendar_id: str = Field(default="primary")
+    pull_interval_s: float = Field(
+        default=300.0, gt=0.0, description="How often Google-side events are mirrored in"
+    )
+    pull_days: int = Field(default=14, gt=0, description="How far ahead events are mirrored")
+    retry_min_s: float = Field(default=10.0, gt=0.0, description="First wait after a failure")
+    retry_max_s: float = Field(default=600.0, gt=0.0, description="Longest wait between attempts")
+
+
+class AmbientConfig(_Section):
+    """Mining overheard speech for plans and facts (FR-76 to FR-78)."""
+
+    context_s: float = Field(
+        default=300.0,
+        gt=0.0,
+        description="How long an overheard line stays as context for the next, "
+        "so a plan split across sentences is read as one, in s",
+    )
+    max_lines: int = Field(default=8, gt=0, description="Overheard lines kept as context per voice")
+    max_calls_per_min: int = Field(
+        default=6,
+        gt=0,
+        description="Model calls on overheard speech per minute; a busy room "
+        "must not starve the assistant and the supervisor of the server",
+    )
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -766,11 +1142,17 @@ class Config(_Section):
     assistance: AssistanceConfig
     goals: GoalsConfig
     tariff: TariffConfig
+    site: SiteConfig = SiteConfig()
     devices: DevicesConfig
     supervisor: SupervisorConfig
     sim: SimConfig
     bringup: BringupConfig = BringupConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
+    calibration: CalibrationConfig = CalibrationConfig()
+    profiles: ProfilesConfig = ProfilesConfig()
+    console: ConsoleConfig = ConsoleConfig()
+    ambient: AmbientConfig = AmbientConfig()
+    google: GoogleConfig = GoogleConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:
@@ -783,6 +1165,22 @@ class Config(_Section):
             raise ValueError(
                 f"controller.min_off_s ({self.controller.min_off_s}) must equal "
                 f"validator.min_off_s ({self.validator.min_off_s})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reanchor_history_reaches_before_a_stuck_window(self) -> Config:
+        """The estimator restarts a prediction from before D2's frozen window.
+
+        A history no longer than that window would only ever hold frozen
+        readings, and FR-27 would quietly restart from the fault again.
+        """
+        window = self.detectors.stuck_at.window_samples
+        if self.estimator.reanchor_history_samples <= window:
+            raise ValueError(
+                f"estimator.reanchor_history_samples "
+                f"({self.estimator.reanchor_history_samples}) must exceed "
+                f"detectors.stuck_at.window_samples ({window})"
             )
         return self
 
@@ -803,12 +1201,65 @@ class Config(_Section):
         return self
 
 
-def load_config(path: Path) -> Config:
-    """Read and validate a configuration file.
+#: A config file may name another it overrides. Lets a site keep only what it
+#: changed -- a calibration re-derived from measured noise (R-04) -- in a file
+#: of its own, so the change is reviewable and the default stays the
+#: documented reference.
+EXTENDS_KEY = "extends"
 
-    :raises ConfigError: if the file is missing, is not a YAML mapping, or
-        fails validation.
+
+def load_config(path: Path) -> Config:
+    """Read and validate a configuration file, and any it extends.
+
+    A file with an ``extends`` key names the file it overrides, relative to
+    itself. Mappings merge key by key; anything else, a list included, is
+    replaced whole, so an override never half-edits a list of sensors.
+
+    :raises ConfigError: if a file is missing, is not a YAML mapping, extends
+        itself in a cycle, or the merged result fails validation.
     """
+    raw = _read_layered(path, seen=())
+    try:
+        return Config.model_validate(raw)
+    except ValueError as exc:
+        raise ConfigError(f"config at {path} is invalid: {exc}{_extends_hint(exc, path)}") from exc
+
+
+def _extends_hint(exc: ValueError, path: Path) -> str:
+    """Point at ``extends:`` when a file that overrides a few values misses the rest.
+
+    Eighteen "Field required" errors for a file that set one value read as
+    eighteen problems; there is one, and this names it (U-31).
+    """
+    errors = getattr(exc, "errors", None)
+    if errors is None or EXTENDS_KEY in _read_mapping(path):
+        return ""
+    missing = sum(1 for error in errors() if error.get("type") == "missing")
+    if not missing:
+        return ""
+    return (
+        f"\n{missing} required setting(s) are missing. To change only a few "
+        f"values, start the file with '{EXTENDS_KEY}: default.yaml' and give "
+        f"just the ones that differ."
+    )
+
+
+def _read_layered(path: Path, seen: tuple[Path, ...]) -> dict:
+    resolved = path.resolve()
+    if resolved in seen:
+        chain = " -> ".join(str(item) for item in (*seen, resolved))
+        raise ConfigError(f"config files extend each other in a cycle: {chain}")
+    raw = _read_mapping(path)
+    base_name = raw.pop(EXTENDS_KEY, None)
+    if base_name is None:
+        return raw
+    if not isinstance(base_name, str) or not base_name:
+        raise ConfigError(f"{EXTENDS_KEY!r} in {path} must name a file")
+    base = _read_layered(path.parent / base_name, seen=(*seen, resolved))
+    return _merged(base, raw)
+
+
+def _read_mapping(path: Path) -> dict:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -821,8 +1272,15 @@ def load_config(path: Path) -> Config:
 
     if not isinstance(raw, dict):
         raise ConfigError(f"config at {path} must be a mapping, got {type(raw).__name__}")
+    return raw
 
-    try:
-        return Config.model_validate(raw)
-    except ValueError as exc:
-        raise ConfigError(f"config at {path} is invalid: {exc}") from exc
+
+def _merged(base: dict, override: dict) -> dict:
+    """``override`` laid over ``base``: mappings recursively, the rest whole."""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merged(merged[key], value)
+        else:
+            merged[key] = value
+    return merged

@@ -51,6 +51,7 @@ from src.common.schemas import (
     PreferenceHint,
     ReasonCode,
     TariffBand,
+    TrackingState,
     SensorReading,
     ThermalEstimate,
     ValidationVerdict,
@@ -90,6 +91,7 @@ class ControlService:
         self._goal_manager = goal_manager
         self._tariff = tariff
         self._published_band: TariffBand | None = None
+        self._published_tracking: tuple[float, float, TariffBand] | None = None
 
         self._measured_c: float | None = None
         self._predicted_c: float | None = None
@@ -125,10 +127,11 @@ class ControlService:
         bound, so a peak can never carry the room past a limit the validator
         would have refused.
         """
-        if self._tariff.band_at(self._clock.now()) is not TariffBand.PEAK:
-            return self.setpoint_c
-        shifted = self.setpoint_c + self._tariff.peak_offset_c
-        return min(shifted, self._config.validator.setpoint_bounds_c.high)
+        return self._tariff.tracked_setpoint_c(
+            self.setpoint_c,
+            self._clock.now(),
+            self._config.validator.setpoint_bounds_c.high,
+        )
 
     @property
     def mode(self) -> Mode:
@@ -171,6 +174,11 @@ class ControlService:
         Never a command: what reaches the plant is whatever the validator
         admits of the setpoint derived here, exactly as for any proposer.
         """
+        if hint.release:
+            # "Back to automatic" (FR-81): the hold ends and the default is
+            # proposed through the gate at once.
+            self._adopt(self._goal_manager.release(self._config.controller.default_setpoint_c, self._mode))
+            return
         goal = self._goal_manager.from_preference(hint, self.setpoint_c, self._mode)
         if goal is None:
             return
@@ -201,6 +209,31 @@ class ControlService:
         LOGGER.info(
             "tariff is %s; tracking %.2f C", state.band.value, self.effective_setpoint_c
         )
+
+    def tracking(self) -> TrackingState:
+        """The setpoint in force, what the loop is actually holding, and why."""
+        now = self._clock.now()
+        band = self._tariff.band_at(now)
+        tracked = self.effective_setpoint_c
+        reason = ""
+        if tracked != self.setpoint_c:
+            until = self._tariff.state(now).next_transition_ts
+            reason = (
+                f"peak tariff: held {tracked - self.setpoint_c:+g} C until "
+                f"{self._tariff.local_hour_text(until)}"
+            )
+        return TrackingState(
+            ts=now, setpoint_c=self.setpoint_c, tracked_c=tracked, band=band, reason=reason
+        )
+
+    def _publish_tracking_if_changed(self) -> None:
+        """Retain what the room is held to whenever it changes (FR-61, U-04)."""
+        state = self.tracking()
+        key = (state.setpoint_c, state.tracked_c, state.band)
+        if key == self._published_tracking:
+            return
+        self._published_tracking = key
+        self._blackboard.publish(topics.CONTROL_TRACKING, state)
 
     def _publish_active_goal(self, goal: Goal) -> None:
         """Retain what is actually in force, which is not what was proposed."""
@@ -236,6 +269,7 @@ class ControlService:
             return None
 
         self._publish_tariff_if_changed()
+        self._publish_tracking_if_changed()
         pursuit = self._goal_manager.next_pursuit(self._mode)
         if pursuit is not None:
             self._adopt(pursuit)
@@ -318,5 +352,5 @@ def build_service(
         ),
         command_validator=CommandValidator(config=config.validator, clock=clock),
         goal_manager=GoalManager(config.goals, clock),
-        tariff=TariffSchedule(config.tariff),
+        tariff=TariffSchedule(config.tariff, config.site.utc_offset_h),
     )

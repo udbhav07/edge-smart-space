@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from src.common.clock import Clock
-from src.common.schemas import DetectorId, FaultEvent, Mode
+from src.common.schemas import DetectorId, FaultClass, FaultEvent, Mode
 from src.faults.detectors.base import Finding, Judgment, build_fault_event
 
 LOGGER = logging.getLogger(__name__)
@@ -51,6 +51,8 @@ LOGGER = logging.getLogger(__name__)
 #: and holding is the end of the line.
 _SEVERITY_ORDER: Mapping[Mode, int] = MappingProxyType(
     {
+        # Advisory: a fault on an instrument the loop does not control on.
+        Mode.NORMAL: 0,
         Mode.DEGRADED_SENSOR: 1,
         Mode.DEGRADED_ACTUATOR: 2,
         Mode.SAFE_HOLD: 3,
@@ -97,13 +99,25 @@ class FaultAggregator:
     nothing to cap (NFR-05).
     """
 
-    def __init__(self, clock: Clock, clear_confirm_s: float) -> None:
+    def __init__(
+        self,
+        clock: Clock,
+        clear_confirm_s: float,
+        controlling_subjects: frozenset[str] | None = None,
+    ) -> None:
+        """
+        :param controlling_subjects: the instruments the loop acts on -- the
+            indoor sensor and the air conditioner. A sensor fault on any other
+            subject is advisory: published with its evidence, mode unchanged.
+            None treats every subject as controlling.
+        """
         if clear_confirm_s < 0.0:
             raise ValueError(
                 f"clear confirmation cannot be negative, got {clear_confirm_s!r}"
             )
         self._clock = clock
         self._clear_confirm_s = clear_confirm_s
+        self._controlling = controlling_subjects
         self._active: dict[tuple[DetectorId, str], _ActiveFault] = {}
 
     @property
@@ -226,6 +240,12 @@ class FaultAggregator:
         self, key: tuple[DetectorId, str], finding: Finding, now: float
     ) -> FaultEvent:
         event = build_fault_event(finding, now)
+        if self._is_advisory(finding):
+            # A dropped humidity sensor or power meter once switched the loop
+            # onto prediction with a healthy temperature sensor, spent the
+            # 1800 s budget and ended in SAFE_HOLD. Section 5.6 degrades on
+            # the temperature sensor; this fault is reported, not obeyed.
+            event = event.model_copy(update={"mode_impact": Mode.NORMAL})
         self._active[key] = _ActiveFault(event=event)
         LOGGER.warning(
             "%s raised on %s: %s (confidence %.2f)",
@@ -235,6 +255,12 @@ class FaultAggregator:
             finding.confidence,
         )
         return event
+
+    def _is_advisory(self, finding: Finding) -> bool:
+        """A sensor fault on a subject the loop does not control on."""
+        if self._controlling is None or finding.fault_class is not FaultClass.SENSOR:
+            return False
+        return finding.subject not in self._controlling
 
     def _maybe_retire(
         self, key: tuple[DetectorId, str], entry: _ActiveFault, now: float

@@ -11,7 +11,7 @@ import pytest
 
 from src.common.clock import SimClock
 from src.common.config import StuckAtDetectorConfig, load_config
-from src.common.schemas import DetectorId, SensorReading, Unit
+from src.common.schemas import ONSET_KEY, DetectorId, SensorReading, Unit
 from src.faults.detectors.base import Judgment
 from src.faults.detectors.stuck_at import StuckAtDetector
 
@@ -240,3 +240,43 @@ class TestDocumentedDefaults:
             config.loop.sensor_period_s
         )
         assert window_s > 60.0
+
+
+class TestOnset:
+    """FR-27: a stuck finding says since when the readings were frozen."""
+
+    def test_a_stuck_finding_dates_the_oldest_frozen_sample(self, detector, clock):
+        first_ts = clock.now()
+        _feed(detector, clock, [STUCK_VALUE] * WINDOW)
+        for _ in range(CONSECUTIVE):
+            finding = detector.evaluate()
+        assert finding.faulted
+        assert finding.evidence[ONSET_KEY] == first_ts
+
+    def test_the_onset_is_the_first_frozen_window_not_the_confirming_one(
+        self, detector, clock
+    ):
+        """Evaluated every sample, the confirming window has slid on by one;
+        its oldest sample is already a frozen reading too late."""
+        first_ts = clock.now()
+        _feed(detector, clock, [STUCK_VALUE] * WINDOW)
+        detector.evaluate()
+        _feed(detector, clock, [STUCK_VALUE])
+        finding = detector.evaluate()
+        assert finding.faulted
+        assert finding.evidence[ONSET_KEY] == first_ts
+
+    def test_a_moving_sample_restarts_the_onset(self, detector, clock):
+        _feed(detector, clock, [STUCK_VALUE] * WINDOW)
+        detector.evaluate()
+        _feed(detector, clock, [STUCK_VALUE + 1.0])
+        detector.evaluate()
+        restart_ts = clock.now()
+        _feed(detector, clock, [STUCK_VALUE] * WINDOW)
+        for _ in range(CONSECUTIVE):
+            finding = detector.evaluate()
+        assert finding.evidence[ONSET_KEY] == restart_ts
+
+    def test_a_clear_finding_dates_nothing(self, detector, clock):
+        _feed(detector, clock, [20.0 + index for index in range(WINDOW)])
+        assert ONSET_KEY not in detector.evaluate().evidence

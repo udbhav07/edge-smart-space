@@ -334,3 +334,113 @@ class TestADriftingSensorIsNotBlamedOnTheUnit:
         detector.observe_coupling(-0.1)
         _cool_through(detector, clock, _steps(29.0, 5.0), ambient_c=31.0)
         assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_the_verdict_publishes_what_it_was_judged_against(self, detector, clock):
+        """Whether a warming room is blamed on the unit rests on the coupling,
+        the ambient and the bound they imply; all three travel with it."""
+        detector.observe_coupling(self.COUPLING)
+        _cool_through(detector, clock, _steps(29.0, 0.6), ambient_c=31.0)
+        evidence = detector.evaluate().evidence
+        assert evidence["coupling_a2"] == self.COUPLING
+        assert evidence["ambient_c"] == 31.0
+        assert evidence["passive_warming_bound_c"] > 0.0
+
+    def test_unknown_conditions_are_omitted_rather_than_invented(self, detector, clock):
+        _cool_through(detector, clock, _steps(29.0, 0.6))
+        evidence = detector.evaluate().evidence
+        assert "coupling_a2" not in evidence
+        assert "passive_warming_bound_c" not in evidence
+
+
+# --- the power meter decides (S-02) -------------------------------------------
+
+RUNNING_W = 200.0
+
+
+def _metered(clock, **overrides) -> ActuatorResponseDetector:
+    return ActuatorResponseDetector(subject=ACTUATOR, config=_config(**overrides), clock=clock, running_power_w=RUNNING_W)
+
+
+def _cool_metered(detector, clock, seconds: float, final_c: float, watts: float, start_c=START_C, steps=20, humidity_change=None):
+    """Cool for a while with readings, meter samples and, if given, a humidity
+    trend spread across it."""
+    detector.observe_reading(_reading(clock, start_c))
+    detector.observe_command(CommandKind.COOL)
+    for step in range(1, steps + 1):
+        clock.advance(seconds / steps)
+        detector.observe_power(watts)
+        if humidity_change is not None:
+            detector.observe_humidity(50.0 + humidity_change * step / steps)
+        detector.observe_reading(_reading(clock, start_c + (final_c - start_c) * step / steps))
+
+
+class TestThePowerMeterDecides:
+    def test_a_reading_rising_while_the_air_does_not_does_not_blame_the_unit(self, clock):
+        """Live: a 0.01 C/s drift was blamed on a healthy, running unit. The
+        air was being cooled, so humidity rose rather than fell."""
+        detector = _metered(clock)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C + 4.0, watts=1200.0, humidity_change=+2.0)
+        assert detector.evaluate().judgment is Judgment.UNKNOWN
+
+    def test_and_reports_the_reading_as_contradicted(self, clock):
+        detector = _metered(clock)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C + 4.0, watts=1200.0, humidity_change=+2.0)
+        detector.evaluate()
+        contradiction = detector.plant_contradiction
+        assert contradiction is not None and contradiction["warmed_c"] > 3.5 and contradiction["unit_running_w"] == 1200.0
+
+    def test_a_room_truly_warming_beside_a_running_unit_is_the_units_fault(self, clock):
+        """Lost refrigerant: it draws power and cools nothing; the air warms,
+        so humidity falls about 3 %RH per degree."""
+        detector = _metered(clock)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C + 4.0, watts=1200.0, humidity_change=-12.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+        assert detector.plant_contradiction is None
+
+    def test_without_humidity_a_running_unit_falls_back_to_the_old_test(self, clock):
+        detector = _metered(clock)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C + 4.0, watts=1200.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+        assert detector.plant_contradiction is None
+
+    def test_a_room_merely_holding_level_beside_a_running_unit_contradicts_nothing(self, clock):
+        detector = _metered(clock)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C, watts=1200.0)
+        detector.evaluate()
+        assert detector.plant_contradiction is None
+
+    def test_standby_power_while_told_to_cool_is_the_units_fault(self, clock):
+        """Even inside the passive-warming bound, which alone would leave it UNKNOWN."""
+        detector = _metered(clock)
+        detector.observe_ambient(45.0)
+        detector.observe_coupling(0.05)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C + 4.0, watts=4.0)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+
+    def test_a_working_unit_is_still_clear(self, clock):
+        detector = _metered(clock)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C - 1.0, watts=1200.0)
+        assert detector.evaluate().judgment is Judgment.CLEAR
+
+    def test_a_split_meter_decides_nothing(self, clock):
+        detector = _metered(clock)
+        detector.observe_reading(_reading(clock, START_C))
+        detector.observe_command(CommandKind.COOL)
+        for step in range(1, 21):
+            clock.advance(WINDOW_S / 20)
+            detector.observe_power(1200.0 if step % 2 else 4.0)
+            detector.observe_reading(_reading(clock, START_C + 0.2 * step))
+        assert detector.evaluate().judgment is Judgment.FAULTED
+        assert detector.plant_contradiction is None
+
+    def test_without_a_meter_the_old_test_stands(self, detector, clock):
+        _cool_for(detector, clock, WINDOW_S, final_c=START_C)
+        assert detector.evaluate().judgment is Judgment.FAULTED
+        assert detector.plant_contradiction is None
+
+    def test_stopping_cooling_forgets_the_contradiction(self, clock):
+        detector = _metered(clock)
+        _cool_metered(detector, clock, WINDOW_S, final_c=START_C + 4.0, watts=1200.0)
+        detector.evaluate()
+        detector.observe_command(CommandKind.OFF)
+        assert detector.plant_contradiction is None

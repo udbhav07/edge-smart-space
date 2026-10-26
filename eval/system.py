@@ -12,6 +12,9 @@ Lives in ``eval`` because experiments need it as much as tests do, and
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 from src.common.schemas import (
     Coefficients,
     Command,
@@ -34,6 +37,15 @@ class System:
     """Four services and a plant, on one in-process bus."""
 
     def __init__(self, config, clock) -> None:
+        # Simulated time must never reach the live room's state: a system
+        # built from the default config saved a 2025-stamped estimate into
+        # state/, and the next real start discarded it as 410 days old
+        # (U-28). The estimate is kept, as in service, but privately.
+        self._state = tempfile.TemporaryDirectory(prefix="eval-system-")
+        persistence = config.persistence.model_copy(
+            update={"path": str(Path(self._state.name) / "coefficients.json")}
+        )
+        config = config.model_copy(update={"persistence": persistence})
         self.config = config
         self.clock = clock
         self.transport = LoopbackTransport()

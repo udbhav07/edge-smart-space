@@ -22,12 +22,24 @@ dependencies = [
     # OpenAI-compatible server -- llama.cpp or Ollama, never a hosted API
     # (NFR-06). Pure Python, so it belongs in the core, not with torch.
     "openai==1.68.2",
+    # The occupant console (FR-56), started by start.py with everything else.
+    "fastapi==0.128.0",
+    "uvicorn==0.40.0",
+    # Google Calendar and Gmail (FR-84 to FR-86): the console signs in, the
+    # assistance service syncs. Nothing reaches Google until the occupant
+    # connects an account, but both services are core, so their client
+    # libraries are too.
+    "google-auth==2.57.1",
+    "google-auth-oauthlib==1.5.0",
+    "google-api-python-client==2.201.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
+    # fastapi.testclient runs on it; the console's tests need nothing else.
+    "httpx==0.28.1",
 ]
 
 # Voice pipeline. Kept optional because torch and friends are large, and
@@ -41,6 +53,12 @@ speech = [
     "silero-vad==5.1.2",
     "torch==2.5.1",
     "torchaudio==2.5.1",
+    # Speaking replies (FR-79), in the same service that listens. Piper is a
+    # neural voice run on this node, its model fetched once by
+    # setup_models.py; pyttsx3 is the system's own voices, used when the
+    # model file is missing.
+    "piper-tts==1.8.0",
+    "pyttsx3==2.99",
 ]
 
 [tool.setuptools]

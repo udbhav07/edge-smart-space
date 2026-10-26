@@ -39,6 +39,28 @@ is evidence the unit works and only warming is a fault. Near ambient a working
 unit has headroom to spare, so the room must still cool. With no ambient
 reading the original test applies.
 
+**The power meter is the deciding witness** (FR-23, FR-24, S-02). A room
+that did not cool while the unit was told to is evidence against *something*,
+and the temperature alone cannot say what: a dead unit and a thermometer
+drifting upward look the same from the reading. The meter on the unit's supply
+can. Through the window:
+
+* drawing **running** power, the compressor was demonstrably working, and
+  the question becomes whether the room really warmed. Humidity answers it:
+  at constant vapour, a room that truly warms by a degree loses about 3 %RH.
+  If humidity fell with the reading, the room warmed while the unit ran --
+  lost refrigerant, the unit's fault. If it did not, the reading rose on its
+  own: the warming is reported as a *plant contradiction*, which the bank
+  hands to D4 on the indoor sensor. Live, before this, a 0.01 C/s drift was
+  blamed on a healthy unit that was put on hold.
+* drawing **standby** power while told to cool, the unit is not running, and
+  that is the fault whatever the warming bound says.
+* no meter, or a window that is neither, falls back to the test above.
+
+Without humidity readings in the window, a running unit beside a warming
+reading falls back to the passive-warming test above: the meter alone cannot
+tell lost refrigerant from a drifting thermometer.
+
 **Cooling is fitted, not differenced.** Two single readings, one at each end
 of the window, carry the sensor's noise twice -- about 0.2 C against a 0.3 C
 threshold -- and a room warming 0.2 C under a rising solar load read as 0.5.
@@ -68,6 +90,10 @@ _MAX_WINDOW_READINGS = 4096
 #: Readings needed before a line is fitted rather than the ends differenced.
 _READINGS_FOR_A_FIT = 3
 
+#: Share of the window's meter readings that must agree before the meter
+#: decides: a single start-up spike or a sample in the dead time must not.
+_METER_AGREEMENT = 0.8
+
 
 class ActuatorResponseDetector:
     """Watches whether sustained cooling actually cools the room.
@@ -83,6 +109,7 @@ class ActuatorResponseDetector:
         config: ActuatorDetectorConfig,
         clock: Clock,
         sample_period_s: float = 5.0,
+        running_power_w: float | None = None,
     ) -> None:
         if not subject:
             raise ValueError("a detector must name the subject it watches")
@@ -97,6 +124,11 @@ class ActuatorResponseDetector:
         self._ambient_c: float | None = None
         self._coupling: float | None = None
         self._window: deque[tuple[float, float]] = deque(maxlen=_MAX_WINDOW_READINGS)
+        #: Draw above which the unit counts as running; None without a meter.
+        self._running_power_w = running_power_w
+        self._power: deque[float] = deque(maxlen=_MAX_WINDOW_READINGS)
+        self._humidity: deque[tuple[float, float]] = deque(maxlen=_MAX_WINDOW_READINGS)
+        self._contradiction: dict[str, float] | None = None
 
     @property
     def subject(self) -> str:
@@ -136,6 +168,28 @@ class ActuatorResponseDetector:
             self._started_s = self._clock.monotonic()
         self._window.append((self._clock.monotonic(), reading.value))
 
+    def observe_power(self, watts: float) -> None:
+        """Note the unit's electrical draw, while it is being told to cool."""
+        if self._running_power_w is None or not self._cooling or self._started_s is None:
+            return
+        self._power.append(watts)
+
+    def observe_humidity(self, pct: float) -> None:
+        """Note indoor relative humidity: the room's second witness (S-02)."""
+        if not self._cooling or self._started_s is None:
+            return
+        self._humidity.append((self._clock.monotonic(), pct))
+
+    @property
+    def plant_contradiction(self) -> dict[str, float] | None:
+        """Evidence that the indoor reading, not the unit, is wrong (S-02).
+
+        Set by :meth:`evaluate` when a full window found the room warming
+        while the meter showed the compressor running throughout; None
+        otherwise.
+        """
+        return self._contradiction
+
     def observe_coupling(self, a2: float) -> None:
         """Note the identified ambient coupling, a2, per sample (FR-23, FR-24).
 
@@ -161,6 +215,9 @@ class ActuatorResponseDetector:
         self._started_s = None
         self._start_temperature_c = None
         self._window.clear()
+        self._power.clear()
+        self._humidity.clear()
+        self._contradiction = None
 
     def evaluate(self) -> Finding:
         """Judge the actuator on the current cooling period.
@@ -190,6 +247,31 @@ class ActuatorResponseDetector:
             self._anchor_window()
             return self._finding(Judgment.CLEAR, cooled_c, elapsed_s)
 
+        meter = self._meter_verdict()
+        self._contradiction = None
+        warmed_c = -cooled_c
+        if meter == "running" and warmed_c >= self._config.min_cooling_c:
+            humidity_change = self._humidity_change_pct()
+            if humidity_change is not None:
+                expected_fall = warmed_c * self._config.humidity_per_degree_pct
+                if -humidity_change >= self._config.humidity_agreement * expected_fall:
+                    # Humidity fell with it: the room truly warmed while the
+                    # compressor ran. The unit draws power and cools nothing.
+                    return self._finding(Judgment.FAULTED, cooled_c, elapsed_s)
+                # The reading rose and the air did not: the reading is wrong,
+                # and the unit did its part. D4 is handed the evidence.
+                self._contradiction = {
+                    "warmed_c": warmed_c,
+                    "unit_running_w": self._median_power_w(),
+                    "humidity_change_pct": humidity_change,
+                    "expected_humidity_fall_pct": expected_fall,
+                    "elapsed_s": elapsed_s,
+                }
+                return self._finding(Judgment.UNKNOWN, cooled_c, elapsed_s)
+        if meter == "idle":
+            # Told to cool, drawing standby: not running, whatever the reading.
+            return self._finding(Judgment.FAULTED, cooled_c, elapsed_s)
+
         bound_c = self._passive_warming_bound_c(elapsed_s)
         if bound_c is not None and -cooled_c > bound_c:
             # Faster than any room with a dead unit could warm: the unit
@@ -198,6 +280,27 @@ class ActuatorResponseDetector:
             # sensor ended up diagnosed as a failed air conditioner.
             return self._finding(Judgment.UNKNOWN, cooled_c, elapsed_s)
         return self._finding(Judgment.FAULTED, cooled_c, elapsed_s)
+
+    def _humidity_change_pct(self) -> float | None:
+        """Relative humidity's fitted change over the window; None if too few."""
+        if len(self._humidity) < _READINGS_FOR_A_FIT:
+            return None
+        return _fitted_change(list(self._humidity))
+
+    def _meter_verdict(self) -> str | None:
+        """"running", "idle", or None when there is no meter or it is split."""
+        if self._running_power_w is None or len(self._power) < _READINGS_FOR_A_FIT:
+            return None
+        running = sum(1 for watts in self._power if watts >= self._running_power_w)
+        if running >= _METER_AGREEMENT * len(self._power):
+            return "running"
+        if len(self._power) - running >= _METER_AGREEMENT * len(self._power):
+            return "idle"
+        return None
+
+    def _median_power_w(self) -> float:
+        ordered = sorted(self._power)
+        return ordered[len(ordered) // 2] if ordered else 0.0
 
     def _passive_warming_bound_c(self, elapsed_s: float) -> float | None:
         """The most a room with a dead unit could have warmed over the window,
@@ -249,18 +352,27 @@ class ActuatorResponseDetector:
 
     def _fitted_change_c(self) -> float:
         """Change across the window along a least-squares line through it."""
-        times = [t for t, _ in self._window]
-        values = [value for _, value in self._window]
-        mean_t = sum(times) / len(times)
-        mean_value = sum(values) / len(values)
-        spread = sum((t - mean_t) ** 2 for t in times)
-        if spread == 0.0:
-            return values[-1] - values[0]
-        slope = (
-            sum((t - mean_t) * (v - mean_value) for t, v in zip(times, values))
-            / spread
-        )
-        return slope * (times[-1] - times[0])
+        return _fitted_change(list(self._window))
+
+    def _conditions(self, elapsed_s: float) -> dict[str, float]:
+        """What the verdict was judged against, when it is known.
+
+        The passive-warming bound decides whether a warming room is blamed on
+        the unit or left to D4, and it rests on the identified coupling and
+        the ambient. A finding that omitted them could not show why a drifting
+        sensor was, or was not, called a failed air conditioner.
+        """
+        conditions: dict[str, float] = {}
+        if self._ambient_c is not None:
+            conditions["ambient_c"] = self._ambient_c
+        if self._coupling is not None:
+            conditions["coupling_a2"] = self._coupling
+        bound_c = self._passive_warming_bound_c(elapsed_s)
+        if bound_c is not None:
+            conditions["passive_warming_bound_c"] = bound_c
+        if self._power:
+            conditions["unit_median_w"] = self._median_power_w()
+        return conditions
 
     def _begin_cooling(self) -> None:
         if self._cooling:
@@ -273,12 +385,17 @@ class ActuatorResponseDetector:
         self._started_s = None
         self._start_temperature_c = None
         self._window.clear()
+        self._power.clear()
+        self._humidity.clear()
+        self._contradiction = None
 
     def _anchor_window(self) -> None:
         """Start a fresh evaluation window from the temperature now known."""
         self._started_s = self._clock.monotonic()
         self._start_temperature_c = self._latest_temperature_c
         self._window.clear()
+        self._power.clear()
+        self._humidity.clear()
         if self._latest_temperature_c is not None:
             self._window.append((self._started_s, self._latest_temperature_c))
 
@@ -290,7 +407,7 @@ class ActuatorResponseDetector:
             subject=self._subject,
             judgment=judgment,
             confidence=1.0 if judgment is Judgment.FAULTED else 0.0,
-            evidence={
+            evidence={**self._conditions(elapsed_s),
                 "cooled_c": cooled_c,
                 "min_cooling_c": self._config.min_cooling_c,
                 "elapsed_s": elapsed_s,
@@ -308,3 +425,16 @@ class ActuatorResponseDetector:
                 "required_cooling_c": self._required_cooling_c(),
             },
         )
+
+
+def _fitted_change(points: list[tuple[float, float]]) -> float:
+    """Change across the points along a least-squares line through them."""
+    times = [t for t, _ in points]
+    values = [value for _, value in points]
+    mean_t = sum(times) / len(times)
+    mean_value = sum(values) / len(values)
+    spread = sum((t - mean_t) ** 2 for t in times)
+    if spread == 0.0:
+        return values[-1] - values[0]
+    slope = sum((t - mean_t) * (v - mean_value) for t, v in zip(times, values)) / spread
+    return slope * (times[-1] - times[0])

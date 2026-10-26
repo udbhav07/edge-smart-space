@@ -80,6 +80,19 @@ run() {
         "$@"
     fi
 }
+# Write a file once: an existing one is the operator's or the calibrator's,
+# and provisioning again must not overwrite what either of them decided.
+write_once() {
+    local path="$1" content="$2"
+    if [[ -f "$path" ]]; then
+        printf '    kept %s\n' "$path"
+    elif [[ "$DRY_RUN" -eq 1 ]]; then
+        printf '    [dry-run] write %s\n' "$path"
+    else
+        printf '%s\n' "$content" > "$path"
+        chown "$SERVICE_USER" "$path"
+    fi
+}
 
 if [[ "$DRY_RUN" -eq 0 && "$(id -u)" -ne 0 ]]; then
     echo "run as root (sudo), or with --dry-run to see what it would do" >&2
@@ -124,7 +137,9 @@ UNIT
 fi
 
 # --- 3. time zone ------------------------------------------------------------
-step "Time zone $TIMEZONE, so the tariff's peak hours are the room's"
+# Local time is site.utc_offset_h in the config, never the machine's zone;
+# setting the zone too keeps journal timestamps in the room's hours.
+step "Time zone $TIMEZONE, for logs in the room's hours"
 run timedatectl set-timezone "$TIMEZONE"
 
 # --- 4. service user ---------------------------------------------------------
@@ -213,7 +228,20 @@ run systemctl enable smart-space.target
 
 # --- 9. Layer 1 --------------------------------------------------------------
 step "Layer 1: $SOURCE"
-CONFIG="$INSTALL_DIR/config/default.yaml"
+# Three layers, each with one owner. default.yaml is the repository's
+# documented reference and is never edited here. calibration.yaml is
+# tools.calibrate's (R-04): thresholds re-derived from a recorded healthy
+# run, empty until one is. site.yaml is this node's -- which Layer 1 runs --
+# and is what every unit reads.
+CALIBRATION="$INSTALL_DIR/config/calibration.yaml"
+CONFIG="$INSTALL_DIR/config/site.yaml"
+write_once "$CALIBRATION" "# Detector thresholds re-derived by tools.calibrate (R-04). Until a
+# healthy run has been recorded and calibrated from, this changes nothing.
+extends: default.yaml"
+write_once "$CONFIG" "# This node. Every systemd unit reads this file.
+extends: calibration.yaml
+devices:
+  source: $SOURCE"
 run sed -i "s/^  source: \(simulated\|esphome\)/  source: $SOURCE/" "$CONFIG"
 if [[ "$SOURCE" == "simulated" ]]; then
     # smart-space.target names no Layer 1; exactly one is enabled into it.

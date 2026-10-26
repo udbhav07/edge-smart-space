@@ -362,3 +362,33 @@ class TestDeviceChannel:
         board, transport = self._board()
         board.publish_device("node/climate/ac/mode/command", "cool")
         assert transport.published[-1] == ("node/climate/ac/mode/command", b"cool", 1, False)
+
+
+
+class TestDisconnectLogging:
+    """U-35: a normal disconnection was printed as a warning in every conversation."""
+
+    class Code:
+        def __init__(self, failure):
+            self.is_failure = failure
+
+        def __str__(self):
+            return "code"
+
+    def _disconnect(self, config, code, caplog):
+        import logging
+
+        pytest.importorskip("paho.mqtt.client")
+        from src.common.mqtt_client import build_transport
+
+        holder = [type("Board", (), {"on_disconnected": lambda self: None})()]
+        client = build_transport(config, "test", holder)
+        with caplog.at_level(logging.INFO, logger="src.common.mqtt_client"):
+            client.on_disconnect(client, None, None, code, None)
+        return [record.levelname for record in caplog.records if "disconnected" in record.message]
+
+    def test_a_normal_disconnection_is_not_a_warning(self, config, caplog):
+        assert self._disconnect(config, self.Code(False), caplog) == ["INFO"]
+
+    def test_a_lost_connection_is_a_warning(self, config, caplog):
+        assert self._disconnect(config, self.Code(True), caplog) == ["WARNING"]

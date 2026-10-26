@@ -40,4 +40,11 @@ def test_a_perfect_cycle_scores_on_every_count():
 def test_proposing_without_reading_is_a_tool_selection_failure():
     chat = ScriptedChat(calling(call("propose_setpoint", setpoint_c=24.0, mode="NORMAL", rationale="guess")))
     outcome = run_scenario(CONFIG, chat, Scenario("occupied", False, TariffBand.NORMAL, 26.0))
-    assert outcome.argument_right and not outcome.tools_right
+    assert not outcome.tools_right
+
+
+def test_a_blind_proposal_is_never_acted_on():
+    """A guess that happens to be right is still a guess: it is not published."""
+    chat = ScriptedChat(calling(call("propose_setpoint", setpoint_c=24.0, mode="NORMAL", rationale="guess")))
+    outcome = run_scenario(CONFIG, chat, Scenario("occupied", False, TariffBand.NORMAL, 26.0))
+    assert outcome.proposed is None

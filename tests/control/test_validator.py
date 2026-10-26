@@ -182,15 +182,34 @@ class TestGoalSourceIndifference:
 
 class TestRuleV5ModeConsistency:
     @pytest.mark.parametrize("mode", [Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD])
-    @pytest.mark.parametrize("kind", [CommandKind.COOL, CommandKind.OFF])
-    def test_actuation_is_blocked_in_a_non_actuating_mode(
-        self, commands, clock, mode, kind
-    ):
-        setpoint = 25.0 if kind is CommandKind.COOL else None
-        verdict = commands.validate(_command(clock, kind, setpoint), mode)
+    def test_cooling_is_blocked_in_a_non_actuating_mode(self, commands, clock, mode):
+        verdict = commands.validate(_command(clock, CommandKind.COOL, 25.0), mode)
         assert verdict.verdict is Verdict.BLOCKED
         assert verdict.reason is ReasonCode.MODE_BLOCK
         assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.HOLD.value
+
+    @pytest.mark.parametrize("mode", [Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD])
+    def test_a_stop_is_admitted_in_a_non_actuating_mode(self, commands, clock, mode):
+        """Stopping is not driving the plant; refusing it would leave the
+        unit running with nothing trusted to say when to stop."""
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        verdict = commands.validate(_command(clock, CommandKind.OFF), mode)
+        assert verdict.verdict is Verdict.ACCEPTED
+        assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.OFF.value
+        assert commands.compressor_on is False
+
+    def test_a_safety_stop_is_never_throttled(self, commands, clock):
+        """Inside V-4's window, which would suppress an ordinary OFF."""
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.SAFE_HOLD)
+        assert verdict.reason is ReasonCode.NONE
+
+    def test_a_safety_stop_starts_the_dwell(self, commands, clock, config):
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        commands.validate(_command(clock, CommandKind.OFF), Mode.SAFE_HOLD)
+        clock.advance(config.min_command_interval_s + 1.0)
+        verdict = commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        assert verdict.reason is ReasonCode.DWELL
 
     @pytest.mark.parametrize("mode", [Mode.NORMAL, Mode.DEGRADED_SENSOR])
     def test_actuation_is_permitted_in_an_actuating_mode(self, commands, clock, mode):
@@ -198,9 +217,9 @@ class TestRuleV5ModeConsistency:
         assert verdict.verdict is Verdict.ACCEPTED
 
     def test_mode_block_takes_precedence_over_timing_rules(self, commands, clock):
-        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
         verdict = commands.validate(
-            _command(clock, CommandKind.OFF), Mode.SAFE_HOLD
+            _command(clock, CommandKind.COOL, 25.0), Mode.SAFE_HOLD
         )
         assert verdict.reason is ReasonCode.MODE_BLOCK
 
@@ -269,6 +288,35 @@ class TestRuleV4CommandRate:
         clock.advance(config.min_command_interval_s / 2.0 + 1.0)
         verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
         assert verdict.verdict is Verdict.ACCEPTED
+
+    def test_a_reassertion_is_admitted_inside_the_rate_window(self, commands, clock):
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        verdict = commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        assert verdict.verdict is Verdict.ACCEPTED
+        assert verdict.applied[COMMAND_KIND_KEY] == CommandKind.COOL.value
+
+    def test_a_reassertion_does_not_reset_the_rate_window(
+        self, commands, clock, config
+    ):
+        """R-02 refreshes re-send the state in force; they are not changes.
+        Counting one would suppress a genuine OFF that follows it."""
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        clock.advance(config.min_command_interval_s + 1.0)
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        clock.advance(1.0)
+        verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
+        assert verdict.verdict is Verdict.ACCEPTED
+
+    def test_an_off_reasserted_while_off_is_admitted(self, commands, clock):
+        verdict = commands.validate(_command(clock, CommandKind.OFF), Mode.NORMAL)
+        assert verdict.verdict is Verdict.ACCEPTED
+
+    def test_a_reassertion_is_still_mode_blocked(self, commands, clock):
+        commands.validate(_command(clock, CommandKind.COOL, 25.0), Mode.NORMAL)
+        verdict = commands.validate(
+            _command(clock, CommandKind.COOL, 25.0), Mode.SAFE_HOLD
+        )
+        assert verdict.reason is ReasonCode.MODE_BLOCK
 
 
 class TestCompressorState:

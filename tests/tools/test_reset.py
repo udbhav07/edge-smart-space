@@ -54,3 +54,39 @@ class TestHelpText:
     def test_the_configured_broker_is_the_one_it_would_reach(self):
         config = load_config(Path("config/default.yaml"))
         assert config.mqtt.host and config.mqtt.port
+
+
+class TestOutcome:
+    """U-18: the reset says what happened, and what it does not promise."""
+
+    @staticmethod
+    def _mode(ts, mode="NORMAL", faults=()):
+        from src.common.schemas import ModeState
+        return ModeState(ts=ts, mode=mode, since_ts=ts, active_fault_ids=faults, reason="all clear")
+
+    @staticmethod
+    def _reset(ts=100.0):
+        from src.common.schemas import ModeReset
+        return ModeReset(ts=ts, requester="operator")
+
+    def test_the_mode_the_reset_produced_is_reported(self):
+        from tools.reset import describe_outcome
+        text = describe_outcome(self._reset(), [self._mode(50.0, "SAFE_HOLD"), self._mode(101.0)])
+        assert text.startswith("mode is now NORMAL")
+
+    def test_a_reset_that_changed_nothing_says_the_mode_stays(self):
+        from tools.reset import describe_outcome
+        assert describe_outcome(self._reset(), [self._mode(50.0)]).startswith("mode stays NORMAL")
+
+    def test_it_says_faults_are_re_tested(self):
+        from tools.reset import describe_outcome
+        assert "re-tested" in describe_outcome(self._reset(), [self._mode(101.0)])
+
+    def test_faults_still_active_are_named(self):
+        from tools.reset import describe_outcome
+        text = describe_outcome(self._reset(), [self._mode(101.0, "DEGRADED_SENSOR", ("d2:temp_01",))])
+        assert "still active: d2:temp_01" in text
+
+    def test_silence_points_at_the_detectors_service(self):
+        from tools.reset import describe_outcome
+        assert "detectors service" in describe_outcome(self._reset(), [])

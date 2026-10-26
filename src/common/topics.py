@@ -138,9 +138,11 @@ ESTIMATE_COEFFICIENTS = TopicSpec(
 # --- Faults and mode (FR-20 to FR-31, FR-61) -------------------------------
 
 FAULT = TopicSpec("space/fault/{fault_id}", Qos.AT_LEAST_ONCE, retain=True)
-#: A person-readable explanation of a confirmed fault (FR-25). Not retained:
-#: a diagnosis outliving its fault would explain something no longer true.
-DIAGNOSIS = TopicSpec("space/diagnosis/{fault_id}", Qos.AT_LEAST_ONCE, retain=False)
+#: A person-readable explanation of a confirmed fault (FR-25, FR-28).
+#: Retained, so whoever looks later -- the viewer, the assistant asked "is
+#: everything ok?" -- still finds it (U-06, U-14); and withdrawn with its
+#: fault by the detector bank, so it never explains something no longer true.
+DIAGNOSIS = TopicSpec("space/diagnosis/{fault_id}", Qos.AT_LEAST_ONCE, retain=True)
 SYSTEM_MODE = TopicSpec("space/system/mode", Qos.AT_LEAST_ONCE, retain=True)
 
 # --- Goals (FR-40, FR-45) --------------------------------------------------
@@ -161,6 +163,11 @@ ACTUATOR_STATE = TopicSpec(
 #: the same topics under their own id and carry ``simulated: true``.
 AIR_CONDITIONER_ID = "ac"
 
+#: What the loop is holding the room to: the setpoint in force, and the
+#: temperature actually tracked, which differs during peak (FR-16). Retained:
+#: it is state an occupant, the assistant and the viewer all need.
+CONTROL_TRACKING = TopicSpec("space/control/tracking", Qos.AT_LEAST_ONCE, retain=True)
+
 # --- Tariff (FR-16) ---------------------------------------------------------
 
 #: The pricing band in force. Retained: it is state, and the supervisor reads
@@ -176,6 +183,34 @@ CONTEXT_PREFERENCE = TopicSpec(
 #: What the system says back once it has acted on an utterance. Not retained:
 #: a reply is an answer to one question, not state.
 CONTEXT_REPLY = TopicSpec("space/context/reply", Qos.AT_LEAST_ONCE, retain=False)
+
+#: Something typed in the console, to be understood exactly as speech is
+#: (FR-57): the reasoning layer extracts a hint from it with the same call.
+#: Not retained: an utterance is said once.
+CONTEXT_UTTERANCE = TopicSpec("space/context/utterance", Qos.AT_LEAST_ONCE, retain=False)
+
+#: Something said in the room without the wake word, heard while listening
+#: continuously (FR-76). Mined for plans and facts, never answered. Not
+#: retained: it is speech, not state, and keeping it would keep a transcript
+#: of the room for anyone who connects later.
+CONTEXT_AMBIENT = TopicSpec("space/context/ambient", Qos.AT_LEAST_ONCE, retain=False)
+
+#: How the occupant wants the room to listen and speak (FR-79, FR-88):
+#: listening or muted, which replies are spoken, how loud, quiet hours.
+#: Retained, so a restarted speech service resumes what was chosen -- a mute
+#: that a restart undid would be a privacy promise broken.
+SPEECH_SETTINGS = TopicSpec("space/speech/settings", Qos.AT_LEAST_ONCE, retain=True)
+
+#: What the speech pipeline is doing -- waiting for the wake word, listening,
+#: transcribing -- restated on a heartbeat so a silent pipeline is seen to be
+#: gone. Retained, so the console shows it the moment it connects.
+SPEECH_STATUS = TopicSpec("space/speech/status", Qos.AT_LEAST_ONCE, retain=True)
+
+#: What is known about one person: long-term memory and recent conversation
+#: (FR-52). Retained, so a restarted assistant knows who it was talking to.
+CONTEXT_PROFILE = TopicSpec(
+    "space/context/profile/{profile_id}", Qos.AT_LEAST_ONCE, retain=True
+)
 
 # --- Assistance tools (FR-70 to FR-75) -------------------------------------
 
@@ -195,6 +230,11 @@ ASSIST_RESULT = TopicSpec("space/assist/result", Qos.AT_LEAST_ONCE, retain=False
 #: The declared surface, retained so a late subscriber -- or an examiner --
 #: can read what the reasoning layer is allowed to ask for (FR-60, FR-70).
 ASSIST_CATALOGUE = TopicSpec("space/assist/catalogue", Qos.AT_LEAST_ONCE, retain=True)
+
+#: Whether a Google account is connected, and how much is waiting to reach
+#: it (FR-84 to FR-86). Retained, so the console shows it on connect. Never
+#: carries a token: those stay in a file only the assistance service reads.
+ASSIST_GOOGLE = TopicSpec("space/assist/google", Qos.AT_LEAST_ONCE, retain=True)
 
 #: An operator clearing SAFE_HOLD (section 5.6). Deliberately *not* retained:
 #: a retained reset would be redelivered on every reconnect and re-clear a hold

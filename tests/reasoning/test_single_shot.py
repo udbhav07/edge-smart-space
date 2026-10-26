@@ -96,9 +96,15 @@ class TestExtraction:
         assert _context(config, client).extract("   ") is None
         assert client.calls == []
 
-    def test_no_preference_expressed_yields_nothing(self, config):
+    def test_a_question_is_answered_not_dropped(self, config):
+        """U-06: a question used to vanish as 'nothing actionable'."""
         client = StubClient('{"comfort": "unchanged", "target_c": null, "rationale": ""}')
-        assert _context(config, client).extract("what time is it") is None
+        hint = _context(config, client).extract("what time is it")
+        assert hint.intent is Intent.QUESTION and hint.target_c is None
+
+    def test_mumbling_yields_nothing(self, config):
+        client = StubClient('{"intent": "none", "comfort": "unchanged", "target_c": null}')
+        assert _context(config, client).extract("asdfgh qwerty") is None
 
 
 class TestPostDecodeValidation:
@@ -110,7 +116,7 @@ class TestPostDecodeValidation:
             "not json at all",
             "[1, 2, 3]",
             '{"comfort": "freezing", "target_c": null, "rationale": ""}',
-            '{"target_c": 23.0, "rationale": "no comfort key"}',
+            '{"target_c": null, "rationale": "no comfort key and no target"}',
             '{"comfort": "cooler", "target_c": "warm", "rationale": ""}',
         ],
         ids=[
@@ -125,9 +131,10 @@ class TestPostDecodeValidation:
         assert _context(config, StubClient(body)).extract(TRANSCRIPT) is None
 
     def test_a_schema_valid_output_is_still_checked_semantically(self, config):
-        """Parsing is guaranteed by construction and is not a result."""
+        """Parsing is guaranteed by construction and is not a result: an
+        output that missed the plain words "too warm" is corrected by them."""
         client = StubClient('{"comfort": "unchanged", "target_c": null, "rationale": "x"}')
-        assert _context(config, client).extract(TRANSCRIPT) is None
+        assert _context(config, client).extract(TRANSCRIPT).comfort is Comfort.COOLER
 
 
 class TestDegradation:
@@ -170,7 +177,7 @@ class TestBroaderThanTemperature:
 
     def test_nothing_actionable_still_yields_nothing(self, config):
         client = StubClient('{"intent": "none", "subject": "", "comfort": "unchanged", "target_c": null, "rationale": "", "spoken_reply": "I did not catch a request."}')
-        assert _context(config, client).extract("what is the weather") is None
+        assert _context(config, client).extract("hmm okay then") is None
 
     def test_an_intent_of_none_cannot_smuggle_a_target(self, config):
         """Otherwise a discarded extraction could still name a temperature."""
@@ -205,12 +212,33 @@ class TestWhatServedModelsActuallySend:
         assert hint is not None
         assert hint.intent is Intent.SERVICE
 
+    @pytest.mark.parametrize("intent", ["service", "question", "none"])
+    def test_a_missing_comfort_is_unchanged_when_comfort_cannot_apply(self, config, intent):
+        """U-07, live: "remember that I like tea" came back with no comfort
+        key at all and was discarded, so nothing was remembered."""
+        client = StubClient(
+            '{"intent": "' + intent + '", "subject": "memory", "target_c": null, '
+            '"rationale": "remember tea", "spoken_reply": ""}'
+        )
+        hint = _context(config, client).extract("remember that I like tea")
+        assert hint is not None and hint.comfort is Comfort.UNCHANGED
+
+    def test_a_named_target_without_comfort_is_kept(self, config):
+        """Live: "make it 22 degrees again" came back with no comfort key."""
+        client = StubClient('{"intent": "environment", "subject": "temperature", "target_c": 22, "rationale": "22"}')
+        hint = _context(config, client).extract("make the temperature go to 22 degrees again")
+        assert hint is not None and hint.target_c == 22.0
+
+    def test_an_environment_request_without_comfort_is_still_discarded(self, config):
+        client = StubClient('{"intent": "environment", "target_c": null, "rationale": ""}')
+        assert _context(config, client).extract(TRANSCRIPT) is None
+
     def test_a_blank_comfort_reads_as_unchanged(self, config):
         client = StubClient(
             '{"intent": "environment", "subject": "temperature", "comfort": "", '
             '"target_c": 40.0, "rationale": "make it 40", "spoken_reply": "Passed on."}'
         )
-        hint = _context(config, client).extract(TRANSCRIPT)
+        hint = _context(config, client).extract("make it 40 degrees")
         assert hint.comfort is Comfort.UNCHANGED
         assert hint.target_c == 40.0
 
@@ -246,7 +274,16 @@ class TestClassifiesConsistently:
     run and nothing on the next, and so was silently dropped."""
 
     def test_a_question_about_the_schedule_is_a_service_request(self):
-        assert "a question about what is planned" in PERSONAL_CONTEXT_PROMPT
+        assert "adding, moving, cancelling or asking about them" in PERSONAL_CONTEXT_PROMPT
+
+    def test_the_conversation_so_far_is_shown_to_the_model(self, config):
+        """U-01: a follow-up is read against what it follows."""
+        from src.common.schemas import ContextTurn
+
+        client = StubClient('{"intent": "service", "comfort": "unchanged", "target_c": null}')
+        turn = ContextTurn(ts=1.0, said="put a meeting at 3", replied="Added Meeting at 15:00.")
+        _context(config, client).extract("move it to 4", recent=(turn,))
+        assert "Added Meeting at 15:00." in client.calls[-1]["messages"][0]["content"]
 
     def test_the_extraction_asks_for_a_deterministic_decode(self, config):
         client = StubClient('{"comfort": "cooler", "target_c": 23, "rationale": "x"}')

@@ -191,3 +191,37 @@ class TestPursuit:
         manager.settle(_verdict(clock, ReasonCode.RATE_LIMIT))
         clock.advance(config.preference_ttl_s + 1.0)
         assert manager.next_pursuit(Mode.NORMAL) is None
+
+
+class TestHandingItBack:
+    """FR-81: back to automatic, and cooling off for a chosen time."""
+
+    def test_release_ends_the_hold(self, manager, clock):
+        manager.from_preference(_hint(clock, target_c=22.0), IN_FORCE_C, Mode.NORMAL)
+        manager.release(24.0, Mode.NORMAL)
+        assert manager.admits(_supervisor_goal(clock)) is True
+
+    def test_release_proposes_the_default(self, manager, clock):
+        goal = manager.release(24.0, Mode.NORMAL)
+        assert goal.setpoint_c == 24.0 and goal.source is GoalSource.DEFAULT
+
+    def test_release_stops_pursuing_the_old_request(self, manager, clock):
+        manager.from_preference(_hint(clock, target_c=19.0), IN_FORCE_C, Mode.NORMAL)
+        manager.release(24.0, Mode.NORMAL)
+        assert manager.pursuing is None
+
+    def test_a_chosen_hold_outlasts_the_configured_one(self, manager, clock, config):
+        manager.from_preference(_hint(clock, target_c=30.0, hold_s=3 * 3600.0), IN_FORCE_C, Mode.NORMAL)
+        clock.advance(config.preference_hold_s + 1.0)
+        assert manager.admits(_supervisor_goal(clock)) is False
+
+    def test_and_ends_when_it_says(self, manager, clock):
+        manager.from_preference(_hint(clock, target_c=30.0, hold_s=600.0), IN_FORCE_C, Mode.NORMAL)
+        clock.advance(601.0)
+        assert manager.admits(_supervisor_goal(clock)) is True
+
+    def test_the_next_request_goes_back_to_the_configured_hold(self, manager, clock, config):
+        manager.from_preference(_hint(clock, target_c=30.0, hold_s=3 * 3600.0), IN_FORCE_C, Mode.NORMAL)
+        manager.from_preference(_hint(clock, target_c=23.0), IN_FORCE_C, Mode.NORMAL)
+        clock.advance(config.preference_hold_s + 1.0)
+        assert manager.admits(_supervisor_goal(clock)) is True

@@ -58,6 +58,21 @@ SETPOINT_KEY = "setpoint_c"
 SOURCE_KEY = "source"
 COMMAND_KIND_KEY = "kind"
 
+#: A profile id: short, lower-case, and safe as both a topic level and a file
+#: name, because it is both (``space/context/profile/{id}``, ``state/...``).
+PROFILE_ID_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+PROFILE_ID_PATTERN_OR_EMPTY = r"^([a-z][a-z0-9_]{0,31})?$"
+
+#: Whoever was not recognised. Has short-term context -- the room's own
+#: conversation -- and never long-term memory: there is nobody to keep it for.
+GUEST_PROFILE_ID = "guest"
+#: Inside a sensor FaultEvent's evidence: epoch seconds from which the
+#: detector's own evidence says the readings were already wrong. Present only
+#: where a detector can say -- D2's frozen window, D4's change point -- so the
+#: estimator can predict from a reading taken before the fault rather than
+#: from the last one before it was confirmed (FR-27).
+ONSET_KEY = "onset_ts"
+
 # --- Enumerations ----------------------------------------------------------
 
 
@@ -67,6 +82,8 @@ class Unit(str, Enum):
     CELSIUS = "C"
     PERCENT_RH = "%RH"
     BOOLEAN = "bool"
+    #: Electrical power, from the meter on the air conditioner's supply.
+    WATT = "W"
 
 
 class Quality(str, Enum):
@@ -232,7 +249,11 @@ class SensorReading(TimestampedMessage):
     """
 
     sensor_id: str = Field(min_length=1)
-    value: float
+    #: Finite, always. NaN compares false with everything, so a NaN reading
+    #: would slip past D3's range test, poison the RLS update and the
+    #: residual window, and serialise as null. A sensor that could not
+    #: measure has no reading to publish, which is what D1 detects.
+    value: float = Field(allow_inf_nan=False)
     unit: Unit
     quality: Quality = Quality.OK
 
@@ -486,13 +507,23 @@ class Intent(str, Enum):
         An action against an external service. Requires explicit
         confirmation before anything is invoked (FR-54), so it is never
         acted on from here.
+    ``QUESTION``
+        Asking about the room, the system, the calendar or what is
+        remembered, or small talk. Answered, and never acted on: a question
+        carries no temperature, so "why is it so warm?" cannot move the
+        setpoint the way it once did.
     ``NONE``
         Nothing actionable was said. The ordinary case, not an error.
     """
 
     ENVIRONMENT = "environment"
     SERVICE = "service"
+    QUESTION = "question"
     NONE = "none"
+
+
+#: Intents that only ever produce words: neither may carry a temperature.
+_ANSWER_ONLY_INTENTS = frozenset({Intent.QUESTION, Intent.NONE})
 
 
 #: Subjects a spoken preference may name and still be about the temperature.
@@ -547,21 +578,46 @@ class PreferenceHint(TimestampedMessage):
         "calendar entry needs the exact time said -- reads the words rather "
         "than a model's paraphrase of them",
     )
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Whose voice it was, if recognised; empty for a guest. "
+        "Selects a personalisation profile and grants nothing (FR-52)",
+    )
+    typed: bool = Field(
+        default=False,
+        description="Typed in the console rather than spoken, so the reply says "
+        "'chatting as' rather than 'recognised your voice' (S-12)",
+    )
+    release: bool = Field(
+        default=False,
+        description="Hand the temperature back: the occupant's preference stops "
+        "holding and the room returns to automatic (FR-81)",
+    )
+    hold_s: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=86400.0,
+        description="How long this preference outranks the supervisor, if not the "
+        "configured hold: 'cooling off for three hours' (FR-81)",
+    )
 
     @model_validator(mode="after")
     def _nothing_actionable_carries_no_request(self) -> PreferenceHint:
-        """A NONE intent must not smuggle a request through.
+        """A NONE or QUESTION intent must not smuggle a request through.
 
-        Without this, an extraction that decided nothing was asked could
-        still name a target temperature, and the goal path would have no way
-        to tell an actual request from a discarded one.
+        Without this, an extraction that decided nothing was asked -- or that
+        a question was -- could still name a target temperature, and the goal
+        path would have no way to tell an actual request from a question.
         """
-        if self.intent is not Intent.NONE:
+        if self.intent not in _ANSWER_ONLY_INTENTS:
             return self
         if self.comfort is not Comfort.UNCHANGED:
-            raise ValueError("an intent of NONE must carry comfort 'unchanged'")
+            raise ValueError(f"an intent of {self.intent.value} must carry comfort 'unchanged'")
         if self.target_c is not None:
-            raise ValueError("an intent of NONE must not name a target temperature")
+            raise ValueError(
+                f"an intent of {self.intent.value} must not name a target temperature"
+            )
         return self
 
 
@@ -658,6 +714,7 @@ class ReasoningCaller(str, Enum):
     SUPERVISOR = "supervisor"
     ASSISTANT = "assistant"
     DIAGNOSIS = "diagnosis"
+    AMBIENT = "ambient"
 
 
 class ReasoningRecord(TimestampedMessage):
@@ -706,6 +763,182 @@ class AssistantReply(TimestampedMessage):
         description="Invocation id of a booking put to the occupant, if any "
         "(FR-54); empty when nothing is waiting",
     )
+    spoken: bool = Field(
+        default=False,
+        description="The request was spoken, so the reply is said aloud (FR-79)",
+    )
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Whose voice it was, if recognised; empty for a guest. "
+        "Selects a personalisation profile and grants nothing (FR-52)",
+    )
+
+
+class ConsoleUtterance(TimestampedMessage):
+    """Something an occupant typed in the console (FR-56, FR-57).
+
+    It carries words, not a decision: the reasoning layer extracts a
+    preference from it with the same call it uses for speech, so a typed
+    request is gated exactly as a spoken one and the console can command
+    nothing.
+    """
+
+    utterance_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=500)
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Who chose to speak as whom in the console; personalises "
+        "the reply and grants nothing (FR-52)",
+    )
+
+
+class AmbientUtterance(TimestampedMessage):
+    """Something said in the room that was not addressed to the assistant (FR-76).
+
+    Heard while listening continuously, without the wake word. It is never
+    answered and never acted on as a request: the reasoning layer only looks
+    in it for a plan to pencil into the calendar (FR-77) or a fact to offer
+    for remembering (FR-78). Audio is never published, only these words, and
+    the topic is not retained.
+    """
+
+    transcript: str = Field(min_length=1, max_length=1000)
+    profile_id: str = Field(
+        default="",
+        pattern=PROFILE_ID_PATTERN_OR_EMPTY,
+        description="Whose voice it was, if recognised; empty for a guest (FR-52)",
+    )
+    duration_s: float = Field(default=0.0, ge=0.0, description="How long the speech ran")
+
+
+class ListenMode(str, Enum):
+    """When the speech pipeline captures (FR-50, FR-76)."""
+
+    WAKE_WORD = "wake_word"    # only after the wake word, as FR-50 first required
+    CONTINUOUS = "continuous"  # every utterance; unaddressed ones are ambient
+
+
+class SpeechActivity(str, Enum):
+    """What the speech pipeline is doing (section 5.8)."""
+
+    WAITING = "waiting"            # for the wake word, or for speech when continuous
+    LISTENING = "listening"        # capture window open
+    TRANSCRIBING = "transcribing"  # utterance closed, Whisper running
+    UNDERSTANDING = "understanding"  # transcript known, extraction running
+    SPEAKING = "speaking"          # a reply is being said; the microphone is ignored (FR-79)
+    MUTED = "muted"                # the occupant turned listening off; nothing is captured (FR-88)
+
+
+class SpeechSettings(TimestampedMessage):
+    """How the occupant wants the room to listen and speak (FR-79, FR-88).
+
+    Set in the console and obeyed by the speech service. Muted means no
+    capture at all -- not capture that is then ignored.
+    """
+
+    listening: bool = Field(default=True, description="False mutes the microphone entirely")
+    speak_replies: bool = Field(default=True, description="Say replies to spoken requests aloud")
+    speak_typed: bool = Field(default=False, description="Also say replies to typed requests")
+    speak_alerts: bool = Field(default=True, description="Say a change of mode aloud")
+    volume: float = Field(default=0.8, ge=0.0, le=1.0)
+    quiet_from: str = Field(default="", pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$", description="HH:MM; empty for none")
+    quiet_to: str = Field(default="", pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$", description="HH:MM; empty for none")
+
+
+#: What the room asks Google for, and nothing more (FR-84).
+GOOGLE_SCOPES = (
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/gmail.send",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+)
+
+
+class GoogleStatus(TimestampedMessage):
+    """Whether a Google account is connected, and what is waiting to reach it.
+
+    Never a token or a secret: only what the occupant needs to see (FR-84).
+    """
+
+    configured: bool = Field(default=False, description="A client secret is in place")
+    connected: bool = Field(default=False, description="A usable token is held")
+    account: str = Field(default="", description="The connected address, if known")
+    outbox: int = Field(default=0, ge=0, description="Operations waiting to reach Google")
+    online: bool = Field(default=False, description="The last attempt reached Google")
+    last_sync_ts: float | None = Field(default=None, description="When the outbox last drained")
+    last_error: str = Field(default="", description="The last failure, in words")
+    needs_reconnect: bool = Field(default=False, description="Google refused the token; sign in again")
+
+
+class SpeechStatus(TimestampedMessage):
+    """The speech pipeline's state, for a person watching (FR-60).
+
+    Published on every change and restated on a heartbeat, so a console can
+    tell a quiet pipeline from a dead one.
+    """
+
+    activity: SpeechActivity
+    heard: str = Field(default="", description="The transcript, once there is one")
+    microphone: str = Field(default="", description="The input device in use")
+    wake_word: str = ""
+    heartbeat_s: float = Field(gt=0.0, description="How often this is restated")
+    listen_mode: ListenMode = Field(
+        default=ListenMode.WAKE_WORD,
+        description="Whether the room is listening continuously (FR-76)",
+    )
+    voice: str = Field(default="", description="The engine replies are spoken with, empty for none (FR-79)")
+
+
+class ContextTurn(BlackboardMessage):
+    """One exchange, kept as short-term context."""
+
+    ts: float = Field(gt=0.0)
+    said: str = Field(description="What the person said")
+    replied: str = Field(description="What the system said back")
+
+
+class ProfileContext(TimestampedMessage):
+    """What the system knows about one person, as the assistant is told it.
+
+    Published retained on ``space/context/profile/{profile_id}`` by whatever
+    keeps the memory. Long-term ``facts`` are what the person asked to be
+    remembered; ``recent`` is the conversation so far, which expires. Knowing
+    who is speaking personalises replies and grants nothing (FR-52).
+    """
+
+    profile_id: str = Field(pattern=PROFILE_ID_PATTERN)
+    display_name: str = Field(default="", description="How to address them; empty for a guest")
+    preferences: Mapping[str, str] = Field(
+        default_factory=dict, description="Named preferences, as written in the profile"
+    )
+    facts: tuple[str, ...] = Field(default=(), description="Long-term memory")
+    recent: tuple[ContextTurn, ...] = Field(default=(), description="Short-term context")
+    suggestions: tuple[str, ...] = Field(
+        default=(),
+        description="Facts overheard and held until the person keeps or dismisses "
+        "them (FR-78); never told to the assistant as memory",
+    )
+
+    @field_serializer("preferences")
+    def _plain_preferences(self, preferences: Mapping[str, str]) -> dict[str, str]:
+        return dict(preferences)
+
+
+class TrackingState(TimestampedMessage):
+    """What the regulatory loop is holding the room to, and why (FR-16, FR-61).
+
+    ``setpoint_c`` is what was asked for and admitted; ``tracked_c`` is what
+    the loop is actually holding, which differs during peak tariff. Without
+    this, an occupant told "set to 22" had no way to learn the room was being
+    held at 23 (U-04).
+    """
+
+    setpoint_c: float
+    tracked_c: float
+    band: TariffBand
+    reason: str = Field(default="", description="Why the two differ; empty when they do not")
 
 
 class TariffState(TimestampedMessage):

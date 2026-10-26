@@ -23,8 +23,11 @@ from pathlib import Path
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
+from src.reasoning.ambient import AmbientMiner
 from src.reasoning.assistant import Assistant
-from src.reasoning.chat import ChatClient
+from src.reasoning.single_shot import PersonalContext
+from src.reasoning.utterances import UtteranceInterpreter
+from src.reasoning.chat import ChatClient, warm_in_background
 from src.reasoning.diagnosis import FaultDiagnoser
 from src.reasoning.supervisor_agent import SupervisorAgent
 from src.reasoning.supervisor_tools import SupervisorState
@@ -35,6 +38,7 @@ DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 ASSISTANT_CLIENT_ID = "reasoning-assistant"
 SUPERVISOR_CLIENT_ID = "reasoning-supervisor"
 DIAGNOSIS_CLIENT_ID = "reasoning-diagnosis"
+AMBIENT_CLIENT_ID = "reasoning-ambient"
 
 #: How often the main loop looks for work. Short, so a spoken request is
 #: answered promptly; the supervisor's own cadence is far longer.
@@ -50,6 +54,22 @@ def build_assistant(
         blackboard,
         chat,
         safe_range_c=config.validator.setpoint_bounds_c,
+        utc_offset_h=config.site.utc_offset_h,
+    )
+
+
+def build_miner(
+    config: Config, clock: Clock, blackboard: Blackboard, chat: ChatClient
+) -> AmbientMiner:
+    """What reads overheard speech for plans and facts (FR-76 to FR-78)."""
+    return AmbientMiner(
+        config.ambient,
+        clock,
+        blackboard,
+        chat,
+        utc_offset_h=config.site.utc_offset_h,
+        confirmation_window_s=config.assistance.confirmation_window_s,
+        max_fact_chars=config.profiles.max_fact_chars,
     )
 
 
@@ -61,10 +81,17 @@ def build_supervisor(
     )
 
 
-def run(assistant: Assistant, clock: Clock, iterations: int | None = None) -> None:
-    """Answer utterances as they arrive."""
+def run(
+    assistant: Assistant,
+    clock: Clock,
+    iterations: int | None = None,
+    interpreter: UtteranceInterpreter | None = None,
+) -> None:
+    """Answer utterances as they arrive, typed ones understood first."""
     completed = 0
     while iterations is None or completed < iterations:
+        if interpreter is not None:
+            interpreter.process_pending()
         assistant.process_pending()
         clock.sleep(_IDLE_INTERVAL_S)
         completed += 1
@@ -76,6 +103,7 @@ def supervise(
     stop: threading.Event,
     iterations: int | None = None,
     diagnoser: FaultDiagnoser | None = None,
+    miner: AmbientMiner | None = None,
 ) -> None:
     """Run diagnoses and supervisory cycles, on a thread of their own.
 
@@ -89,6 +117,10 @@ def supervise(
         try:
             if diagnoser is not None:
                 diagnoser.process_pending()
+            if miner is not None:
+                # Overheard speech waits here, never in front of a person
+                # who addressed the assistant (FR-76).
+                miner.process_pending()
             supervisor.maybe_run()
         except Exception:
             # A supervisor bug costs supervisory cycles, never the assistant.
@@ -124,12 +156,18 @@ def main(argv: list[str] | None = None) -> int:
 
     clock = RealClock()
     chat = ChatClient(config.reasoning, clock)
+    warm_in_background(chat)
     assistant_board = _board(config, ASSISTANT_CLIENT_ID)
     supervisor_board = _board(config, SUPERVISOR_CLIENT_ID)
     diagnosis_board = _board(config, DIAGNOSIS_CLIENT_ID)
     diagnoser = FaultDiagnoser(clock, diagnosis_board, chat)
     diagnoser.subscribe()
+    ambient_board = _board(config, AMBIENT_CLIENT_ID)
+    miner = build_miner(config, clock, ambient_board, chat)
+    miner.subscribe()
     assistant = build_assistant(config, clock, assistant_board, chat)
+    interpreter = UtteranceInterpreter(clock, assistant_board, PersonalContext(config.reasoning, clock))
+    interpreter.subscribe()
     supervisor = build_supervisor(config, clock, supervisor_board, chat)
     assistant.subscribe()
     if not arguments.no_supervisor:
@@ -137,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     assistant_board.start()
     supervisor_board.start()
     diagnosis_board.start()
+    ambient_board.start()
     LOGGER.info(
         "reasoning on %s with %s; supervisor every %.0f s%s",
         config.reasoning.base_url,
@@ -148,13 +187,13 @@ def main(argv: list[str] | None = None) -> int:
     supervising = threading.Thread(
         target=supervise,
         args=(supervisor, clock, stop),
-        kwargs={"diagnoser": diagnoser},
+        kwargs={"diagnoser": diagnoser, "miner": miner},
         name="supervisor",
         daemon=True,
     )
     supervising.start()
     try:
-        run(assistant, clock)
+        run(assistant, clock, interpreter=interpreter)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:
@@ -162,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         assistant_board.stop()
         supervisor_board.stop()
         diagnosis_board.stop()
+        ambient_board.stop()
     return 0
 
 

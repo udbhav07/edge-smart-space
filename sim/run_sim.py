@@ -24,12 +24,13 @@ from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock, RealClock
-from src.common.config import Bounds, Config, load_config
+from src.common.config import Bounds, Config, SensorNoiseConfig, load_config
 from src.common.injection import (
     ACTUATOR_SUPPORTED_FAULTS,
     FaultInjection,
     InjectedFault,
 )
+from src.common.localtime import SECONDS_PER_HOUR, local_time
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -55,6 +56,7 @@ INDOOR_TEMPERATURE_ID = "temp_01"
 INDOOR_HUMIDITY_ID = "hum_01"
 OUTDOOR_TEMPERATURE_ID = "outdoor_01"
 OCCUPANCY_ID = "pir_01"
+POWER_ID = "pwr_01"
 
 #: The simulated air conditioner is not a real actuator, but it is the stand
 #: -in for the one that is, so it publishes under the real id and is *not*
@@ -98,6 +100,7 @@ class RoomSimulator:
         outdoor: SimulatedSensor,
         occupancy: BinarySensor,
         presence: OccupancyTracker,
+        power: SimulatedSensor | None = None,
     ) -> None:
         self._config = config
         self._clock = clock
@@ -110,11 +113,19 @@ class RoomSimulator:
         self._outdoor = outdoor
         self._occupancy = occupancy
         self._presence = presence
+        self._power = power
         self._occupied = True
-        self._started_ts = clock.now()
         self._last_outdoor_publish_ts: float | None = None
         self._last_ack = AckStatus.UNKNOWN
         self._last_kind = CommandKind.OFF
+        #: When the unit was last told to change, and what the meter on its
+        #: supply last said: the evidence the device bridge acknowledges on.
+        self._last_change_ts: float | None = None
+        self._metered_w: float | None = None
+        #: An injection stamped before this is one left on the broker by an
+        #: earlier session, which the simulator obeys as it must (FR-31) --
+        #: but out loud, not as one INFO line among the startup chatter.
+        self._started_ts = clock.now()
 
     @property
     def room_temperature_c(self) -> float:
@@ -158,9 +169,20 @@ class RoomSimulator:
 
     def _on_command(self, topic: str, command: Command) -> None:
         LOGGER.debug("command on %s: %s", topic, command.kind.value)
+        ack = self._actuator.command(command.kind, command.setpoint_c)
+        changed = command.kind in _STATE_CHANGING_COMMANDS and (
+            command.kind is not self._last_kind or self._last_change_ts is None
+        )
         if command.kind in _STATE_CHANGING_COMMANDS:
             self._last_kind = command.kind
-        self._last_ack = self._actuator.command(command.kind, command.setpoint_c)
+        if changed:
+            # Only a change restarts the grace period: the controller re-asserts
+            # the state in force every reassert_interval_s, as long as the grace
+            # itself, and restarting on each kept the ack UNKNOWN for good.
+            self._last_change_ts = command.ts
+            self._last_ack = ack
+        elif ack is not AckStatus.UNKNOWN:
+            self._last_ack = ack
 
     def _inject_actuator(self, command: InjectionCommand) -> None:
         """Break or repair the unit itself (FR-24, FR-31).
@@ -190,6 +212,17 @@ class RoomSimulator:
         logged rather than ignored: an injection that appears to work and does
         nothing turns a detection trial into a phantom missed detection.
         """
+        if command.kind is not InjectedFault.NONE and command.ts < self._started_ts:
+            # A unit left "dead" from a demonstration days ago looked, to the
+            # next person, like a room that would not cool.
+            LOGGER.warning(
+                "%s is still being injected %s, left on the broker by an earlier "
+                "session (%s); clear it with: python -m tools.inject %s clear",
+                command.subject,
+                command.kind.value,
+                local_time(command.ts, self._config.site.utc_offset_h).strftime("%Y-%m-%d %H:%M"),
+                command.subject,
+            )
         if command.subject == topics.AIR_CONDITIONER_ID:
             self._inject_actuator(command)
             return
@@ -224,16 +257,24 @@ class RoomSimulator:
                 self._humidity,
                 self._outdoor,
                 self._occupancy,
+                *((self._power,) if self._power is not None else ()),
             )
         }
 
     def outdoor_temperature_c(self) -> float:
-        """Ambient, as a daily cycle around the configured mean."""
-        elapsed_s = self._clock.now() - self._started_ts
-        phase = _FULL_CYCLE_RADIANS * elapsed_s / self._config.sim.outdoor_period_s
-        return self._config.sim.outdoor_mean_c + (
-            self._config.sim.outdoor_amplitude_c * math.sin(phase)
-        )
+        """Ambient, as a daily cycle around the configured mean.
+
+        Anchored to the site's local day, hottest at ``outdoor_peak_hour``.
+        It was once anchored to the start of the run, which put the hottest
+        hour six hours after whenever a simulation began -- so an experiment
+        started in the evening met a 35 C midnight, and the result depended
+        on the launch time rather than on the system.
+        """
+        sim = self._config.sim
+        local_s = self._clock.now() + self._config.site.utc_offset_h * SECONDS_PER_HOUR
+        since_peak_s = local_s - sim.outdoor_peak_hour * SECONDS_PER_HOUR
+        phase = _FULL_CYCLE_RADIANS * since_peak_s / sim.outdoor_period_s
+        return sim.outdoor_mean_c + sim.outdoor_amplitude_c * math.cos(phase)
 
     def step(self) -> None:
         """Advance the plant one sensor period and publish what came out."""
@@ -252,6 +293,8 @@ class RoomSimulator:
         self._publish_humidity()
         self._publish_outdoor(outdoor_c)
         self._publish_occupancy()
+        self._publish_power()
+        self._acknowledge_from_meter()
         self._publish_actuator_state()
 
     def _publish_indoor(self) -> None:
@@ -294,6 +337,53 @@ class RoomSimulator:
         self._publish_reading(
             self._occupancy.sample(self._presence.occupied), OCCUPANCY_ID
         )
+
+    def electrical_power_w(self) -> float:
+        """What the unit is drawing, as a meter on its supply sees it.
+
+        Follows the drive the room actually receives, so a dead unit draws
+        standby power while still being told to cool (R-02).
+        """
+        meter = self._config.sim.power_meter
+        return meter.standby_power_w + self._actuator.cooling_fraction * (
+            meter.rated_power_w - meter.standby_power_w
+        )
+
+    def _publish_power(self) -> None:
+        """Electrical power, from the same kind of meter hardware will carry."""
+        if self._power is None:
+            return
+        reading = self._power.sample(self.electrical_power_w())
+        if reading is not None and self._power.injected_fault is InjectedFault.NONE:
+            # A meter reports a magnitude and never a negative draw. Noise
+            # around a few watts of standby would, and D3 would then call a
+            # healthy meter wired backwards. An injected fault is left as
+            # injected, so an examiner can still make it report the impossible.
+            reading = reading.model_copy(update={"value": max(0.0, reading.value)})
+        if reading is not None:
+            self._metered_w = reading.value
+        self._publish_reading(reading, POWER_ID)
+
+    def _acknowledge_from_meter(self) -> None:
+        """Acknowledge on the draw, exactly as the device bridge does (U-21).
+
+        A unit with no readback of its own (``sim.actuator.acknowledges``
+        false, R-02) used to stay UNKNOWN forever in simulation while the
+        meter beside it plainly showed standby, so the simulator was kinder
+        to D5 than hardware is crueller to it, in the wrong direction. Same
+        rule, same thresholds: after ``devices.ac_ack_grace_s`` a COOL that
+        landed draws ``devices.ac_running_power_w`` and an OFF does not.
+        """
+        if self._config.sim.actuator.acknowledges:
+            return
+        if self._metered_w is None or self._last_change_ts is None:
+            return
+        devices = self._config.devices
+        if self._clock.now() - self._last_change_ts < devices.ac_ack_grace_s:
+            return
+        running = self._metered_w >= devices.ac_running_power_w
+        wanted = self._last_kind is CommandKind.COOL
+        self._last_ack = AckStatus.ACKNOWLEDGED if running is wanted else AckStatus.FAILED
 
     def _motion_this_step(self) -> bool:
         """Whether an occupant moved enough to trip the PIR this period."""
@@ -371,7 +461,32 @@ def build_simulator(
         presence=OccupancyTracker(
             hold_off_s=config.sensors.vacancy_hold_off_s, clock=clock
         ),
+        power=_power_meter(config, clock),
     )
+
+
+def _power_meter(config: Config, clock: Clock) -> SimulatedSensor | None:
+    """The meter on the unit's supply, if one is configured.
+
+    It draws from its own random stream: sharing the plant's would shift
+    every other instrument's noise by one draw per step, and every seeded
+    result already measured would move for a reason unrelated to it. The
+    noise model is unit-agnostic; its fields are named for the temperature
+    sensors it was written for, so watts are mapped onto them here.
+    """
+    limits = _limits_for(config, POWER_ID)
+    if limits is None:
+        return None
+    meter = config.sim.power_meter
+    noise = SensorNoiseConfig(
+        sigma_c=meter.sigma_w,
+        quantisation_c=meter.resolution_w,
+        jitter_s=config.sim.sensor_noise.jitter_s,
+        dropout_probability=meter.dropout_probability,
+        bias_c=0.0,
+    )
+    rng = random.Random(config.sim.random_seed + meter.seed_offset)
+    return SimulatedSensor(POWER_ID, Unit.WATT, noise, rng, clock, limits=limits)
 
 
 def main(argv: list[str] | None = None) -> int:

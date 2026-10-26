@@ -26,6 +26,7 @@ Three things are deliberate:
 from __future__ import annotations
 
 import logging
+import math
 
 from src.common import topics
 from src.common.clock import Clock
@@ -94,8 +95,15 @@ class DeviceBridge:
                 self._by_topic[topic] = sensor.sensor_id
         self._last_kind = CommandKind.OFF
         self._last_command_ts: float | None = None
+        #: When the unit was last told to *change*. The draw is judged against
+        #: this, not against the last command: the controller re-asserts the
+        #: state in force every ``controller.reassert_interval_s``, which is no
+        #: shorter than the grace period, so restarting the grace on every
+        #: re-assertion left a steadily cooling unit UNKNOWN forever.
+        self._last_change_ts: float | None = None
         self._ack = AckStatus.UNKNOWN
         self._readback_mode: str | None = None
+        self._power_w: float | None = None
         self._unit_dead = False
 
     def _adapter(self, sensor: SensorConfig, source) -> SensorAdapter:
@@ -132,8 +140,17 @@ class DeviceBridge:
         except ValueError:
             LOGGER.warning("unreadable value %r from %s ignored", text, topic)
             return
+        if not math.isfinite(value):
+            # ESPHome publishes "nan" when the sensor itself failed to read.
+            # That is a missing sample, not a value: it is left out, so the
+            # silence reaches D1 rather than a NaN reaching the estimator.
+            LOGGER.debug("non-finite value %r from %s: the sensor did not read", text, topic)
+            return
         self._sources[sensor_id].accept(value)
         self._publish(sensor_id)
+        if sensor_id == self._config.devices.ac_power_sensor_id:
+            self._power_w = value
+            self._reconcile()
 
     def _on_door(self, _topic: str, _text: str) -> None:
         # Any transition, open or close, says someone was at the door (FR-02).
@@ -171,8 +188,11 @@ class DeviceBridge:
         mode = _CLIMATE_MODES.get(command.kind)
         if mode is None:
             return  # MAINTAIN and HOLD ask for nothing new
+        changed = command.kind is not self._last_kind or self._last_change_ts is None
         self._last_kind = command.kind
         self._last_command_ts = command.ts
+        if changed:
+            self._last_change_ts = command.ts
         if self._unit_dead:
             LOGGER.warning("emulated dead unit: %s withheld", command.kind.value)
             return
@@ -183,7 +203,8 @@ class DeviceBridge:
             self._blackboard.publish_device(
                 devices.ac_target_command_topic, f"{command.setpoint_c:.1f}"
             )
-        self._ack = AckStatus.UNKNOWN
+        if changed:
+            self._ack = AckStatus.UNKNOWN
         self._reconcile()
 
     def _on_unit_mode(self, _topic: str, text: str) -> None:
@@ -191,13 +212,29 @@ class DeviceBridge:
         self._reconcile()
 
     def _reconcile(self) -> None:
-        """Acknowledge only what the unit itself reported (R-02)."""
-        if self._readback_mode is None:
+        """Acknowledge only what the unit itself reported (R-02).
+
+        Two kinds of evidence, either sufficient: the unit's own mode
+        readback, where the path has one, and the draw on its supply. A COOL
+        that landed draws running power; an OFF that landed does not. The
+        draw is judged only after the grace period, because a compressor
+        takes time to start, and until then the honest answer is UNKNOWN.
+        """
+        if self._readback_mode is not None:
+            expected = _CLIMATE_MODES[self._last_kind]
+            self._ack = (
+                AckStatus.ACKNOWLEDGED
+                if self._readback_mode == expected
+                else AckStatus.FAILED
+            )
             return
-        expected = _CLIMATE_MODES[self._last_kind]
-        self._ack = (
-            AckStatus.ACKNOWLEDGED if self._readback_mode == expected else AckStatus.FAILED
-        )
+        if self._power_w is None or self._last_change_ts is None:
+            return
+        if self._clock.now() - self._last_change_ts < self._config.devices.ac_ack_grace_s:
+            return
+        running = self._power_w >= self._config.devices.ac_running_power_w
+        wanted = self._last_kind is CommandKind.COOL
+        self._ack = AckStatus.ACKNOWLEDGED if running is wanted else AckStatus.FAILED
 
     # --- injection (FR-31) --------------------------------------------
 

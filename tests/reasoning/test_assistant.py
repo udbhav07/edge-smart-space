@@ -15,6 +15,7 @@ from src.assistance.__main__ import build_service as build_executor
 from src.common import topics
 from src.common.clock import SimClock
 from src.common.config import load_config
+from src.common.localtime import epoch_of
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
     AssistantReply,
@@ -32,7 +33,9 @@ from src.reasoning.__main__ import build_assistant
 from tests.reasoning.stubs import UNAVAILABLE, ScriptedChat, call, calling, saying
 
 #: A Saturday afternoon, in local time, so weekday resolution is deterministic.
-SATURDAY_AFTERNOON = datetime(2026, 9, 26, 15, 0).timestamp()
+SATURDAY_AFTERNOON = epoch_of(
+    datetime(2026, 9, 26, 15, 0), load_config(Path("config/default.yaml")).site.utc_offset_h
+)
 
 
 @pytest.fixture(name="config")
@@ -289,3 +292,434 @@ class TestTemperatureReplies:
         self._verdict(room, 23.0, 23.0, Verdict.ACCEPTED, ReasonCode.NONE)
         room.assistant.answer(hint)
         assert chat.requests == []
+
+
+
+class TestRepliesTellTheTruthAboutTheRoom:
+    """U-03, U-04, U-06: a reply must not claim what the room is not doing."""
+
+    def _mode(self, room, mode, fault_ids=()):
+        from src.common.schemas import ModeState
+
+        room.caller.publish(
+            topics.SYSTEM_MODE,
+            ModeState(ts=room.clock.now(), mode=mode, since_ts=room.clock.now(), active_fault_ids=fault_ids),
+        )
+
+    def _accepted(self, room, target):
+        replies = TestTemperatureReplies()
+        hint = replies._ask(room, target)
+        replies._verdict(room, target, target, Verdict.ACCEPTED, ReasonCode.NONE)
+        return room.assistant.answer(hint).reply
+
+    def test_with_the_unit_on_hold_it_does_not_say_done(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat())
+        self._mode(room, Mode.DEGRADED_ACTUATOR, ("f_ac_noresponse_1",))
+        reply = self._accepted(room, 20.0)
+        assert not reply.startswith("Done")
+        assert "on hold" in reply and "will not be cooled" in reply
+
+    def test_with_the_sensor_out_it_says_it_is_running_on_an_estimate(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat())
+        self._mode(room, Mode.DEGRADED_SENSOR, ("f_temp01_stuck_1",))
+        assert "estimate" in self._accepted(room, 22.0)
+
+    def test_during_peak_it_says_what_the_room_is_held_at(self, config):
+        from src.common.schemas import TariffBand, TrackingState
+
+        room = Room(config, ScriptedChat())
+        room.caller.publish(
+            topics.CONTROL_TRACKING,
+            TrackingState(
+                ts=room.clock.now(), setpoint_c=24.0, tracked_c=25.0, band=TariffBand.PEAK,
+                reason="peak tariff: held +1 C until 22:00",
+            ),
+        )
+        reply = self._accepted(room, 22.0)
+        assert "held at 23 degrees" in reply and "22:00" in reply
+
+    def test_in_a_healthy_room_the_reply_is_unchanged(self, config):
+        room = Room(config, ScriptedChat())
+        assert self._accepted(room, 23.0) == "Done. The room is now set to 23 degrees."
+
+
+class TestQuestionsAreAnswered:
+    """U-06, U-25: a question or a greeting gets an answer, from the facts."""
+
+    def _question(self, room, transcript):
+        hint = PreferenceHint(
+            ts=room.clock.now(), intent=Intent.QUESTION, comfort=Comfort.UNCHANGED,
+            subject="room", transcript=transcript,
+        )
+        return room.assistant.answer(hint)
+
+    def test_a_question_is_answered(self, config):
+        room = Room(config, ScriptedChat(saying("It is 26.5 degrees.")))
+        assert self._question(room, "what's the temperature in here").reply == "It is 26.5 degrees."
+
+    def test_the_model_is_told_the_room_as_it_is(self, config):
+        from src.common.schemas import FaultDiagnosis, Hypothesis, DiagnosisConfidence, Mode, ModeState, ThermalEstimate, AdaptationState
+
+        chat = ScriptedChat(saying("The sensor is out."))
+        room = Room(config, chat)
+        room.caller.publish(
+            topics.SYSTEM_MODE,
+            ModeState(ts=room.clock.now(), mode=Mode.DEGRADED_SENSOR, since_ts=room.clock.now(),
+                      active_fault_ids=("f_temp01_stuck_1",)),
+        )
+        room.caller.publish(
+            topics.DIAGNOSIS,
+            FaultDiagnosis(
+                ts=room.clock.now(), fault_id="f_temp01_stuck_1",
+                primary_hypothesis=Hypothesis.SENSOR_STUCK, confidence=DiagnosisConfidence.HIGH,
+                recommended_mode=Mode.DEGRADED_SENSOR, user_message="The temperature sensor appears stuck.",
+                recommendation_legal=True,
+            ),
+            fault_id="f_temp01_stuck_1",
+        )
+        room.caller.publish(
+            topics.ESTIMATE_THERMAL,
+            ThermalEstimate(ts=room.clock.now(), t_in=27.0, t_pred=26.4, residual=0.6,
+                            residual_sigma=0.2, model_confidence=0.9, adaptation=AdaptationState.FROZEN),
+        )
+        self._question(room, "is everything working ok")
+        prompt = chat.requests[0][0][0]["content"]
+        assert "The temperature sensor appears stuck." in prompt
+        assert "26.4 C (an estimate" in prompt
+
+    def test_a_greeting_gets_a_reply(self, config):
+        room = Room(config, ScriptedChat(saying("Hello! How can I help?")))
+        assert self._question(room, "hello").reply == "Hello! How can I help?"
+
+
+
+class TestCalendarCallsAreChecked:
+    """U-02, U-17: what the model wrote is checked against the clock and the words.
+
+    The room's clock here reads Saturday 26 September 2026, 15:00.
+    """
+
+    def test_an_entry_titled_as_a_cancellation_cancels_instead(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="Cancel review")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        reply = room.say("cancel the review")
+        assert room.calendar() == []
+        assert "Cancelled review" in reply.reply
+
+    def test_a_time_already_past_is_refused_with_a_question(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-09-25T17:00:00", subject="dentist"))
+        )
+        room = Room(config, chat)
+        reply = room.say("schedule the dentist yesterday at 5pm")
+        assert room.calendar() == []
+        assert "already passed" in reply.reply and "Which day" in reply.reply
+
+    def test_todays_weekday_after_its_time_means_next_week(self, config):
+        """'Saturday at 10', said on Saturday afternoon, is next Saturday."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-09-26T10:00:00", subject="yoga"))
+        )
+        room = Room(config, chat)
+        room.say("put yoga on Saturday at 10")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-03T10:00"]
+
+    def test_a_reminder_says_it_will_not_alert(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-09-26T15:10:00", subject="call mom"))
+        )
+        room = Room(config, chat)
+        reply = room.say("remind me to call mom in 10 minutes")
+        assert "won't remind you" in reply.reply
+
+    def test_an_ordinary_entry_says_nothing_about_alerts(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review"))
+        )
+        room = Room(config, chat)
+        assert "remind" not in room.say("put the review on Thursday at 3").reply
+
+    def test_a_follow_up_moves_the_entry(self, config):
+        """U-01's other half: 'move it to 4' now has somewhere to go."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("move_event", subject="review", starts_at="2026-10-01T16:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        reply = room.say("move it to 4")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-01T16:00"]
+        assert "Moved review" in reply.reply
+
+    def test_a_follow_up_naming_no_day_keeps_the_entrys_day(self, config):
+        """Live: 'tomorrow at three', then 'move it to four' -- the model wrote
+        today's date, and the move was refused as past."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("move_event", subject="review", starts_at="2026-09-26T16:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        reply = room.say("actually move it to four")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-01T16:00"]
+        assert "Moved review" in reply.reply
+
+    def test_a_move_naming_a_day_goes_to_that_day(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            calling(call("move_event", subject="review", starts_at="2026-10-02T16:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        room.say("move the review to Friday at four")
+        assert [event["starts_at"] for event in room.calendar()] == ["2026-10-02T16:00"]
+
+    def test_it_is_the_entry_last_put_in(self, config):
+        """Live: 'move it to three' moved the design review from three turns back."""
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="design review")),
+            calling(call("schedule_event", starts_at="2026-10-01T14:00:00", subject="budget meeting")),
+            calling(call("move_event", subject="design review", starts_at="2026-10-01T15:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the design review on Thursday at 3")
+        room.say("put the budget meeting on Thursday at 2")
+        room.say("actually move it to three")
+        moved = {event["subject"]: event["starts_at"] for event in room.calendar()}
+        assert moved == {"design review": "2026-10-01T15:00", "budget meeting": "2026-10-01T15:00"}
+
+    def test_a_subject_named_in_the_words_is_left_alone(self, config):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T15:00:00", subject="design review")),
+            calling(call("schedule_event", starts_at="2026-10-01T14:00:00", subject="budget meeting")),
+            calling(call("move_event", subject="design review", starts_at="2026-10-01T17:00:00")),
+        )
+        room = Room(config, chat)
+        room.say("put the design review on Thursday at 3")
+        room.say("put the budget meeting on Thursday at 2")
+        room.say("move the design review to five, it clashes")
+        moved = {event["subject"]: event["starts_at"] for event in room.calendar()}
+        assert moved["design review"] == "2026-10-01T17:00" and moved["budget meeting"] == "2026-10-01T14:00"
+
+    def test_the_model_is_never_shown_keep_day(self, config):
+        chat = ScriptedChat(saying("ok"))
+        room = Room(config, chat)
+        room.say("what is on Thursday")
+        (move,) = [t for t in chat.requests[0][1] if t["function"]["name"] == "move_event"]
+        assert "keep_day" not in move["function"]["parameters"]["properties"]
+
+
+class TestNoClaimWithoutATool:
+    """Live: "cancel my meeting with the CEO" -- there was none -- was answered
+    "-cancelled the meeting with the CEO" with no tool called."""
+
+    def test_a_claim_repeated_after_the_nudge_is_withheld(self, config):
+        claim = "Cancelled the meeting with the CEO at 16:00."
+        room = Room(config, ScriptedChat(saying(claim), saying(claim)))
+        reply = room.say("cancel my meeting with the CEO")
+        assert "Cancelled" not in reply.reply and "haven't changed anything" in reply.reply
+
+    def test_a_fake_confirmation_question_is_nudged_into_a_real_call(self, config):
+        """Live: "That would be a mock booking ... Shall I go ahead?" with no tool."""
+        fake = "That would be a mock booking of a flight to Goa; no real reservation is made. Shall I go ahead?"
+        chat = ScriptedChat(saying(fake), calling(call("book_travel", kind="flight", destination="Goa", depart_on="2026-10-03")))
+        room = Room(config, chat)
+        reply = room.say("book a flight to Goa next Saturday")
+        assert reply.awaiting_confirmation, "a real invocation now waits for the occupant"
+
+    def test_an_honest_second_answer_is_used(self, config):
+        fake = "Shall I go ahead and book it?"
+        room = Room(config, ScriptedChat(saying(fake), saying("I need a destination to book a flight.")))
+        assert room.say("book me a flight").reply == "I need a destination to book a flight."
+
+    def test_a_plain_answer_is_left_alone(self, config):
+        room = Room(config, ScriptedChat(saying("Which day would you like it on?")))
+        assert room.say("put a meeting in with Anu").reply == "Which day would you like it on?"
+
+
+class TestInSoManyMinutes:
+    def test_the_entry_is_put_that_far_ahead(self, config):
+        """The model put "in 10 minutes" at now, for ten minutes, and it was refused as past."""
+        now = datetime(2026, 9, 26, 15, 0)
+        chat = ScriptedChat(
+            calling(call("schedule_event", subject="call mom", starts_at=now.isoformat(), duration_min=10)),
+            saying("Added."),
+        )
+        room = Room(config, chat)
+        room.say("remind me to call mom in 10 minutes")
+        assert room.calendar()[0]["starts_at"].startswith("2026-09-26T15:10")
+
+
+class TestMail:
+    def test_a_mail_is_put_to_the_occupant_as_a_mock(self, config):
+        """FR-54, FR-55: nothing is sent, and the question says so."""
+        chat = ScriptedChat(calling(call("send_mail", to="Anu", subject="Running late", body="Ten minutes late, sorry.")))
+        reply = Room(config, chat).say("email Anu that I'm running ten minutes late")
+        assert "mock email to Anu" in reply.reply and "nothing is actually sent" in reply.reply
+        assert reply.awaiting_confirmation
+
+
+class TestOverheardToolsAreNotTheAssistants:
+    """FR-77, FR-78: pencilling and settling belong to overheard speech and the console."""
+
+    def test_they_are_never_offered(self, config):
+        chat = ScriptedChat(saying("ok"))
+        room = Room(config, chat)
+        room.say("what is on Thursday")
+        offered = {tool["function"]["name"] for tool in chat.requests[0][1]}
+        assert offered.isdisjoint({"pencil_event", "keep_event", "suggest_fact", "settle_fact"})
+
+    def test_one_named_anyway_is_refused_before_the_executor(self, config):
+        chat = ScriptedChat(
+            calling(call("pencil_event", starts_at="2026-10-01T15:00:00", subject="review")),
+            saying("I couldn't."),
+        )
+        room = Room(config, chat)
+        room.say("put the review on Thursday at 3")
+        assert room.calendar() == []
+        assert not [i for i in room.published(topics.ASSIST_PROPOSED, ToolInvocation) if i.tool == "pencil_event"]
+
+
+class TestFollowUpsTheWordsDecide:
+    """S-03 and S-04, as met live through the console."""
+
+    def _room_with_dentist(self, config, *then):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-01T14:00:00", subject="dentist")),
+            *then,
+        )
+        room = Room(config, chat)
+        room.say("put the dentist in my calendar on Thursday at two")
+        return room
+
+    def test_a_claimed_move_with_no_tool_is_carried_out(self, config):
+        """Live: "Sure, I'll update the plumber appointment to 11:30" -- and nothing moved."""
+        room = self._room_with_dentist(config, saying("Sure, I'll update the dentist to 14:30."))
+        reply = room.say("actually make it half past two")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:30"]
+        assert "Moved dentist" in reply.reply
+
+    def test_a_move_to_the_wrong_time_is_put_right(self, config):
+        room = self._room_with_dentist(
+            config, calling(call("move_event", subject="dentist", starts_at="2026-10-01T02:30:00"))
+        )
+        room.say("actually make it half past two")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:30"]
+
+    def test_a_new_entry_for_a_follow_up_becomes_the_move(self, config):
+        room = self._room_with_dentist(
+            config, calling(call("schedule_event", subject="dentist", starts_at="2026-10-01T14:30:00"))
+        )
+        room.say("actually make it half past two")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:30"]
+
+    def test_cancel_it_cancels_the_entry_just_discussed(self, config):
+        """Live: "cancel it" was answered "which entry would you like to cancel?"."""
+        room = self._room_with_dentist(config, saying("Sure, which entry would you like to cancel?"))
+        reply = room.say("cancel it")
+        assert room.calendar() == [] and "Cancelled dentist" in reply.reply
+
+    def test_a_follow_up_with_nothing_discussed_is_left_to_the_model(self, config):
+        chat = ScriptedChat(saying("Which entry do you mean?"))
+        room = Room(config, chat)
+        assert room.say("actually make it half past two").reply == "Which entry do you mean?"
+
+    def test_another_voices_entry_is_not_theirs_to_move(self, config):
+        room = self._room_with_dentist(config, saying("Which entry do you mean?"))
+        reply = room.say("actually make it half past two", profile_id="ravi")
+        assert [e["starts_at"] for e in room.calendar()] == ["2026-10-01T14:00"]
+        assert reply.reply == "Which entry do you mean?"
+
+
+class TestNeverFineDuringAFault:
+    """S-13, live: "Everything seems fine, just a note that the temperature sensor isn't working"."""
+
+    def test_a_faulted_room_is_not_called_fine(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat(saying("Everything seems fine, just a note that the sensor is off.")))
+        TestRepliesTellTheTruthAboutTheRoom()._mode(room, Mode.DEGRADED_SENSOR, ("f_temp01_stuck_1",))
+        reply = room.say("is everything ok?", intent=Intent.QUESTION, subject="room")
+        assert "fine" not in reply.reply.lower()
+        assert reply.reply == "Not quite. The temperature sensor is not working, so the room is being controlled on an estimate."
+
+    def test_a_healthy_room_may_be_called_fine(self, config):
+        from src.common.schemas import Mode
+
+        room = Room(config, ScriptedChat(saying("Everything is fine.")))
+        TestRepliesTellTheTruthAboutTheRoom()._mode(room, Mode.NORMAL)
+        assert room.say("is everything ok?", intent=Intent.QUESTION, subject="room").reply == "Everything is fine."
+
+
+class TestWhichNextWeek:
+    """S-11, live: 'next Monday' said on a Sunday became tomorrow, unremarked."""
+
+    def test_next_weekday_within_two_days_says_so(self, config):
+        chat = ScriptedChat(calling(call("book_travel", kind="flight", destination="Delhi", depart_on="2026-09-27T09:00:00")))
+        room = Room(config, chat)
+        reply = room.say("book me a flight to Delhi next Sunday")
+        assert "that's tomorrow" in reply.reply and "week after" in reply.reply
+
+    def test_a_weekday_without_next_says_nothing_more(self, config):
+        chat = ScriptedChat(calling(call("book_travel", kind="flight", destination="Delhi", depart_on="2026-09-27T09:00:00")))
+        room = Room(config, chat)
+        assert "week after" not in room.say("book me a flight to Delhi on Sunday").reply
+
+    def test_next_weekday_further_out_says_nothing_more(self, config):
+        chat = ScriptedChat(calling(call("book_travel", kind="flight", destination="Delhi", depart_on="2026-10-01T09:00:00")))
+        room = Room(config, chat)
+        assert "week after" not in room.say("book me a flight to Delhi next Thursday").reply
+
+
+class TestTwoEntriesNamedAlike:
+    """S-03 re-verified live: an earlier 'Plumber appointment' and a new 'plumber'
+    at the same time made 'actually make it half past eleven' and 'cancel it'
+    both answer 'which one?'."""
+
+    def _two_plumbers(self, config, *then):
+        chat = ScriptedChat(
+            calling(call("schedule_event", starts_at="2026-10-02T11:00:00", subject="Plumber appointment")),
+            calling(call("schedule_event", starts_at="2026-10-02T11:00:00", subject="plumber")),
+            *then,
+        )
+        room = Room(config, chat)
+        room.say("put the plumber appointment in on Friday at eleven", profile_id="anu")
+        room.say("put the plumber in my calendar on Friday at eleven")
+        return room
+
+    def test_the_follow_up_moves_the_one_just_put_in(self, config):
+        room = self._two_plumbers(config, saying("Which one?"))
+        room.say("actually make it half past eleven")
+        times = {event["subject"]: event["starts_at"] for event in room.calendar()}
+        assert times == {"Plumber appointment": "2026-10-02T11:00", "plumber": "2026-10-02T11:30"}
+
+    def test_cancel_it_cancels_the_one_just_put_in(self, config):
+        room = self._two_plumbers(config, saying("Which one?"))
+        room.say("cancel it")
+        assert [event["subject"] for event in room.calendar()] == ["Plumber appointment"]
+
+    def test_the_model_is_never_shown_the_entry_id(self, config):
+        chat = ScriptedChat(saying("ok"))
+        Room(config, chat).say("what is on Thursday")
+        tools = {t["function"]["name"]: t["function"]["parameters"]["properties"] for t in chat.requests[0][1]}
+        assert "event_id" not in tools["move_event"] and "event_id" not in tools["cancel_event"]
+
+
+class TestRepliesSayHowTheyWereAsked:
+    """FR-79: a reply to a spoken request is marked to be said aloud."""
+
+    def test_a_spoken_request_gets_a_spoken_reply(self, config):
+        room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
+        assert room.say("what is on Thursday", intent=Intent.QUESTION).spoken is True
+
+    def test_a_typed_request_does_not(self, config):
+        room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
+        assert room.say("what is on Thursday", intent=Intent.QUESTION, typed=True).spoken is False
