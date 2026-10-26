@@ -57,6 +57,8 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
 pip install -e ".[dev]"            # core + test tools
 pip install -e ".[dev,speech]"     # add voice (needs Python 3.11/3.12)
+pip install -e ".[voice]"          # the room speaks its replies (Piper)
+pip install -e ".[google]"         # Google Calendar and Gmail, once connected
 ```
 
 `speech` pulls torch, faster-whisper, openWakeWord, Silero VAD and PyAudio.
@@ -78,6 +80,11 @@ fails with a message naming it rather than reaching for the network:
 ```bash
 python setup_models.py
 ```
+
+The same step fetches the Piper voice the room speaks in
+(`speech.voice_model_path`, `en_US-lessac-medium`, about 60 MB) into
+`models/piper/`. Without it the room falls back to the system's own voices
+(pyttsx3), and with neither it answers on screen only.
 
 ---
 
@@ -142,7 +149,8 @@ Each page has its own address, so any of them can be bookmarked:
 
 | Page | What it shows |
 |---|---|
-| **Overview** `/` | Indoor temperature, humidity, outside, presence, AC power and state, tariff; the temperature against the model's prediction and the setpoint held; faults, services and the latest decisions |
+| **Home** `/` | For the person living in the room: the temperature in plain words; a target to step, slide or pick from presets (Cool 22, Comfort 24, Sleep 25, Eco 26); warmer and cooler; back to automatic; cooling off for 1, 3 or 8 hours; Reset, only when the room is on hold; a box to ask Jarvis, with mute and spoken replies; the days ahead and anything waiting for a yes; energy used today and its cost |
+| **Overview** `/overview` | Indoor temperature, humidity, outside, presence, AC power and state, tariff; the temperature against the model's prediction and the setpoint held; faults, services and the latest decisions |
 | **Services** `/services` | Each process, judged by what it is publishing against its own cadence: live, late or silent, its rate, and its latest output per topic |
 | **Thermal model** `/estimator` | The RLS coefficients and what they mean (time constant, cooling rate, occupant gain), their history, the covariance trace, the one-step prediction and its residual against ±2σ |
 | **MQTT board** `/mqtt` | Every topic published since the console started: producer, rate, count, retained or not, the last payload verbatim; and the message stream, pausable and filterable by MQTT pattern |
@@ -150,7 +158,8 @@ Each page has its own address, so any of them can be bookmarked:
 | **Chat** `/chat` | Talk to Jarvis by typing, for when you would rather not speak aloud; each answer shows the steps taken to reach it |
 | **Calendar** `/calendar` | The week ahead; add and remove entries |
 | **Bookings** `/bookings` | Requests waiting for your yes, a booking form, and what has been booked |
-| **Mail** `/mail` | An inbox of what the room tells you; sending goes to a mock outbox after your yes, because this node never connects to the internet |
+| **Mail** `/mail` | An inbox of what the room tells you; sending waits for your yes, then goes through Gmail if Google is connected (or waits in the outbox while offline), and to a mock outbox if not |
+| **Settings** `/settings` | Connect or disconnect Google; the microphone, which replies are spoken, alerts, volume and quiet hours; the presets |
 
 `Ctrl-K` opens every action from anywhere. The operator's fault injection
 and reset can be turned off with `console.operator_controls: false`.
@@ -162,8 +171,9 @@ it does can reach the actuator (FR-56, FR-57). Stop it, or never start it,
 and the room runs exactly the same.
 
 It listens on this machine only. To open it to phones on the same network,
-set `console.host` to this machine's LAN address; it never reaches beyond the
-local network, and its page loads nothing from the internet (NFR-06).
+set `console.host` to this machine's LAN address; its page loads nothing
+from the internet (NFR-06). Connecting Google is the one thing that reaches
+beyond the local network, and only once you sign in.
 
 The page is built ahead of time into `src/console/static`, so running it
 needs no Node. To change the frontend (`console/web`, React and Vite):
@@ -174,6 +184,55 @@ npm install
 npm run dev     # http://localhost:5173, proxied to the running console
 npm run build   # rebuilds src/console/static
 ```
+
+### The room speaks
+
+Replies to anything said aloud are spoken, in a Piper voice run on this
+machine (FR-79). Replies to typed questions and changes of mode can be spoken
+too; both are switches on Settings, with the volume and quiet hours, during
+which nothing is said unprompted. While the room is speaking, and for
+`speech.speaking_tail_ms` after, the microphone is ignored, so its own voice is
+never overheard as someone talking. **Microphone off**, on Home or Settings,
+captures nothing at all until it is turned back on (FR-82).
+
+### Google Calendar and Gmail
+
+Optional. Until it is connected nothing leaves this node; once it is, the
+node talks to Google's APIs and nowhere else (FR-84). It is set up once:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a
+   project and enable the **Google Calendar API** and the **Gmail API**.
+2. Under *OAuth consent screen*, choose **External**, leave it in **Testing**,
+   and add your own Gmail address as a **test user**.
+3. Under *Credentials*, create an **OAuth client ID** of type
+   **Web application**, with the authorised redirect URI
+   `http://localhost:8077/api/google/callback`.
+4. Download its JSON to `state/google/client_secret.json` (`state/` is not
+   committed) and run `pip install -e ".[google]"`.
+5. Restart, open the console at **http://localhost:8077** (not 127.0.0.1:
+   Google sends you back to exactly the address registered), go to
+   **Settings** and press **Connect Google**.
+
+The room asks for two things only: to manage calendar events, and to send
+mail. It cannot read your inbox. The sign-in is written to
+`state/google/token.json` and never published on the blackboard.
+
+What changes once connected (FR-85):
+
+- **Calendar.** The calendar stays on this node and is mirrored both ways: what
+  Jarvis adds, including overheard plans as *tentative*, appears in Google
+  Calendar, and what you add in Google appears here, marked **G**, within
+  `google.pull_interval_s`.
+- **Mail.** A mail you confirm is sent from your Gmail.
+- **Bookings.** Still a mock, but a confirmed one adds its calendar entry and
+  emails you the itinerary.
+
+When the node is offline, all of this waits in `state/google/outbox.json`,
+survives a restart, and goes once Google is reachable: never twice, because
+each calendar entry carries an id derived from the local one (FR-86). Home and
+Settings show how many are waiting. In *Testing* mode Google ends the sign-in
+after seven days; Settings then says **Reconnect**, and nothing waiting is
+lost.
 
 ### Running one component directly
 
