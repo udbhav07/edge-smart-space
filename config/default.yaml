@@ -308,8 +308,10 @@ assistance:
   max_tool_rounds: 1
   # Seconds to wait for a result on space/assist/result before giving up and
   # answering without it. A calendar that has stopped responding must not hold
-  # a reply to the occupant open indefinitely.
-  result_timeout_s: 5.0
+  # a reply to the occupant open indefinitely. Longer than a device is given
+  # (actuators.command_timeout_s), or a slow device's answer is lost: a song
+  # found online takes 5-6 s to search and start (FR-96).
+  result_timeout_s: 14.0
   # FR-58. The occupant's own calendar, kept on the node: a hosted one needs
   # the outbound connection NFR-06 forbids. Bounded so a misheard request
   # repeated in a loop cannot fill the disk.
@@ -518,7 +520,7 @@ ambient:
 # on the board with a retained manifest; the assistant is shown only the
 # tools of the device a request is about, at most max_device_tools of them.
 actuators:
-  command_timeout_s: 8.0
+  command_timeout_s: 12.0
   max_device_tools: 6
   fan:
     enabled: true              # simulated (FR-15): no thermal effect is claimed

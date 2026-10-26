@@ -129,6 +129,17 @@ class TestCrossSectionConsistency:
         with pytest.raises(ConfigError):
             load_config(path)
 
+    def test_the_assistant_waits_longer_than_a_device_is_given(self, default_config):
+        assert default_config.assistance.result_timeout_s > default_config.actuators.command_timeout_s
+
+    def test_an_assistant_that_gives_up_before_a_device_is_rejected(self, tmp_path):
+        # A song searched for online would play, and the occupant be told it did not (FR-96).
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("  result_timeout_s: 14.0", "  result_timeout_s: 5.0", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="must exceed actuators.command_timeout_s"):
+            load_config(path)
+
     def test_initial_theta_outside_its_own_bounds_is_rejected(self, tmp_path):
         text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
             "initial_theta: [0.02, -0.05, 0.01]",

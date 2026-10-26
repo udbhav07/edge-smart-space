@@ -1222,7 +1222,7 @@ class ActuatorsConfig(_Section):
     """Device services beyond the thermal loop, and how the assistant reaches them (FR-87 to FR-91)."""
 
     command_timeout_s: float = Field(
-        default=8.0, gt=0.0, description="How long a device has to answer a command, in s"
+        default=12.0, gt=0.0, description="How long a device has to answer a command, in s"
     )
     max_device_tools: int = Field(
         default=6,
@@ -1295,6 +1295,22 @@ class Config(_Section):
             raise ValueError(
                 f"controller.min_off_s ({self.controller.min_off_s}) must equal "
                 f"validator.min_off_s ({self.validator.min_off_s})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _the_assistant_outwaits_a_device(self) -> Config:
+        """A device's answer reaches the assistant only if it is still waiting.
+
+        The assistance bridge gives a device ``command_timeout_s`` to answer;
+        reasoning stops waiting at ``result_timeout_s``. Shorter on the
+        reasoning side, and a slow device -- a song searched for online
+        (FR-96) -- acts, but the occupant is told it did not answer.
+        """
+        if self.assistance.result_timeout_s <= self.actuators.command_timeout_s:
+            raise ValueError(
+                f"assistance.result_timeout_s ({self.assistance.result_timeout_s}) must exceed "
+                f"actuators.command_timeout_s ({self.actuators.command_timeout_s})"
             )
         return self
 
