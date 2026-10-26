@@ -847,6 +847,15 @@ class SpeechSettings(TimestampedMessage):
     quiet_to: str = Field(default="", pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$", description="HH:MM; empty for none")
 
 
+#: What the room asks Google for, and nothing more (FR-84).
+GOOGLE_SCOPES = (
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/gmail.send",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+)
+
+
 class GoogleStatus(TimestampedMessage):
     """Whether a Google account is connected, and what is waiting to reach it.
 

@@ -488,7 +488,7 @@ google:
   token_path: state/google/token.json
   outbox_path: state/google/outbox.json
   outbox_max: 500
-  redirect_uri: http://127.0.0.1:8077/api/google/callback
+  redirect_uri: http://localhost:8077/api/google/callback
   calendar_id: primary
   pull_interval_s: 300.0
   pull_days: 14

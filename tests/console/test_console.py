@@ -167,7 +167,7 @@ class TestWhatItShows:
         invocation_id = actions.refresh_calendar()
         result = ToolResult(ts=clock.now(), invocation_id=invocation_id, tool="get_events", status=ToolStatus.OK, provider="local_calendar", detail={"count": 1, "entries": "evt_1 2026-10-14T15:00:00 meeting with Anu"})
         _feed(state, topics.ASSIST_RESULT, result)
-        assert state.snapshot()["calendar"]["entries"] == [{"event_id": "evt_1", "starts_at": "2026-10-14T15:00:00", "subject": "meeting with Anu", "tentative": False}]
+        assert state.snapshot()["calendar"]["entries"] == [{"event_id": "evt_1", "starts_at": "2026-10-14T15:00:00", "subject": "meeting with Anu", "tentative": False, "google": False}]
 
     def test_a_malformed_message_is_ignored(self, console):
         state, _, _, _ = console

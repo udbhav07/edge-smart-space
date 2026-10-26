@@ -344,6 +344,7 @@ class LocalCalendar:
                 "count": len(found),
                 "entries": _listing(found),
                 "tentative_ids": ",".join(str(event["event_id"]) for event in tentative),
+                "google_ids": ",".join(str(event["event_id"]) for event in found if event.get("origin") == ORIGIN_GOOGLE),
                 **heard,
             },
         )

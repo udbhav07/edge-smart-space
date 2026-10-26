@@ -23,7 +23,9 @@ from typing import Any
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import ConsoleConfig
+from src.common.localtime import local_time
 from src.common.mqtt_client import PAYLOAD_ENCODING, topic_matches
+from src.common.plain import NEXT_STEP, mode_sentence
 from src.common.schemas import (
     ActuatorState,
     AssistantReply,
@@ -33,6 +35,7 @@ from src.common.schemas import (
     FaultDiagnosis,
     FaultEvent,
     Goal,
+    GoogleStatus,
     InjectionCommand,
     ModeReset,
     ModeState,
@@ -41,10 +44,12 @@ from src.common.schemas import (
     ReasoningRecord,
     SensorHealth,
     SensorReading,
+    SpeechSettings,
     SpeechStatus,
     TariffState,
     ThermalEstimate,
     TrackingState,
+    Unit,
     ValidationVerdict,
     Verdict,
 )
@@ -76,20 +81,8 @@ _RECORDS_KEPT = 100
 _RATE_MIN_ARRIVALS = 5
 _RATE_MIN_SPAN_S = 30.0
 
-#: Each mode in a sentence a customer reads, not a detector code (S-14):
-#: live, the inbox opened "D5_ACTUATOR_NO_RESPONSE on ac".
-_PLAIN_MODE = {
-    "NORMAL": "Everything is working normally again.",
-    "DEGRADED_SENSOR": "The indoor temperature sensor isn't trustworthy right now, so the room is being kept on the model's estimate.",
-    "DEGRADED_ACTUATOR": "The air conditioner isn't cooling the room, so it is on hold.",
-    "SAFE_HOLD": "The room has been running without a working sensor or air conditioner for too long, so it is holding safe.",
-}
-
-#: What the occupant does next, for the modes that wait on a person (S-14).
-_NEXT_STEP = {
-    "DEGRADED_ACTUATOR": " When the air conditioner has been checked, press Reset on Faults & control.",
-    "SAFE_HOLD": " Nothing will be actuated until someone checks the room and presses Reset on Faults & control.",
-}
+#: The longest gap between meter readings that is still integrated (FR-80).
+_ENERGY_GAP_S = 120.0
 
 #: A point of a periodic series older than this on arrival is history from
 #: before this console was listening, not a reading (S-07).
@@ -124,7 +117,7 @@ class _Room:
 class ConsoleState:
     """The console's view of the room, rebuilt from the blackboard."""
 
-    def __init__(self, config: ConsoleConfig, clock: Clock, inbox_path: Path | None = None) -> None:
+    def __init__(self, config: ConsoleConfig, clock: Clock, inbox_path: Path | None = None, utc_offset_h: float = 0.0) -> None:
         self._config = config
         self._clock = clock
         #: Where the inbox is kept across restarts; None keeps it in memory
@@ -132,6 +125,14 @@ class ConsoleState:
         self._inbox_path = inbox_path
         #: Nothing published before this console was listening is charted.
         self._started_ts = clock.now()
+        self._utc_offset_h = utc_offset_h
+        #: How the occupant wants the room to listen and speak (FR-79, FR-82).
+        self._speech_settings: dict | None = None
+        #: Whether Google is connected, and what waits for it (FR-84).
+        self._google: dict | None = None
+        #: Today's electricity, integrated from the meter (FR-80).
+        self._energy = {"day": "", "kwh": 0.0, "cost": 0.0}
+        self._last_power: tuple[float, float] | None = None
         self._room = _Room()
         self._faults: dict[str, dict] = {}
         self._diagnoses: dict[str, dict] = {}
@@ -171,6 +172,8 @@ class ConsoleState:
             (topics.CONTROL_TRACKING.wildcard(), TrackingState, self._on_tracking),
             (topics.TARIFF_STATE.wildcard(), TariffState, self._on_tariff),
             (topics.SPEECH_STATUS.wildcard(), SpeechStatus, self._on_speech),
+            (topics.SPEECH_SETTINGS.wildcard(), SpeechSettings, self._on_speech_settings),
+            (topics.ASSIST_GOOGLE.wildcard(), GoogleStatus, self._on_google),
             (topics.FAULT.wildcard(), FaultEvent, self._on_fault),
             (topics.DIAGNOSIS.wildcard(), FaultDiagnosis, self._on_diagnosis),
             (topics.CONTEXT_UTTERANCE.wildcard(), ConsoleUtterance, self._on_typed),
@@ -220,6 +223,11 @@ class ConsoleState:
             "calendar": self._calendar,
             "tools": self._catalogue,
             "operator_controls": self._config.operator_controls,
+            "speech_settings": self._speech_settings,
+            "google": self._google,
+            "energy": {**self._energy, "currency": self._config.currency},
+            "presets": self._config.presets_c,
+            "cooling_off_c": self._config.cooling_off_c,
         }
 
     def accept(self, topic: str, payload: bytes) -> list[Event]:
@@ -251,6 +259,11 @@ class ConsoleState:
         """A hint the console published itself: shown as the occupant's, typed."""
         self._set_here.append(text)
 
+    @property
+    def speech_settings(self) -> dict | None:
+        """The settings last seen on the board, if any."""
+        return self._speech_settings
+
     def invocation(self, invocation_id: str) -> ToolInvocation | None:
         return self._invocations.get(invocation_id)
 
@@ -267,7 +280,38 @@ class ConsoleState:
 
     def _on_reading(self, _topic, reading: SensorReading):
         self._room.sensors[reading.sensor_id] = _dump(reading)
-        return [self._event("sensor", _dump(reading)), *self._live_point(reading.sensor_id, reading.ts, reading.value)]
+        events = [self._event("sensor", _dump(reading)), *self._live_point(reading.sensor_id, reading.ts, reading.value)]
+        if reading.unit is Unit.WATT and self._count_energy(reading):
+            events.append(self._event("energy", {**self._energy, "currency": self._config.currency}))
+        return events
+
+    def _count_energy(self, reading: SensorReading) -> bool:
+        """Add this interval's energy to today's; returns whether it changed (FR-80).
+
+        Trapezoids between consecutive meter readings, priced at the tariff
+        band in force. A gap longer than _ENERGY_GAP_S is not bridged: a
+        meter that was silent for an hour did not see a constant draw.
+        """
+        day = local_time(reading.ts, self._utc_offset_h).date().isoformat()
+        if self._energy["day"] != day:
+            self._energy = {"day": day, "kwh": 0.0, "cost": 0.0}
+        previous, self._last_power = self._last_power, (reading.ts, reading.value)
+        if previous is None or not 0.0 < reading.ts - previous[0] <= _ENERGY_GAP_S:
+            return False
+        kwh = (previous[1] + reading.value) / 2.0 * (reading.ts - previous[0]) / 3_600_000.0
+        band = str((self._room.tariff or {}).get("band", "normal"))
+        price = self._config.price_per_kwh.get(band, self._config.price_per_kwh.get("normal", 0.0))
+        self._energy["kwh"] = round(self._energy["kwh"] + kwh, 4)
+        self._energy["cost"] = round(self._energy["cost"] + kwh * price, 3)
+        return True
+
+    def _on_speech_settings(self, _topic, settings: SpeechSettings):
+        self._speech_settings = _dump(settings)
+        return [self._event("speech_settings", self._speech_settings)]
+
+    def _on_google(self, _topic, status: GoogleStatus):
+        self._google = _dump(status)
+        return [self._event("google", self._google)]
 
     def _on_health(self, _topic, health: SensorHealth):
         self._room.health[health.sensor_id] = _dump(health)
@@ -296,10 +340,12 @@ class ConsoleState:
         if before is not None and before != state.mode.value:
             tone = "good" if state.mode.value == "NORMAL" else "alert"
             events.append(self._step("mode", f"Mode {before} → {state.mode.value}: {state.reason}", tone=tone))
-            next_step = _NEXT_STEP.get(state.mode.value, "")
-            events.append(self._say("system", f"The room is now in {state.mode.value.replace('_', ' ').lower()} mode: {state.reason}.{next_step}", tone=tone))
-            plain = _PLAIN_MODE.get(state.mode.value) or (state.reason or "No reason given.").rstrip(".") + "."
-            events.append(self._mail_in("Room", f"Now {state.mode.value.replace('_', ' ').lower()}", f"{plain}{next_step}", "mode", tone))
+            sentence = mode_sentence(state.mode)
+            name = state.mode.value.replace("_", " ").lower()
+            step = NEXT_STEP.get(state.mode, "")
+            said = f"The room is now in {name} mode: {state.reason or 'no reason given'}. {step}".strip()
+            events.append(self._say("system", said, tone=tone))
+            events.append(self._mail_in("Room", f"Now {state.mode.value.replace('_', ' ').lower()}", sentence, "mode", tone))
         return events
 
     def _on_goal(self, _topic, goal: Goal):
@@ -506,6 +552,8 @@ class ConsoleState:
             "subject": str(result.detail.get("subject", "")),
             "body": str(result.detail.get("body", "")),
             "ts": result.ts,
+            "queued": bool(result.detail.get("queued", False)),
+            "mock": bool(result.simulated),
         }
         self._sent.append(record)
         return [self._event("sent", list(self._sent))]
@@ -643,11 +691,12 @@ def _calendar_from(result: ToolResult, now: float) -> dict:
     if result.status is not ToolStatus.OK:
         return {"entries": [], "as_of": now, "note": result.message}
     tentative = {event_id for event_id in str(result.detail.get("tentative_ids", "")).split(",") if event_id}
+    google = {event_id for event_id in str(result.detail.get("google_ids", "")).split(",") if event_id}
     entries = []
     for chunk in str(result.detail.get("entries", "")).split("; "):
         parts = chunk.split(" ", 2)
         if len(parts) == 3:
-            entry = {"event_id": parts[0], "starts_at": parts[1], "subject": parts[2], "tentative": parts[0] in tentative}
+            entry = {"event_id": parts[0], "starts_at": parts[1], "subject": parts[2], "tentative": parts[0] in tentative, "google": parts[0] in google}
             if entry["tentative"]:
                 entry["heard"] = str(result.detail.get(f"heard_{parts[0]}", ""))
             entries.append(entry)

@@ -15,6 +15,7 @@ exactly as before.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import threading
@@ -22,14 +23,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from src.common import topics
 from src.common.mqtt_client import Blackboard
 from src.console.actions import ActionRefused, ConsoleActions
+from src.console.google_signin import GoogleSignIn, SignInError
 from src.console.state import ConsoleState, Event, encode
 
 LOGGER = logging.getLogger(__name__)
@@ -175,6 +177,20 @@ class MailRequest(BaseModel):
     body: str = Field(default="", max_length=4000)
 
 
+class ComfortRequest(BaseModel):
+    direction: str = Field(min_length=1, max_length=16)
+    profile_id: str = ""
+
+
+class AutomaticRequest(BaseModel):
+    profile_id: str = ""
+
+
+class CoolingOffRequest(BaseModel):
+    hours: float = Field(gt=0.0, le=24.0)
+    profile_id: str = ""
+
+
 class ResetRequest(BaseModel):
     reason: str = ""
 
@@ -185,7 +201,14 @@ class InjectRequest(BaseModel):
     magnitude: float | None = None
 
 
-def create_app(state: ConsoleState, actions: ConsoleActions, hub: Hub, link: Link, lock: threading.Lock) -> FastAPI:
+def create_app(
+    state: ConsoleState,
+    actions: ConsoleActions,
+    hub: Hub,
+    link: Link,
+    lock: threading.Lock,
+    signin: GoogleSignIn | None = None,
+) -> FastAPI:
     """The web application; every dependency injected so it can be tested."""
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -225,6 +248,59 @@ def create_app(state: ConsoleState, actions: ConsoleActions, hub: Hub, link: Lin
     @app.post("/api/target")
     async def post_target(request: TargetRequest) -> JSONResponse:
         return act(actions.set_target, request.target_c, request.profile_id)
+
+    @app.post("/api/comfort")
+    async def post_comfort(request: ComfortRequest) -> JSONResponse:
+        return act(actions.comfort, request.direction, request.profile_id)
+
+    @app.post("/api/automatic")
+    async def post_automatic(request: AutomaticRequest) -> JSONResponse:
+        return act(actions.automatic, request.profile_id)
+
+    @app.post("/api/cooling-off")
+    async def post_cooling_off(request: CoolingOffRequest) -> JSONResponse:
+        return act(actions.cooling_off, request.hours, request.profile_id)
+
+    @app.post("/api/speech/settings")
+    async def post_speech_settings(changes: dict[str, Any]) -> JSONResponse:
+        return act(actions.speech_settings, changes)
+
+    # --- Google sign-in (FR-84): the token goes to a file, never the board ---
+
+    @app.get("/api/google")
+    async def get_google() -> JSONResponse:
+        with lock:
+            status = state.snapshot()["google"]
+        return JSONResponse({"configured": bool(signin and signin.configured), "status": status})
+
+    @app.get("/api/google/connect", response_model=None)
+    async def get_google_connect() -> RedirectResponse | HTMLResponse:
+        if signin is None:
+            return _signin_page("Google is not available in this console.", ok=False)
+        try:
+            return RedirectResponse(signin.start(), status_code=302)
+        except SignInError as exc:
+            return _signin_page(str(exc), ok=False)
+
+    @app.get("/api/google/callback", response_model=None)
+    async def get_google_callback(
+        state_value: str = Query("", alias="state"), code: str = "", error: str = ""
+    ) -> HTMLResponse:
+        if signin is None:
+            return _signin_page("Google is not available in this console.", ok=False)
+        if error:
+            return _signin_page("Google sign-in was cancelled; nothing was connected.", ok=False)
+        try:
+            email = await asyncio.to_thread(signin.finish, state_value, code)
+        except SignInError as exc:
+            return _signin_page(str(exc), ok=False)
+        return _signin_page(f"Connected {email or 'your Google account'}.", ok=True)
+
+    @app.post("/api/google/disconnect")
+    async def post_google_disconnect() -> JSONResponse:
+        if signin is None:
+            return JSONResponse({"ok": False, "error": "Google is not available in this console."}, status_code=400)
+        return JSONResponse({"ok": True, "result": signin.disconnect()})
 
     @app.post("/api/bookings/{invocation_id}")
     async def post_answer(invocation_id: str, request: AnswerRequest) -> JSONResponse:
@@ -310,3 +386,21 @@ def _jsonable(result: Any) -> Any:
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json", by_alias=True)
     return result
+
+
+def _signin_page(message: str, ok: bool) -> HTMLResponse:
+    """Where the browser lands after Google: what happened, then back to Settings."""
+    title = "Connected" if ok else "Not connected"
+    body = (
+        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+        f"<title>Google: {title}</title>"
+        "<meta http-equiv=refresh content='3;url=/settings'>"
+        "<body style='font-family:system-ui,sans-serif;background:#f5f5f7;color:#1d1d1f;"
+        "display:grid;place-items:center;min-height:100vh;margin:0'>"
+        "<div style='background:#fff;border-radius:18px;padding:32px 40px;"
+        "box-shadow:0 4px 24px rgba(0,0,0,.08);max-width:28rem'>"
+        f"<h1 style='font-size:24px;margin:0 0 8px'>{title}</h1>"
+        f"<p style='margin:0 0 16px'>{html.escape(message)}</p>"
+        "<a href='/settings' style='color:#0071e3'>Back to Settings</a></div></body>"
+    )
+    return HTMLResponse(body, status_code=200 if ok else 400)

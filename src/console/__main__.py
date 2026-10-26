@@ -20,6 +20,7 @@ from src.common.clock import RealClock
 from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.console.actions import ConsoleActions
+from src.console.google_signin import GoogleSignIn
 from src.console.server import STATIC_DIRECTORY, Hub, Link, create_app
 from src.console.state import ConsoleState
 
@@ -46,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     clock = RealClock()
-    state = ConsoleState(config.console, clock, inbox_path=Path(config.console.inbox_path))
+    state = ConsoleState(
+        config.console, clock, inbox_path=Path(config.console.inbox_path), utc_offset_h=config.site.utc_offset_h
+    )
     lock = threading.Lock()
     hub = Hub()
 
@@ -58,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     holder.append(link)
 
     actions = ConsoleActions(config, clock, blackboard, state)
-    app = create_app(state, actions, hub, link, lock)
+    app = create_app(state, actions, hub, link, lock, signin=GoogleSignIn(config.google))
 
     host = arguments.host or config.console.host
     port = arguments.port or config.console.port

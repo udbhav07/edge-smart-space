@@ -41,6 +41,7 @@ from src.common.schemas import (
     Intent,
     ModeReset,
     PreferenceHint,
+    SpeechSettings,
     Unit,
 )
 from src.common.tools import ToolInvocation, ToolRequester
@@ -93,10 +94,89 @@ class ConsoleActions:
             rationale="set from the console",
             transcript=said,
             profile_id=profile_id,
+            typed=True,
         )
+        return self._prefer(hint, said)
+
+    def comfort(self, direction: str, profile_id: str = "") -> PreferenceHint:
+        """Warmer or cooler, as a person says it; control picks the step (FR-80)."""
+        try:
+            comfort = Comfort(direction)
+        except ValueError as exc:
+            raise ActionRefused("say warmer or cooler") from exc
+        if comfort is Comfort.UNCHANGED:
+            raise ActionRefused("say warmer or cooler")
+        said = f"A little {comfort.value}"
+        hint = PreferenceHint(
+            ts=self._clock.now(),
+            intent=Intent.ENVIRONMENT,
+            comfort=comfort,
+            subject="temperature",
+            rationale="from Home",
+            transcript=said,
+            profile_id=profile_id,
+            typed=True,
+        )
+        return self._prefer(hint, said)
+
+    def automatic(self, profile_id: str = "") -> PreferenceHint:
+        """Hand the temperature back to the room (FR-81)."""
+        said = "Back to automatic"
+        hint = PreferenceHint(
+            ts=self._clock.now(),
+            intent=Intent.ENVIRONMENT,
+            comfort=Comfort.UNCHANGED,
+            subject="temperature",
+            rationale="from Home",
+            transcript=said,
+            profile_id=profile_id,
+            typed=True,
+            release=True,
+        )
+        return self._prefer(hint, said)
+
+    def cooling_off(self, hours: float, profile_id: str = "") -> PreferenceHint:
+        """No cooling for a while: the gate's upper bound, held for that long (FR-81).
+
+        Not an off switch: the room still cools if it passes cooling_off_c,
+        and the request goes through the same gate as any other.
+        """
+        if not 0.0 < hours <= 24.0:
+            raise ActionRefused("cooling can be off for up to 24 hours")
+        target = self._config.console.cooling_off_c
+        said = f"Cooling off for {hours:g} h (unless the room passes {target:g} °C)"
+        hint = PreferenceHint(
+            ts=self._clock.now(),
+            intent=Intent.ENVIRONMENT,
+            comfort=Comfort.UNCHANGED,
+            subject="temperature",
+            target_c=target,
+            rationale="cooling off, from Home",
+            transcript=said,
+            profile_id=profile_id,
+            typed=True,
+            hold_s=hours * 3600.0,
+        )
+        return self._prefer(hint, said)
+
+    def _prefer(self, hint: PreferenceHint, said: str) -> PreferenceHint:
         self._state.set_from_console(said)
         self._blackboard.publish(topics.CONTEXT_PREFERENCE, hint)
         return hint
+
+    # --- voice (FR-79, FR-82, FR-83) -------------------------------------------
+
+    def speech_settings(self, changes: dict) -> SpeechSettings:
+        """Change some of how the room listens and speaks; the rest stays."""
+        current = dict(self._state.speech_settings or {})
+        current.pop("ts", None)
+        known = set(SpeechSettings.model_fields) - {"ts"}
+        unknown = set(changes) - known
+        if unknown:
+            raise ActionRefused(f"unknown settings: {', '.join(sorted(unknown))}")
+        settings = SpeechSettings(**{**current, **changes, "ts": self._clock.now()})
+        self._blackboard.publish(topics.SPEECH_SETTINGS, settings)
+        return settings
 
     # --- bookings (FR-54) ----------------------------------------------------
 

@@ -1095,7 +1095,7 @@ class GoogleConfig(_Section):
     )
     outbox_max: int = Field(default=500, gt=0, description="Operations kept waiting at most")
     redirect_uri: str = Field(
-        default="http://127.0.0.1:8077/api/google/callback",
+        default="http://localhost:8077/api/google/callback",
         description="Registered on the OAuth client; must match the console's address",
     )
     calendar_id: str = Field(default="primary")

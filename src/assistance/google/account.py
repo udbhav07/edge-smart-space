@@ -14,16 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from src.common.config import GoogleConfig
+from src.common.schemas import GOOGLE_SCOPES
 
 LOGGER = logging.getLogger(__name__)
 
-#: What the room asks Google for, and nothing more (FR-84).
-SCOPES = (
-    "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/gmail.send",
-    "openid",
-    "https://www.googleapis.com/auth/userinfo.email",
-)
+SCOPES = GOOGLE_SCOPES
 
 ACCOUNT_FILE = "account.json"
 
