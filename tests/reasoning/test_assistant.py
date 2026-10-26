@@ -723,3 +723,9 @@ class TestRepliesSayHowTheyWereAsked:
     def test_a_typed_request_does_not(self, config):
         room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
         assert room.say("what is on Thursday", intent=Intent.QUESTION, typed=True).spoken is False
+
+    def test_a_remote_request_gets_a_remote_reply(self, config):
+        """FR-94: answered on the device that asked, not in the room."""
+        room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
+        reply = room.say("what is on Thursday", intent=Intent.QUESTION, typed=True, remote=True)
+        assert reply.remote is True and reply.spoken is False

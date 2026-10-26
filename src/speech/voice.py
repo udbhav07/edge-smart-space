@@ -281,6 +281,9 @@ class Voice:
         self._settings = settings
 
     def on_reply(self, _topic: str, reply: AssistantReply) -> None:
+        if reply.remote:
+            # Asked from a phone away from the room: answered there (FR-94).
+            return
         settings = self._settings
         wanted = settings.speak_replies if reply.spoken else settings.speak_typed
         if wanted:

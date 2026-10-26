@@ -594,6 +594,11 @@ class PreferenceHint(TimestampedMessage):
         description="Hand the temperature back: the occupant's preference stops "
         "holding and the room returns to automatic (FR-81)",
     )
+    remote: bool = Field(
+        default=False,
+        description="Said or typed on a phone or laptop away from the room: the "
+        "answer goes back to that device, and the room stays silent (FR-94)",
+    )
     hold_s: float | None = Field(
         default=None,
         gt=0.0,
@@ -767,6 +772,11 @@ class AssistantReply(TimestampedMessage):
         default=False,
         description="The request was spoken, so the reply is said aloud (FR-79)",
     )
+    remote: bool = Field(
+        default=False,
+        description="Said or typed on a phone or laptop away from the room: the "
+        "answer goes back to that device, and the room stays silent (FR-94)",
+    )
     profile_id: str = Field(
         default="",
         pattern=PROFILE_ID_PATTERN_OR_EMPTY,
@@ -791,6 +801,11 @@ class ConsoleUtterance(TimestampedMessage):
         pattern=PROFILE_ID_PATTERN_OR_EMPTY,
         description="Who chose to speak as whom in the console; personalises "
         "the reply and grants nothing (FR-52)",
+    )
+    remote: bool = Field(
+        default=False,
+        description="Said or typed on a phone or laptop away from the room: the "
+        "answer goes back to that device, and the room stays silent (FR-94)",
     )
 
 

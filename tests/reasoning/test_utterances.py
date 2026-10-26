@@ -94,3 +94,37 @@ def test_a_typed_request_says_it_was_typed(room):
     _say(console, clock, "it's stuffy in here", "ravi")
     interpreter.process_pending()
     assert _published(transport, topics.CONTEXT_PREFERENCE, PreferenceHint)[-1].typed is True
+
+
+def _say_remotely(board, clock, text):
+    board.publish(topics.CONTEXT_UTTERANCE, ConsoleUtterance(ts=clock.now(), utterance_id="r1", text=text, remote=True))
+
+
+def test_a_remote_request_stays_remote(room):
+    """FR-94: asked from a phone away from the room, answered there."""
+    clock, transport, (mine, console) = room
+    context = FakeContext(PreferenceHint(ts=clock.now(), intent=Intent.ENVIRONMENT, comfort=Comfort.COOLER))
+    interpreter = UtteranceInterpreter(clock, mine, context)
+    interpreter.subscribe()
+    _say_remotely(console, clock, "make it cooler")
+    interpreter.process_pending()
+    assert _published(transport, topics.CONTEXT_PREFERENCE, PreferenceHint)[-1].remote is True
+
+
+def test_a_remote_request_answered_directly_is_answered_remotely(room):
+    clock, transport, (mine, console) = room
+    interpreter = UtteranceInterpreter(clock, mine, FakeContext(None))
+    interpreter.subscribe()
+    _say_remotely(console, clock, "hmm")
+    interpreter.process_pending()
+    assert _published(transport, topics.CONTEXT_REPLY, AssistantReply)[-1].remote is True
+
+
+def test_a_request_in_the_console_is_not_remote(room):
+    clock, transport, (mine, console) = room
+    context = FakeContext(PreferenceHint(ts=clock.now(), intent=Intent.ENVIRONMENT, comfort=Comfort.COOLER))
+    interpreter = UtteranceInterpreter(clock, mine, context)
+    interpreter.subscribe()
+    _say(console, clock, "make it cooler")
+    interpreter.process_pending()
+    assert _published(transport, topics.CONTEXT_PREFERENCE, PreferenceHint)[-1].remote is False

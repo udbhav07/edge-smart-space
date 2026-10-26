@@ -333,7 +333,7 @@ class Assistant:
             reply = self._report_setpoint(hint)
         else:
             return None
-        reply = self._personalised(reply, hint).model_copy(update={"spoken": not hint.typed})
+        reply = self._personalised(reply, hint).model_copy(update={"spoken": not hint.typed, "remote": hint.remote})
         self._blackboard.publish(topics.CONTEXT_REPLY, reply)
         LOGGER.info("replied: %s", reply.reply)
         return reply

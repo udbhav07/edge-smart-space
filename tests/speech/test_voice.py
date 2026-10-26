@@ -299,3 +299,19 @@ class TestTheChime:
         loud = np.abs(np.frombuffer(chime_pcm(1.0), dtype=np.int16)).max()
         soft = np.abs(np.frombuffer(chime_pcm(0.25), dtype=np.int16)).max()
         assert soft < loud / 3
+
+
+class TestARemoteReply:
+    def test_is_never_said_in_the_room(self):
+        """FR-94: the person asking from their phone hears it there; the room stays silent."""
+        voice, speaker, _ = _voice()
+        voice.on_settings("t", SpeechSettings(ts=1.0, speak_typed=True))
+        voice.on_reply("t", _reply().model_copy(update={"remote": True}))
+        assert _said(voice, speaker) == []
+
+    def test_opens_no_window_in_the_room(self):
+        voice, speaker, clock = _voice()
+        voice.on_reply("t", _reply().model_copy(update={"remote": True}))
+        _said(voice, speaker)
+        clock.advance(1.0)
+        assert voice.take_follow_up() is False
