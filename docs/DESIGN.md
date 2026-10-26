@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.12 |
+| Version | 1.16 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,10 @@
 
 | Version | Change |
 |---|---|
+| 1.16 | **Device services** (§5.11; FR-87 to FR-91). Every actuator beyond the thermal loop is a service on the blackboard with a retained manifest, availability under a last will, commands, results and retained state; each capability declares its effect and a safety class, and `plant` -- the air conditioner, now announced on the same contract -- is never a tool. The assistance service declares and withdraws device tools as devices come and go; the extraction is shown one line per device and the assistant only the named device's tools, so a 7B model's context does not grow with the room. An MCP bridge mounts any configured server as a device, exposing only the tools configured, with the effect and class the configuration gives them. Reference devices: a simulated fan, a music player, the AC as plant, and an MCP lamp. Numeric tool parameters carry bounds, enforced in the one shared check. |
+| 1.15 | The room speaks (§5.8.5; FR-79, FR-82, FR-83): Piper replies, mute and quiet hours, the microphone ignored while it speaks. A Home page for the occupant with Back to automatic and cooling off (FR-80, FR-81). Google Calendar and Gmail, offline first, after a sign-in in the console (§5.7.7; FR-84 to FR-86; NFR-06 revised). |
+| 1.14 | Always listening (§5.8.4; FR-76 to FR-78): overheard plans pencilled in as tentative, overheard facts offered to keep, nothing answered; the fixes from the customer acceptance check (S-01 to S-14). |
+| 1.13 | The local console (FR-56 to FR-58): a multi-page dashboard served by a gateway with no authority, typed words extracted exactly as speech is. |
 | 1.12 | **FR-52 built: speaker profiles, and what the room remembers about each person** (§5.8.3). The speech pipeline judges whose voice an utterance was, from the buffer it already holds and before dropping it, and the hint carries a `profile_id`; only feature statistics are stored, never audio. Long-term memory is one Markdown file per person, short-term context one expiring JSON file per person; facts are written only through two new `write` tools, `remember` and `forget`, whose `profile_id` is supplied by the system and never shown to the model. Each person's context is published retained on `space/context/profile/{profile_id}`. Recognition personalises and permits nothing, and the first reply of a conversation says so. `tools.enroll` and `tools.profiles` enrol voices and manage what is kept. |
 | 1.11 | Weeks 6–7 in software, and defects found by running the experiments rather than the tests. **Experiments made meaningful:** the simulated unit could not hold its own room (a healthy 24 h run was out of band 20 % of the day), so it is resized to 3500 W, a 1-ton split (§8.5); the ambient cycle follows the site's day rather than the launch time; local time is `site.utc_offset_h`, never the machine's zone, so a seed replays identically on any machine; and the harness scores both systems against the setpoint each was actually tracking, peak tariff included, with the baseline given the same schedule (§8.2). E5's criterion 4 is now met (§8.5). **Safety:** SAFE_HOLD stops the compressor instead of freezing it running, and V-5 always admits a stop (§5.3, §5.4); a re-asserted state is not a V-4 change. **FR-27:** a degraded prediction restarts from the last reading before the fault's reported *onset* and rolls back what the frozen window taught the estimator (§5.2.3); D2 and D4 publish that onset (§5.5). **Advisory faults:** a sensor fault on an instrument the loop does not control on — humidity, the power meter — is published but no longer degrades the mode; a dropped humidity sensor had driven a healthy system to SAFE_HOLD (§5.6). **Week 6–7 software:** the air conditioner's power meter (`pwr_01`) and an acknowledgement from its draw (R-02); non-finite device values are absence, not readings; `tools.calibrate` re-derives D1, D2 and D4 from a recorded healthy run (R-04, §9.4) into a configuration layer (`extends:`); the node reads `site.yaml` over `calibration.yaml` over the reference. The coil no longer dries a room below its dew point, which had faulted a healthy humidity sensor. |
 | 1.10 | Weeks 5 and 6, and the gaps of Weeks 1–6 closed. **Week 6:** the Environmental Supervisor (§5.7.2; FR-40, FR-41), the assistant that acts on what the speech pipeline heard (FR-42), the goal path from a spoken preference to a gated setpoint — pursued step by step when V-2 only part-grants it, and outranking the supervisor for `goals.preference_hold_s` with a new `PREFERENCE_HOLD` verdict (§5.4) — the assistance executor with a local calendar and a mock travel desk (§5.7.6; FR-54, FR-55, FR-58, FR-70 to FR-75), and Fault Diagnosis (§6.3; FR-25, FR-43). Every reasoning call is audited (FR-46, FR-63) on `space/audit/reasoning`, and replies go to a new `space/context/reply`. The day an occupant names is resolved from their words, not by the model, and a tool call on the wrong day is corrected (FR-44). **FR-16:** a peak-tariff schedule and a new `space/tariff/state`. **FR-23:** D4 now runs on a horizon residual accumulated once per non-overlapping horizon (§5.5), which exposed and forced a fix of the errors-in-variables bias in §5.2.1 — the ambient gap is measured from `T[k−1]` — with a2's edge crossings weighed by the heat flow they imply before they count toward divergence (§5.2.3); D5 no longer blames the unit for a reading that rose faster than a dead unit allows. A stalled estimate now counts as divergence. **Week 5 software:** `devices.source` selects the simulator or an ESPHome bridge (`python -m src.io`), `deploy/systemd` holds one unit per service, and `start.py` restarts a service that exits (NFR-08). The actuator fault is injectable (`tools.inject ac dead`; FR-31). **FR-62:** `tools.record` and `sim/replay.py`. **E3** and **E6** exist and pass (§8.3). |
@@ -237,6 +241,11 @@ feature safe to ship at all.
 | FR-84 | The occupant may connect a Google account from the console. Only then, and only to Google's APIs, does the node make outbound requests (revises NFR-06). Tokens stay in a local file and are never published. | S | D |
 | FR-85 | With an account connected, calendar entries shall also be written to Google Calendar, tentative ones as tentative, and Google-side entries shall appear in the room's calendar; a confirmed mail shall be sent through Gmail and still require the occupant's yes (FR-54). A confirmed mock booking shall add a calendar entry and email its itinerary to the occupant. | S | D |
 | FR-86 | Anything bound for Google while the node is offline shall be queued, kept across restarts, sent once Google is reachable, and never sent twice. The console shall show what is waiting. | S | T |
+| FR-87 | Every actuator beyond the thermal loop shall be a service on the blackboard: it announces a retained manifest of what it can do, its availability (with a last will saying offline), takes commands and answers on its own topics, and keeps its state retained. Adding a device shall need no change to the core. | S | T |
+| FR-88 | Each capability shall declare its effect and its safety class. Plant capabilities (the air conditioner) are never offered as tools and are reached only through a preference and the validator; comfort and media capabilities run within the bounds and rate limit their device declares, checked by the executor and again by the device; a commit still needs the occupant's yes. | M | T |
+| FR-89 | However many devices are plugged in, the model shall be shown one line per device to choose from, and then only the tools of the device a request is about, at most a configured number. | S | T |
+| FR-90 | Any MCP server named in configuration shall be mountable as a device, exposing only the tools configured, with the effect and class the configuration gives them. | S | T |
+| FR-91 | The console shall show every device and control it from what its manifest declares, with its availability, its state, and whether it is simulated. | S | D |
 
 ### 3.7 Functional Requirements — Observability
 
@@ -1535,6 +1544,41 @@ startup, which NFR-06 forbids.
 
 **`sim/room_model.py` must not import from `src/estimation/`.** The simulated plant and the estimator's internal model have to be independently parameterised, or the evaluation degenerates into the model predicting itself and every reported result is vacuous.
 
+Added as of v1.16: `src/devices/` (Layer 1) -- `service.py` and `runner.py`, the part every device service shares, and the reference devices `fan/`, `music/` and `mcp_bridge/`; `src/common/devices.py`, the device contract; `src/assistance/devices.py`, which turns devices into tools; `src/reasoning/devices.py`, which names them for the extraction; `examples/mcp_lamp/`, an MCP server the bridge mounts. Layers 2 to 4 must not import `src/devices/`, by the same rule as `src/io/`.
+
+### 5.11 Device Services (v1.16; FR-87 to FR-91)
+
+The air conditioner was the only actuator, wired through a fixed path: goal, validator, controller, `space/actuator/ac/command`. Every other service the assistant could use was a provider written into `src/assistance/`. Both meant that a new device was a change to the core, and Gmail and Calendar showed what that costs. The fix is the one the system already uses for everything else: **a device is a service on the blackboard**.
+
+```mermaid
+flowchart LR
+    subgraph device["a device service (fan, music, an MCP server behind the bridge, an ESP32)"]
+        M[manifest] --- S[state]
+    end
+    device -- "space/device/{id}/manifest (retained)" --> BB((blackboard))
+    device -- "availability (retained, last will: offline)" --> BB
+    BB -- "command (ToolInvocation)" --> device
+    device -- "result (ToolResult)" --> BB
+    device -- "state (retained)" --> BB
+    BB --> A[assistance: DeviceDirectory declares tools]
+    BB --> R[reasoning: KnownDevices names devices]
+    BB --> C[console: controls drawn from the manifest]
+```
+
+**The contract** (`src/common/devices.py`). A `DeviceManifest` names the device, what people call it, whether it is simulated (FR-15), and its capabilities. A `DeviceCapability` is a `ToolSpec` -- name, purpose, parameters with their bounds, effect -- plus a **safety class**, required with no default: `plant` (the thermal loop), `comfort` (a fan, a light) or `media` (sound, a display), and a minimum interval between runs. The effect says whose it is to undo (the confirmation gate, FR-54); the class says what it can do to the room. A device can be anything that publishes this JSON: `DeviceService` is about thirty lines of manifest and handlers away from a new device, and an ESPHome or Tasmota node can publish the same topics with no Python at all.
+
+**Safety** (FR-88). `plant` capabilities never become tools. The air conditioner publishes a manifest like any device (`PlantAnnouncer`, from whichever of the simulator or the hardware bridge owns it), so the console and the assistant can see it, but every capability in it is `plant`: a request about the room's temperature still takes the preference, the goal path and the validator (FR-45), and a command on `space/device/ac/command` is refused by construction. `comfort` and `media` capabilities run within the bounds their parameters declare -- checked by the executor's registry, which now enforces `minimum` and `maximum` for every tool, and again by the device service, because the command topic is open to anything on the broker -- and no more often than their `min_interval_s`. A `commit` capability still waits for the occupant's yes.
+
+**Discovery** (FR-87). The assistance service's `DeviceDirectory` watches every manifest and availability. While a device is online, each capability that is not `plant` is declared in the registry as `<device>_<capability>` with a provider that publishes the command and waits, off the network thread, for the device's answer; when the device goes offline -- its service stopped, or its last will was published by the broker -- the tools are withdrawn. The catalogue is republished each time, so what the assistant may ask for is what is reachable.
+
+**Routing for a 7B model** (FR-89). MCP and hand-written providers have the same problem on a small model: every tool's schema in every prompt. Neither protocol solves it; routing does. The extraction -- the first call, which already classified the request -- is shown one line per device (`- fan: Ceiling fan (also: the fan)`) and names which one a request is about; a deterministic rule files a request whose words name a device as being about it, and never as a temperature ("set the fan to 3" is not 3 °C). The assistant's call is then shown only that device's tools, at most `actuators.max_device_tools`, with a short prompt of its own. The prompt stays the same size with one device or fifty; a test holds it to that.
+
+**The MCP bridge** (FR-90). MCP is the ecosystem worth reusing, so the bridge (`src/devices/mcp_bridge`) mounts any server named in `actuators.mcp_servers`: it starts the server over stdio, lists its tools, keeps only those the configuration names, and publishes them as a device whose capabilities carry the effect and safety class **the configuration** gives -- an MCP server's own annotations are hints about itself, and the confirmation gate must not rest on them. A tool's JSON schema becomes checked parameters (a nested object is refused at startup rather than passed through unchecked); a result becomes a sentence and flat state. Each mounted server gets its own broker connection, because a connection carries one last will. The example lamp in `examples/mcp_lamp/` is an ordinary MCP server; its `factory_reset` tool is not configured and is never exposed.
+
+**The reference devices.** A simulated ceiling fan (on, off, speed 0 to 3, rate-limited); the music player on this machine (`miniaudio`: play by words or file name, pause, resume, stop, volume, what is playing; a file given in the console is kept under a safe name and only its name crosses the board); the air conditioner, as plant; and the lamp through the bridge.
+
+**Measured live** (2026-10-26, qwen2.5:7b): "turn on the fan", "set the desk lamp to 30 percent" (through MCP), "is the lamp on?", "play the evening chime" and "turn the music volume down to 20" were each carried out and answered in the device's own words in 10 to 18 s; "set the ac to 25 degrees" became a preference goal of 25 °C through the validator with nothing published on `space/device/ac/command`; killing the fan's service marked it offline and withdrew its tools within a second, and `start.py` brought it back two seconds later. "Set the fan to 5" was not refused: shown the parameter's maximum, the model asked for 3 itself, and the reply said "speed 3 of 3".
+
 ---
 
 ## 6. Interface Specifications
@@ -1969,6 +2013,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-70 to FR-75 | §5.7.6, §6.1, §6.2 | Unit + demonstration |
 | FR-76 to FR-78 | §5.8.4, §6.1 | Unit + demonstration |
 | FR-79 to FR-86 | §5.8.5, §5.7.7, §6.1 | Unit + demonstration |
+| FR-87 to FR-91 | §5.11, §6.1 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 
