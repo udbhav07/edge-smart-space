@@ -171,6 +171,8 @@ export interface Device {
   online: boolean;
   state: Record<string, string | number | boolean | null>;
   state_ts: number | null;
+  /** Its latest answer, to the assistant or to a remote (FR-92). */
+  last_result: { tool: string; status: string; message: string; ts: number } | null;
 }
 
 export interface Energy {
