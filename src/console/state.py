@@ -326,7 +326,9 @@ class ConsoleState:
 
     def _device(self, device_id: str) -> dict:
         # online is None until a manifest or an availability message says.
-        return self._devices.setdefault(device_id, {"device_id": device_id, "manifest": None, "online": None, "state": {}, "state_ts": None})
+        return self._devices.setdefault(
+            device_id, {"device_id": device_id, "manifest": None, "online": None, "state": {}, "state_ts": None, "last_result": None}
+        )
 
     def _device_list(self) -> list[dict]:
         return [device for _, device in sorted(self._devices.items()) if device["manifest"] is not None]
@@ -507,11 +509,20 @@ class ConsoleState:
         arguments = ", ".join(f"{k}={v}" for k, v in invocation.arguments.items() if k != "profile_id")
         return [self._step("tool", f"Called {invocation.tool}", detail=arguments, ref=invocation.invocation_id)]
 
+    def _note_device_result(self, result: ToolResult) -> list[Event]:
+        """Keep a device's latest answer, whoever asked -- the assistant or a remote (FR-92)."""
+        device_id = next((tool["device"] for tool in self._catalogue if tool["name"] == result.tool and tool.get("device")), None)
+        if device_id is None or device_id not in self._devices:
+            return []
+        self._devices[device_id]["last_result"] = {"tool": result.tool, "status": result.status.value, "message": result.message, "ts": result.ts}
+        return [self._event("devices", self._device_list())]
+
     def _on_result(self, _topic, result: ToolResult):
+        noted = self._note_device_result(result)
         if result.invocation_id in self._device_requests:
             self._device_requests.discard(result.invocation_id)
             answer = {"invocation_id": result.invocation_id, "tool": result.tool, "status": result.status.value, "message": result.message}
-            return [self._event("device_result", answer)]
+            return [*noted, self._event("device_result", answer)]
         if result.invocation_id in self._calendar_requests:
             self._calendar_requests.discard(result.invocation_id)
             self._calendar = _calendar_from(result, self._clock.now())
@@ -550,7 +561,7 @@ class ConsoleState:
             events.extend(self._booked(result))
         if result.status is ToolStatus.OK and result.tool == "send_mail":
             events.extend(self._mailed(result))
-        return events
+        return [*noted, *events]
 
     def _on_catalogue(self, _topic, catalogue: ToolCatalogue):
         self._catalogue = [{"name": t.name, "purpose": t.purpose, "effect": t.effect.value, "device": t.device} for t in catalogue.tools]

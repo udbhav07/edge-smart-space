@@ -171,3 +171,51 @@ class TestEndpoints:
         _feed(state, topics.DEVICE_MANIFEST, music_manifest(BASE.actuators.music, clock.now()), device_id="music")
         response = client.post("/api/music/upload", params={"name": "tune.mp3"}, content=b"abc", headers={"content-type": "application/octet-stream"})
         assert response.json()["ok"] is True and (folder / "uploads" / "tune.mp3").read_bytes() == b"abc"
+
+
+class TestLastResult:
+    """FR-92: a device's latest answer is kept, whoever asked, for its remote."""
+
+    def _catalogue(self, state, clock):
+        from src.common.tools import ToolCatalogue, ToolEffect, ToolSpec
+
+        tools = (ToolSpec(name="fan_turn_on", purpose="x", effect=ToolEffect.WRITE, device="fan"), ToolSpec(name="get_events", purpose="x", effect=ToolEffect.READ))
+        _feed(state, topics.ASSIST_CATALOGUE, ToolCatalogue(ts=clock.now(), tools=tools))
+
+    def _result(self, clock, tool="fan_turn_on", status=ToolStatus.OK, message="The fan is on."):
+        provider = "fan" if status is ToolStatus.OK else ""
+        return ToolResult(ts=clock.now(), invocation_id=f"r{clock.now()}", tool=tool, status=status, message=message, provider=provider)
+
+    def _feed_result(self, state, clock, **kwargs):
+        return state.accept(topics.ASSIST_RESULT.pattern, self._result(clock, **kwargs).model_dump_json().encode())
+
+    def test_an_answer_is_kept_on_its_device(self, console):
+        state, _, _, clock, _ = console
+        _announce(state, clock)
+        self._catalogue(state, clock)
+        self._feed_result(state, clock)
+        last = state.snapshot()["devices"][0]["last_result"]
+        assert (last["tool"], last["status"], last["message"]) == ("fan_turn_on", "OK", "The fan is on.")
+
+    def test_a_refusal_is_kept_too(self, console):
+        state, _, _, clock, _ = console
+        _announce(state, clock)
+        self._catalogue(state, clock)
+        self._feed_result(state, clock, status=ToolStatus.FAILED, message="The fan didn't answer.")
+        assert state.snapshot()["devices"][0]["last_result"]["status"] == "FAILED"
+
+    def test_a_tool_of_no_device_touches_no_device(self, console):
+        state, _, _, clock, _ = console
+        _announce(state, clock)
+        self._catalogue(state, clock)
+        self._feed_result(state, clock, tool="get_events")
+        assert state.snapshot()["devices"][0]["last_result"] is None
+
+    def test_a_remotes_own_call_still_tells_the_page(self, console):
+        state, actions, _, clock, _ = console
+        _announce(state, clock)
+        self._catalogue(state, clock)
+        invocation_id = actions.device("fan", "turn_on", {})
+        result = self._result(clock).model_copy(update={"invocation_id": invocation_id})
+        events = state.accept(topics.ASSIST_RESULT.pattern, result.model_dump_json().encode())
+        assert {"devices", "device_result"} <= {event["type"] for event in events}
