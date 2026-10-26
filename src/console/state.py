@@ -252,6 +252,7 @@ class ConsoleState:
             "presets": self._config.presets_c,
             "cooling_off_c": self._config.cooling_off_c,
             "bounds_c": list(self._bounds_c),
+            "tls_port": self._config.tls_port,
         }
 
     def accept(self, topic: str, payload: bytes) -> list[Event]:

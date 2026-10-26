@@ -249,6 +249,8 @@ export interface Snapshot {
   cooling_off_c: number;
   bounds_c: [number, number];
   devices: Device[];
+  /** Where the console is also served over HTTPS, so a phone may use its microphone (FR-94); 0 if not. */
+  tls_port: number;
 }
 
 export interface TopicRow {

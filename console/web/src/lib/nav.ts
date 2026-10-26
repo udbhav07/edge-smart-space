@@ -1,4 +1,4 @@
-import { BookOpen, CalendarDays, Cpu, Gauge, House, LayoutDashboard, Settings, SlidersHorizontal, Library, Mail, MessageSquare, Network, Plane, ShieldAlert, type LucideIcon } from "lucide-react";
+import { BookOpen, CalendarDays, Cpu, Gauge, House, LayoutDashboard, Settings, SlidersHorizontal, Library, Mic, Mail, MessageSquare, Network, Plane, ShieldAlert, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   to: string;
@@ -13,6 +13,7 @@ export const NAV: { group: string; items: NavItem[] }[] = [
     group: "Room",
     items: [
       { to: "/", label: "Home", icon: House, end: true },
+      { to: "/talk", label: "Talk", icon: Mic },
       { to: "/remotes", label: "Remotes", icon: SlidersHorizontal },
     ],
   },

@@ -219,3 +219,9 @@ class TestEndpoints:
         hub = Hub()
         client = TestClient(create_app(state, actions, hub, Link(state, hub, lock, Blackboard(CONFIG.mqtt, transport)), lock))
         assert client.post("/api/talk", content=_wav(1.0)).status_code == 503
+
+
+def test_the_page_is_told_where_https_is(console):
+    """So a phone on plain http can be offered the address where its microphone works."""
+    state, _, _, _ = console
+    assert state.snapshot()["tls_port"] == CONFIG.console.tls_port

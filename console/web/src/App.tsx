@@ -11,6 +11,7 @@ const page = <K extends string>(load: () => Promise<Record<K, React.ComponentTyp
 const Home = page(() => import("./pages/Home"), "Home");
 const Settings = page(() => import("./pages/Settings"), "Settings");
 const Remotes = page(() => import("./pages/Remotes"), "Remotes");
+const Talk = page(() => import("./pages/Talk"), "Talk");
 const Remote = page(() => import("./pages/Remote"), "Remote");
 const Overview = page(() => import("./pages/Overview"), "Overview");
 const Services = page(() => import("./pages/Services"), "Services");
@@ -37,6 +38,7 @@ export default function App() {
           <Route index element={<Home />} />
           <Route path="overview" element={<Overview />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="talk" element={<Talk />} />
           <Route path="remotes" element={<Remotes />} />
           <Route path="remotes/:deviceId" element={<Remote />} />
           <Route path="services" element={<Services />} />
