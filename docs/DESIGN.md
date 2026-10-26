@@ -246,6 +246,7 @@ feature safe to ship at all.
 | FR-89 | However many devices are plugged in, the model shall be shown one line per device to choose from, and then only the tools of the device a request is about, at most a configured number. | S | T |
 | FR-90 | Any MCP server named in configuration shall be mountable as a device, exposing only the tools configured, with the effect and class the configuration gives them. | S | T |
 | FR-91 | The console shall show every device and control it from what its manifest declares, with its availability, its state, and whether it is simulated. | S | D |
+| FR-92 | Every device, including one behind an MCP server, shall be controllable by hand from the console, through the same executor and gates as the assistant: a page of remotes and a page per device. A remote written for a device or its kind is used where one exists; any other device gets a remote drawn from its manifest. | S | D |
 
 ### 3.7 Functional Requirements — Observability
 
@@ -1577,6 +1578,8 @@ flowchart LR
 
 **The reference devices.** A simulated ceiling fan (on, off, speed 0 to 3, rate-limited); the music player on this machine (`miniaudio`: play by words or file name, pause, resume, stop, volume, what is playing; a file given in the console is kept under a safe name and only its name crosses the board); the air conditioner, as plant; and the lamp through the bridge.
 
+**Remotes** (FR-92). People control every device directly, not only through the model. The console's **Remotes** page shows each device's remote, usable from the grid, and `/remotes/<device>` its full remote, its state, what it can do and what it was last asked. A remote never talks to a device, the broker or an MCP server itself: it publishes a `ToolInvocation` on `space/assist/proposed` exactly as `add_entry` does, so the executor's argument check, bounds and confirmation gate apply to a person's tap as to the model's call, and the device checks again. The air conditioner's remote is the climate controls: a preference through the validator, never a device command. Which remote a device gets is decided in `console/web/src/remotes/registry.ts`, first match wins -- one written for the device's id, then one for its kind (fan, light, music, ac), then the generic remote drawn from its manifest -- and a specialised remote that does not fit the device's capabilities gives way to the generic one. So a device nobody wrote a remote for is still controllable the moment it announces itself, and a remote of its own is one file and one line. A device behind MCP knows its state only once asked, so opening its page reads it quietly with its parameterless read capability. The console keeps each device's latest result, whoever asked, so a remote shows what it last did and whether it failed.
+
 **Measured live** (2026-10-26, qwen2.5:7b): "turn on the fan", "set the desk lamp to 30 percent" (through MCP), "is the lamp on?", "play the evening chime" and "turn the music volume down to 20" were each carried out and answered in the device's own words in 10 to 18 s; "set the ac to 25 degrees" became a preference goal of 25 °C through the validator with nothing published on `space/device/ac/command`; killing the fan's service marked it offline and withdrew its tools within a second, and `start.py` brought it back two seconds later. "Set the fan to 5" was not refused: shown the parameter's maximum, the model asked for 3 itself, and the reply said "speed 3 of 3".
 
 ---
@@ -2013,7 +2016,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-70 to FR-75 | §5.7.6, §6.1, §6.2 | Unit + demonstration |
 | FR-76 to FR-78 | §5.8.4, §6.1 | Unit + demonstration |
 | FR-79 to FR-86 | §5.8.5, §5.7.7, §6.1 | Unit + demonstration |
-| FR-87 to FR-91 | §5.11, §6.1 | Unit + demonstration |
+| FR-87 to FR-92 | §5.11, §6.1 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

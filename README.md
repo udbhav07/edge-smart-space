@@ -160,6 +160,7 @@ Each page has its own address, so any of them can be bookmarked:
 | **Calendar** `/calendar` | The week ahead; add and remove entries |
 | **Bookings** `/bookings` | Requests waiting for your yes, a booking form, and what has been booked |
 | **Mail** `/mail` | An inbox of what the room tells you; sending waits for your yes, then goes through Gmail if Google is connected (or waits in the outbox while offline), and to a mock outbox if not |
+| **Remotes** `/remotes` | A remote for every device -- the fan, the lamp behind MCP, the music, the air conditioner, anything plugged in -- usable from the grid; `/remotes/<device>` has its full remote, its state, what it can do and what it was last asked |
 | **Settings** `/settings` | Connect or disconnect Google; the microphone, which replies are spoken, alerts, volume and quiet hours; the presets |
 
 `Ctrl-K` opens every action from anywhere. The operator's fault injection
@@ -316,6 +317,41 @@ actuators:
 
 `plant` is refused for an MCP tool: the room's temperature is reached only
 through the safety gate.
+
+#### Remotes: controlling devices by hand
+
+Every device has a remote on the console's **Remotes** page (FR-92), the same
+checks applying to a tap as to Jarvis. A device with no remote written for it
+gets one drawn from its manifest -- a button per action, a slider per bounded
+number -- so the kettle above is controllable the moment it starts.
+
+To give a kind of device a remote of its own, add one file to
+`console/web/src/remotes/` and one line to `registry.ts`:
+
+```tsx
+// console/web/src/remotes/KettleRemote.tsx
+import { Button } from "@/components/ui";
+import { has } from "./parts";
+import type { RemoteProps, RemoteSpec } from "./types";
+
+function KettleRemote({ device, call }: RemoteProps) {
+  return <Button variant="primary" disabled={!device.online} onClick={() => void call("boil")}>Boil</Button>;
+}
+
+// Used only if the device can boil; otherwise the generic remote is.
+export const kettleRemote: RemoteSpec = { component: KettleRemote, fits: (device) => has(device, "boil") };
+```
+
+```ts
+// registry.ts
+const BY_ID: Record<string, RemoteSpec> = { kettle: kettleRemote };   // or BY_KIND, for every device of a kind
+```
+
+`call` goes through the executor, never to the device directly, and the
+toast shows the device's own answer. `parts.tsx` has the pieces the built-in
+remotes use: a power button, a slider that sends on release, the device's
+badges, and helpers to find a capability and its bounds. Rebuild with
+`npm run build` in `console/web`.
 
 ### Running one component directly
 
