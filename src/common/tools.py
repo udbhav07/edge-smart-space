@@ -43,6 +43,7 @@ place, and published (FR-73, FR-75).
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from enum import Enum
@@ -154,6 +155,9 @@ class ToolRequester(str, Enum):
     OPERATOR = "operator"
     #: Speech overheard without the wake word (FR-76): no one asked.
     AMBIENT = "ambient"
+    #: The executor, carrying a request already audited on
+    #: ``space/assist/proposed`` to the device that performs it (FR-87).
+    ASSISTANCE = "assistance"
 
 
 # --- Errors ----------------------------------------------------------------
@@ -375,6 +379,12 @@ class ToolSpec(BaseModel):
         "behind overheard speech and the console's review buttons are run by "
         "their own requesters only, so a reply can never pencil, keep or "
         "settle anything (FR-77, FR-78)",
+    )
+    device: str = Field(
+        default="",
+        description="The device this tool reaches, if it is a device's "
+        "capability; how a request about one device is shown only that "
+        "device's tools (FR-89)",
     )
 
     @model_validator(mode="after")
@@ -1000,6 +1010,9 @@ class ToolRegistry:
         self._clock = clock
         self._specs: dict[str, ToolSpec] = {}
         self._providers: dict[str, ToolProvider] = {}
+        # Devices arrive and leave on the network thread while invocations
+        # run on another (FR-87); the catalogue must never be read mid-change.
+        self._lock = threading.RLock()
         for spec in specs:
             self.declare(spec)
 
@@ -1010,9 +1023,19 @@ class ToolRegistry:
             name would make which implementation runs depend on registration
             order.
         """
-        if spec.name in self._specs:
-            raise ValueError(f"tool {spec.name!r} is already declared")
-        self._specs[spec.name] = spec
+        with self._lock:
+            if spec.name in self._specs:
+                raise ValueError(f"tool {spec.name!r} is already declared")
+            self._specs[spec.name] = spec
+
+    def withdraw(self, name: str) -> bool:
+        """Remove a tool and its provider: a device went offline or changed (FR-87).
+
+        :returns: whether there was such a tool.
+        """
+        with self._lock:
+            self._providers.pop(name, None)
+            return self._specs.pop(name, None) is not None
 
     def bind(self, name: str, provider: ToolProvider) -> None:
         """Attach the implementation that fulfils a declared tool.
@@ -1021,8 +1044,9 @@ class ToolRegistry:
             provider to an undeclared tool would leave it unreachable and
             look like a broken provider.
         """
-        self.spec(name)
-        self._providers[name] = provider
+        with self._lock:
+            self.spec(name)
+            self._providers[name] = provider
 
     def spec(self, name: str) -> ToolSpec:
         """The declaration for one tool.
@@ -1030,7 +1054,8 @@ class ToolRegistry:
         :raises UnknownToolError: if it is not in the catalogue.
         """
         try:
-            return self._specs[name]
+            with self._lock:
+                return self._specs[name]
         except KeyError as exc:
             raise UnknownToolError(
                 f"no tool named {name!r}; available: {sorted(self._specs)}"
@@ -1038,14 +1063,16 @@ class ToolRegistry:
 
     @property
     def names(self) -> tuple[str, ...]:
-        return tuple(self._specs)
+        with self._lock:
+            return tuple(self._specs)
 
     def specs(self) -> tuple[ToolSpec, ...]:
-        return tuple(self._specs.values())
+        with self._lock:
+            return tuple(self._specs.values())
 
     def schemas(self) -> tuple[dict[str, object], ...]:
         """The tool surface as a model is shown it (FR-70)."""
-        return tuple(spec.as_schema() for spec in self._specs.values())
+        return tuple(spec.as_schema() for spec in self.specs())
 
     def catalogue(self) -> ToolCatalogue:
         """The retained catalogue message for ``space/assist/catalogue``."""
@@ -1095,7 +1122,8 @@ class ToolRegistry:
                 f"system and needs confirming"
             )
 
-        provider = self._providers.get(invocation.tool)
+        with self._lock:
+            provider = self._providers.get(invocation.tool)
         if provider is None:
             raise ToolUnavailableError(
                 f"{invocation.tool!r} is declared but nothing is bound to it"

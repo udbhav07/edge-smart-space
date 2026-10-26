@@ -19,7 +19,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.assistance.executor import AssistanceExecutor
+from src.assistance.devices import DeviceDirectory
+from src.assistance.executor import AssistanceExecutor, Dispatch, Worker
 from src.assistance.google.account import GoogleAccount
 from src.assistance.google.api import RealGoogleApi
 from src.assistance.google.calendar import SyncedCalendar
@@ -123,9 +124,13 @@ def build_keeper(config: Config, clock: Clock, blackboard: Blackboard) -> Profil
 
 
 def build_service(
-    config: Config, clock: Clock, blackboard: Blackboard, google: GoogleParts | None = None
+    config: Config,
+    clock: Clock,
+    blackboard: Blackboard,
+    google: GoogleParts | None = None,
+    dispatch: Dispatch | None = None,
 ) -> AssistanceExecutor:
-    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google))
+    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google), dispatch=dispatch)
 
 
 def build_google(config: Config, clock: Clock, blackboard: Blackboard) -> GoogleParts:
@@ -157,8 +162,15 @@ def main(argv: list[str] | None = None) -> int:
     holder.append(blackboard)
 
     google = build_google(config, clock, blackboard)
-    service = build_service(config, clock, blackboard, google)
+    worker = Worker()
+    service = build_service(config, clock, blackboard, google, dispatch=worker)
     service.subscribe()
+    # Devices on the board become tools while they are online (FR-87).
+    directory = DeviceDirectory(
+        clock, blackboard, service.registry, config.actuators.command_timeout_s, on_change=service.publish_catalogue
+    )
+    directory.subscribe()
+    worker.start()
     keeper = build_keeper(config, clock, blackboard)
     keeper.subscribe()
     blackboard.start()
