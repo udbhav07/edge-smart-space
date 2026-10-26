@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.19 | **Messages home** (§5.8.7; FR-95): someone away records a message on the Talk page; it plays in the room at once -- a chime, "Message from Ravi", then their own recording -- and the room listens for an answer without the wake word. The answer's audio is kept and sent back to the sender's page with sent, played and answered ticks. FR-51 gains its one stated exception. |
 | 1.18 | **Talking to the room from away** (§5.8.6; FR-94): the Talk page records on a phone's microphone, the console transcribes it with the room's Whisper and speaks the reply back to that device in the room's voice, the room silent; requests carry `remote`; the console also serves HTTPS with its own certificate. |
 | 1.17 | **A reply is a turn** (§5.8.5; FR-93): after a spoken reply the room listens for the answer without the wake word; every capture window opens with a chime; the console shows on every page when the room is listening, thinking and speaking; overheard speech is its own `overhearing` activity. Overheard plans are deduplicated by subject and day, not subject alone. **Remotes** (§5.11; FR-92): every device controllable by hand, through the same gates, with a remote chosen by device, kind, or its manifest. |
 | 1.16 | **Device services** (§5.11; FR-87 to FR-91). Every actuator beyond the thermal loop is a service on the blackboard with a retained manifest, availability under a last will, commands, results and retained state; each capability declares its effect and a safety class, and `plant` -- the air conditioner, now announced on the same contract -- is never a tool. The assistance service declares and withdraws device tools as devices come and go; the extraction is shown one line per device and the assistant only the named device's tools, so a 7B model's context does not grow with the room. An MCP bridge mounts any configured server as a device, exposing only the tools configured, with the effect and class the configuration gives them. Reference devices: a simulated fan, a music player, the AC as plant, and an MCP lamp. Numeric tool parameters carry bounds, enforced in the one shared check. |
@@ -209,7 +210,7 @@ Verification: **T** = automated test, **D** = demonstration, **A** = analysis/in
 | ID | Requirement | Pri | Ver |
 |---|---|---|---|
 | FR-50 | Audio capture for transcription shall begin only after local wake-word detection and shall stop at end-of-utterance or a hard timeout. | M | D |
-| FR-51 | The system shall transcribe captured audio on-device. No audio shall leave the edge node. | M | A |
+| FR-51 | The system shall transcribe captured audio on-device. No audio shall leave the edge node. Captured audio shall not be kept beyond transcription, with one exception: the answer to a message home, which the person at home is invited to give for the sender to hear (FR-95). | M | A |
 | FR-52 | Speaker verification shall select a personalisation profile only. It shall not gate any action, and this shall be stated in user-facing output. | M | A |
 | FR-53 | Recognised intents that map to an environmental preference shall be forwarded as a supervisory input, not as a direct actuator command. | M | T |
 | FR-54 | Any action that commits the occupant to a party outside the system — a booking, a payment, a reservation — shall require explicit user confirmation before the mock endpoint is invoked. Declared as a `commit` tool (FR-74). | M | D |
@@ -249,6 +250,7 @@ feature safe to ship at all.
 | FR-90 | Any MCP server named in configuration shall be mountable as a device, exposing only the tools configured, with the effect and class the configuration gives them. | S | T |
 | FR-91 | The console shall show every device and control it from what its manifest declares, with its availability, its state, and whether it is simulated. | S | D |
 | FR-94 | Someone away from the room shall be able to talk to the room from a phone or laptop on the network: speak on that device's microphone or type, and hear the answer on that device, with the room itself silent; see the shared calendar; and control every device. The recording is transcribed on the node and never kept or published. | S | D |
+| FR-95 | Someone away shall be able to leave a spoken message that plays in the room at once in their own voice, announced with who it is from, and the room shall listen for an answer without the wake word. The answer, words and voice, shall reach the sender's page, and the sender shall see whether it was sent, played and answered. Recordings shall stay on the node, never cross the blackboard, and be deleted after `messages.keep_days`. | S | D |
 | FR-93 | The occupant shall know when the room is listening to them: a chime whenever a capture window opens, and an indicator on every page of the console while it listens, thinks and speaks. After a reply is spoken, the room shall listen for an answer without the wake word. Overheard speech shall not be shown as listening. | S | D |
 | FR-92 | Every device, including one behind an MCP server, shall be controllable by hand from the console, through the same executor and gates as the assistant: a page of remotes and a page per device. A remote written for a device or its kind is used where one exists; any other device gets a remote drawn from its manifest. | S | D |
 
@@ -1371,6 +1373,35 @@ The room's microphone is on the machine in the room; someone in another room, or
 
 **Settings and mute.** The console publishes the retained `space/speech/settings` (`SpeechSettings`: listening, the three speak switches, volume, quiet hours) and the speech service obeys it. Retained, a restart of either keeps the choice (FR-82). `listening: false` stops capture outright: frames are read and discarded before the detector sees them, and the status reads `muted`. It is a privacy switch, not a filter.
 
+
+#### 5.8.7 Messages home (v1.19; FR-95)
+
+"My mom never picks up the phone." The Talk page's **Message home** mode (also opened directly at `/talk?mode=message`, a link to send whoever will use it) records a message on the sender's phone. The sender's name is remembered on that device.
+
+**Taking it in (console).** The console decodes the recording, as for FR-94, and enforces `messages.max_seconds` and `max_bytes`. It transcribes the message for the screen; without Whisper, the message is still sent without its words. The recording is kept as a 16 kHz mono WAV, `state/messages/<id>.wav`. Two things go on the board:
+
+- a retained `MessageStatus` (*sent*) on `space/message/status/{id}`;
+- a `HomeMessage` on `space/message/incoming`.
+
+Neither carries audio, only words and a file name, which the schema restricts to a name in the messages directory and never a path.
+
+**Playing it (speech).** The speech service owns the speaker. Its `MessageDesk` reads the file and queues one item on the voice: the chime, Piper saying "Message from Ravi", then the recording at the occupant's volume. The microphone is held throughout by the existing echo guard. The desk publishes *playing*, then *played*.
+
+**The answer.** When the room is quiet again, it opens a capture window tagged as a reply to that message. The window chimes and waits `messages.reply_wait_s` (8 s) for speech to begin, longer than after the wake word. The utterance is transcribed, and its audio is kept as `<id>-reply.wav`. **This is the one exception to FR-51**: an answer the person at home was invited to give, recorded to be heard by the person who asked. It is never treated as a request to the assistant. The desk publishes *replied* with the answer's words, and the sender's page plays it from `/api/messages/{id}/reply/audio`. Silence in the window leaves the message *played*.
+
+**The room's side.** Home has a **Messages** card listing the last few messages. Each can be heard on the device, or played in the room again (`/api/messages/{id}/replay`); a message already answered stays answered.
+
+**Retention.** After `keep_days` (7), and beyond `max_kept` (50) oldest first, the console deletes both recordings and withdraws the retained status, so nothing about a message outlives its audio. The reasoning layer is untouched, with no LLM on this path.
+
+**Measured live** over HTTPS from a synthesised WebM/Opus recording, with the real broker, console, Whisper, Piper and speakers:
+
+- The console kept the 4.3 s message in 0.3 s (3.9 s the first time, while Whisper loaded).
+- It began playing in the room 0.1 s later.
+- The answer window opened as playback ended. A synthesised answer, "Okay Ravi, I will call you tonight after dinner.", was transcribed word for word.
+- 5.1 s of the answer's audio was served back.
+- The status went *sent → playing → played → replied*, and Home showed it.
+
+Reach from outside the house is deferred. Options for later are Tailscale (the sender's phone joins the tailnet) or a Telegram bot adapter as a second producer of `HomeMessage`.
 ### 5.9 Key Sequences
 
 #### 5.9.1 Nominal Supervisory Cycle
@@ -2033,6 +2064,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-87 to FR-92 | §5.11, §6.1 | Unit + demonstration |
 | FR-93 | §5.8.5 | Unit + demonstration |
 | FR-94 | §5.8.6 | Unit + demonstration |
+| FR-95 | §5.8.7 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 
