@@ -32,6 +32,7 @@ from src.common import topics
 from src.common.mqtt_client import Blackboard
 from src.console.actions import ActionRefused, ConsoleActions
 from src.console.google_signin import GoogleSignIn, SignInError
+from src.console.messages import MessageBox
 from src.console.remote_voice import RemoteVoice, RemoteVoiceUnavailable
 from src.console.state import ConsoleState, Event, encode
 
@@ -224,6 +225,7 @@ def create_app(
     signin: GoogleSignIn | None = None,
     remote_voice: RemoteVoice | None = None,
     talk_max_bytes: int = 8_000_000,
+    messages: MessageBox | None = None,
 ) -> FastAPI:
     """The web application; every dependency injected so it can be tested."""
     @asynccontextmanager
@@ -308,6 +310,57 @@ def create_app(
         except RemoteVoiceUnavailable as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
         return Response(content=audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+    # --- messages home from someone away (FR-95) -----------------------------
+
+    @app.post("/api/messages")
+    async def post_message(request: Request, sender: str = Query(default="", max_length=200)) -> JSONResponse:
+        """A recording to be played in the room in the sender's own voice; it is kept."""
+        if messages is None:
+            return JSONResponse({"ok": False, "error": "Messages home are not available here."}, status_code=503)
+        recording = await request.body()
+        if len(recording) > messages.max_bytes:
+            return JSONResponse({"ok": False, "error": "That message is too large; keep it shorter."}, status_code=413)
+        try:
+            status = await asyncio.to_thread(messages.send, sender, recording)
+        except RemoteVoiceUnavailable as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except OSError as exc:
+            LOGGER.warning("a message could not be kept: %s", exc)
+            return JSONResponse({"ok": False, "error": "The message could not be kept here; try again."}, status_code=503)
+        with lock:
+            known = state.messages
+        await asyncio.to_thread(messages.prune, [entry for entry in known if entry["message_id"] != status.message_id] + [status.model_dump(mode="json")])
+        return JSONResponse({"ok": True, "result": status.model_dump(mode="json")})
+
+    @app.post("/api/messages/{message_id}/replay")
+    async def post_message_replay(message_id: str) -> JSONResponse:
+        """Play a kept message in the room again."""
+        with lock:
+            known = state.message(message_id)
+        if messages is None or known is None:
+            return JSONResponse({"ok": False, "error": "There is no such message."}, status_code=404)
+        try:
+            messages.hand_over(known)
+        except FileNotFoundError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+        return JSONResponse({"ok": True, "result": {"message_id": message_id}})
+
+    @app.get("/api/messages/{message_id}/audio", response_model=None)
+    async def get_message_audio(message_id: str) -> FileResponse | JSONResponse:
+        return _recording(message_id, reply=False)
+
+    @app.get("/api/messages/{message_id}/reply/audio", response_model=None)
+    async def get_message_reply_audio(message_id: str) -> FileResponse | JSONResponse:
+        return _recording(message_id, reply=True)
+
+    def _recording(message_id: str, reply: bool) -> FileResponse | JSONResponse:
+        path = messages.recording(message_id, reply=reply) if messages is not None else None
+        if path is None:
+            return JSONResponse({"ok": False, "error": "That recording is not kept here."}, status_code=404)
+        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/music/upload")
     async def post_music_upload(request: Request, name: str = Query(min_length=1, max_length=200)) -> JSONResponse:

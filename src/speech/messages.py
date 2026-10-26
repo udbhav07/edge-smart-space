@@ -43,19 +43,26 @@ class MessageDesk:
 
     def subscribe(self) -> None:
         self._blackboard.subscribe(topics.MESSAGE_INCOMING, HomeMessage, self._on_incoming)
+        # Retained: after a restart, a message played again keeps its reply.
+        self._blackboard.subscribe(topics.MESSAGE_STATUS, MessageStatus, self._on_status)
+
+    def _on_status(self, _topic: str, status: MessageStatus) -> None:
+        if status.message_id not in self._records:
+            self._remember(status)
 
     def _on_incoming(self, _topic: str, message: HomeMessage) -> None:
-        self._records[message.message_id] = MessageStatus(
-            ts=self._clock.now(),
-            message_id=message.message_id,
-            sender=message.sender,
-            transcript=message.transcript,
-            duration_s=message.duration_s,
-            state=MessageState.SENT,
-            sent_ts=message.ts,
-        )
-        while len(self._records) > self._config.max_kept:
-            self._records.popitem(last=False)
+        if message.message_id not in self._records:
+            self._remember(
+                MessageStatus(
+                    ts=self._clock.now(),
+                    message_id=message.message_id,
+                    sender=message.sender,
+                    transcript=message.transcript,
+                    duration_s=message.duration_s,
+                    state=MessageState.SENT,
+                    sent_ts=message.ts,
+                )
+            )
         try:
             pcm, rate_hz = read_recording(self._directory / message.audio_file)
         except (OSError, ValueError) as exc:
@@ -69,12 +76,23 @@ class MessageDesk:
             pcm,
             rate_hz,
             on_start=lambda: self._tell(message.message_id, MessageState.PLAYING),
-            on_end=lambda: self._tell(message.message_id, MessageState.PLAYED, played_ts=self._clock.now()),
+            on_end=lambda: self._played(message.message_id),
         )
         if not queued:
             self._tell(message.message_id, MessageState.FAILED, detail="This room has no speaker to play it on.")
         else:
             LOGGER.info("message %s from %s queued to play", message.message_id, message.sender)
+
+    def _remember(self, status: MessageStatus) -> None:
+        self._records[status.message_id] = status
+        while len(self._records) > self._config.max_kept:
+            self._records.popitem(last=False)
+
+    def _played(self, message_id: str) -> None:
+        # Played again after it was answered: still answered.
+        record = self._records.get(message_id)
+        replied = record is not None and record.replied_ts is not None
+        self._tell(message_id, MessageState.REPLIED if replied else MessageState.PLAYED, played_ts=self._clock.now())
 
     def reply(self, heard: MessageReply) -> None:
         """Keep what home said back, and let the sender hear it."""

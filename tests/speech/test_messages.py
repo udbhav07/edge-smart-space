@@ -287,6 +287,24 @@ class TestTheDesk:
         d.reply(MessageReply("msg_1", "Okay", _pcm(1.0), 16000, 1.0))
         assert all(b"RIFF" not in payload and len(payload) < 4000 for _, payload, _, _ in transport.published)
 
+    def test_played_again_it_stays_answered(self, desk):
+        d, voice, board, transport, folder = desk
+        _arrive(board, folder)
+        voice.speak_next(timeout_s=0.0)
+        d.reply(MessageReply("msg_1", "Okay", _pcm(1.0), 16000, 1.0))
+        _arrive(board, folder)
+        voice.speak_next(timeout_s=0.0)
+        last = _statuses(transport)[-1]
+        assert last.state is MessageState.REPLIED and last.reply_transcript == "Okay"
+
+    def test_after_a_restart_the_retained_status_is_remembered(self, desk):
+        d, voice, board, transport, folder = desk
+        answered = MessageStatus(ts=5.0, message_id="msg_1", sender="Ravi", duration_s=1.0, state=MessageState.REPLIED, sent_ts=4.0, replied_ts=5.0, reply_transcript="Okay", reply_file="msg_1-reply.wav")
+        board.publish(topics.MESSAGE_STATUS, answered, message_id="msg_1")
+        _arrive(board, folder)
+        voice.speak_next(timeout_s=0.0)
+        assert _statuses(transport)[-1].reply_transcript == "Okay"
+
     def test_a_reply_to_an_unknown_message_publishes_nothing(self, desk):
         d, _, _, transport, _ = desk
         d.reply(MessageReply("msg_404", "hello", _pcm(), 16000, 1.0))

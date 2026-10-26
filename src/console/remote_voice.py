@@ -33,6 +33,7 @@ LOGGER = logging.getLogger(__name__)
 
 #: Whisper's own sample rate; a phone's recording is decoded to it.
 _SAMPLE_RATE_HZ = 16000
+SAMPLE_RATE_HZ = _SAMPLE_RATE_HZ
 #: As the speech service decodes, so a request from a phone is heard as well as one in the room.
 _BEAM_SIZE = 5
 _INT16_FULL_SCALE = 32767
@@ -65,17 +66,34 @@ class RemoteVoice:
             said so the occupant can try again.
         :raises RemoteVoiceUnavailable: no speech recognition on this node.
         """
+        return self.transcribe_samples(self.decode(recording))
+
+    def decode(self, recording: bytes, max_seconds: float | None = None) -> np.ndarray:
+        """A browser's recording as float samples at 16 kHz, checked for length.
+
+        :param max_seconds: the longest accepted; this voice's own limit if not given.
+        :raises ValueError: empty, unreadable, too short or too long.
+        :raises RemoteVoiceUnavailable: nothing to decode with on this node.
+        """
         if not recording:
             raise ValueError("Nothing was recorded; hold the button while you speak.")
+        limit = self._max_seconds if max_seconds is None else max_seconds
         audio = self._decode(recording)
         seconds = audio.size / _SAMPLE_RATE_HZ
-        if seconds > self._max_seconds:
-            raise ValueError(f"That was {seconds:.0f} s; keep it under {self._max_seconds:.0f} s.")
+        if seconds > limit:
+            raise ValueError(f"That was {seconds:.0f} s; keep it under {limit:.0f} s.")
         if seconds < 0.3:
             raise ValueError("That was too short to hear; hold the button while you speak.")
+        return audio.astype(np.float32)
+
+    def transcribe_samples(self, audio: np.ndarray) -> str:
+        """The words in samples already decoded at 16 kHz.
+
+        :raises RemoteVoiceUnavailable: no speech recognition on this node.
+        """
         with self._lock:
             transcriber = self._transcriber_ready()
-            return transcriber.transcribe_audio(audio.astype(np.float32)).strip()
+            return transcriber.transcribe_audio(audio).strip()
 
     def speak(self, text: str) -> bytes:
         """The reply, spoken in the room's voice, as a WAV file for the device to play.

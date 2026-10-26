@@ -38,6 +38,8 @@ from src.common.schemas import (
     Goal,
     GoogleStatus,
     InjectionCommand,
+    MessageState,
+    MessageStatus,
     ModeReset,
     ModeState,
     PreferenceHint,
@@ -149,6 +151,8 @@ class ConsoleState:
         self._device_requests: set[str] = set()
         #: What a phone away from the room asked, by its words, awaiting the reply (FR-94).
         self._remote_requests: OrderedDict[str, str] = OrderedDict()
+        #: Messages home, as each stands (FR-95); bounded by what is retained.
+        self._messages: dict[str, dict] = {}
         #: Today's electricity, integrated from the meter (FR-80).
         self._energy = {"day": "", "kwh": 0.0, "cost": 0.0}
         self._last_power: tuple[float, float] | None = None
@@ -196,6 +200,7 @@ class ConsoleState:
             (topics.DEVICE_MANIFEST.wildcard(), DeviceManifest, self._on_device_manifest),
             (topics.DEVICE_AVAILABILITY.wildcard(), DeviceAvailability, self._on_device_availability),
             (topics.DEVICE_STATE.wildcard(), DeviceState, self._on_device_state),
+            (topics.MESSAGE_STATUS.wildcard(), MessageStatus, self._on_message),
             (topics.FAULT.wildcard(), FaultEvent, self._on_fault),
             (topics.DIAGNOSIS.wildcard(), FaultDiagnosis, self._on_diagnosis),
             (topics.CONTEXT_UTTERANCE.wildcard(), ConsoleUtterance, self._on_typed),
@@ -247,6 +252,7 @@ class ConsoleState:
             "operator_controls": self._config.operator_controls,
             "speech_settings": self._speech_settings,
             "devices": self._device_list(),
+            "messages": self.messages,
             "google": self._google,
             "energy": {**self._energy, "currency": self._config.currency},
             "presets": self._config.presets_c,
@@ -371,6 +377,26 @@ class ConsoleState:
         device["state"], device["state_ts"] = dict(state.values), state.ts
         return [self._event("devices", self._device_list())] if device["manifest"] is not None else []
 
+    @property
+    def messages(self) -> list[dict]:
+        """Every message home the board has, newest first (FR-95)."""
+        return sorted(self._messages.values(), key=lambda status: status["sent_ts"], reverse=True)
+
+    def message(self, message_id: str) -> dict | None:
+        return self._messages.get(message_id)
+
+    def _on_message(self, _topic, status: MessageStatus):
+        before = self._messages.get(status.message_id)
+        self._messages[status.message_id] = _dump(status)
+        events = [self._event("messages", self.messages)]
+        if before is None and status.state is MessageState.SENT:
+            events.append(self._step("message", f"Message from {status.sender}", status.transcript, tone="info", ref=status.message_id))
+        elif status.state is MessageState.REPLIED and (before is None or before["state"] != MessageState.REPLIED.value):
+            events.append(self._step("message", f"Answered {status.sender}", status.reply_transcript, tone="good", ref=status.message_id))
+        elif status.state is MessageState.FAILED and (before is None or before["state"] != MessageState.FAILED.value):
+            events.append(self._step("message", f"Message from {status.sender} not played", status.detail, tone="alert", ref=status.message_id))
+        return events
+
     def _on_speech_settings(self, _topic, settings: SpeechSettings):
         self._speech_settings = _dump(settings)
         return [self._event("speech_settings", self._speech_settings)]
@@ -466,6 +492,8 @@ class ConsoleState:
             return [self._event("diagnoses", self._diagnoses)]
         if topic_matches(topics.INJECT.wildcard(), topic) and self._injections.pop(leaf, None):
             return [self._event("injections", self._injections)]
+        if topic_matches(topics.MESSAGE_STATUS.wildcard(), topic) and self._messages.pop(leaf, None):
+            return [self._event("messages", self.messages)]
         return []
 
     def _on_reset(self, _topic, reset: ModeReset):

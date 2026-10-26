@@ -23,6 +23,7 @@ from src.common.config import ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.console.actions import ConsoleActions
 from src.console.google_signin import GoogleSignIn
+from src.console.messages import MessageBox
 from src.console.remote_voice import RemoteVoice
 from src.console.server import STATIC_DIRECTORY, Hub, Link, create_app
 from src.console.state import ConsoleState
@@ -67,9 +68,13 @@ def main(argv: list[str] | None = None) -> int:
 
     actions = ConsoleActions(config, clock, blackboard, state)
     remote_voice = RemoteVoice(config.speech, config.console.talk_max_seconds)
+    messages = MessageBox(config.messages, clock, blackboard, remote_voice)
+    # Before anything is known, only files long past keeping go (FR-95).
+    messages.prune([])
     app = create_app(
         state, actions, hub, link, lock,
         signin=GoogleSignIn(config.google), remote_voice=remote_voice, talk_max_bytes=config.console.talk_max_bytes,
+        messages=messages,
     )
 
     host = arguments.host or config.console.host
