@@ -25,6 +25,7 @@ from src.common.config import Config, ConfigError, load_config
 from src.common.mqtt_client import Blackboard, build_transport
 from src.reasoning.ambient import AmbientMiner
 from src.reasoning.assistant import Assistant
+from src.reasoning.devices import KnownDevices
 from src.reasoning.single_shot import PersonalContext
 from src.reasoning.utterances import UtteranceInterpreter
 from src.reasoning.chat import ChatClient, warm_in_background
@@ -46,7 +47,7 @@ _IDLE_INTERVAL_S = 0.2
 
 
 def build_assistant(
-    config: Config, clock: Clock, blackboard: Blackboard, chat: ChatClient
+    config: Config, clock: Clock, blackboard: Blackboard, chat: ChatClient, devices: KnownDevices | None = None
 ) -> Assistant:
     return Assistant(
         config.assistance,
@@ -55,6 +56,8 @@ def build_assistant(
         chat,
         safe_range_c=config.validator.setpoint_bounds_c,
         utc_offset_h=config.site.utc_offset_h,
+        devices=devices,
+        max_device_tools=config.actuators.max_device_tools,
     )
 
 
@@ -165,8 +168,11 @@ def main(argv: list[str] | None = None) -> int:
     ambient_board = _board(config, AMBIENT_CLIENT_ID)
     miner = build_miner(config, clock, ambient_board, chat)
     miner.subscribe()
-    assistant = build_assistant(config, clock, assistant_board, chat)
-    interpreter = UtteranceInterpreter(clock, assistant_board, PersonalContext(config.reasoning, clock))
+    # One view of the devices, for the extraction to name and the assistant
+    # to route by (FR-89); the assistant keeps it current from the board.
+    devices = KnownDevices()
+    assistant = build_assistant(config, clock, assistant_board, chat, devices)
+    interpreter = UtteranceInterpreter(clock, assistant_board, PersonalContext(config.reasoning, clock, devices=devices))
     interpreter.subscribe()
     supervisor = build_supervisor(config, clock, supervisor_board, chat)
     assistant.subscribe()

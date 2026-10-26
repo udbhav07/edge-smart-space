@@ -35,6 +35,7 @@ from pydantic import ValidationError
 from src.common.clock import Clock
 from src.common.config import ReasoningConfig
 from src.common.schemas import Comfort, ContextTurn, Intent, PreferenceHint
+from src.reasoning.devices import KnownDevices
 from src.reasoning.understanding import understood
 
 LOGGER = logging.getLogger(__name__)
@@ -84,6 +85,32 @@ PERSONAL_CONTEXT_PROMPT = (
 
 #: Exchanges shown to the model so a follow-up can be read against them.
 _RECENT_SHOWN = 3
+
+#: The devices in the room, appended when there are any (FR-89): one line
+#: each, so the context grows by a line per device, never by its tools.
+_DEVICES_PROMPT = (
+    "\nDevices in the room you can operate:\n{lines}\n"
+    'A request to operate one of these, or a question about one, is intent "service" '
+    'with subject its id -- "turn on the {example_name}" -> service, {example_id}. '
+    "The room's temperature is never one of these devices."
+)
+
+
+def routed(hint: PreferenceHint, transcript: str, devices: KnownDevices | None) -> PreferenceHint:
+    """A request that names a device, filed as being about that device (FR-89).
+
+    Like every rule in ``understanding.py``, this only moves a request away
+    from the plant: to a service request with no temperature in it. "Set the
+    fan to 3" must not reach the goal path as 3 degrees.
+    """
+    if devices is None or (hint.intent is Intent.SERVICE and hint.subject == "memory"):
+        return hint
+    device_id = devices.named_in(transcript)
+    if device_id is None:
+        return hint
+    return hint.model_copy(
+        update={"intent": Intent.SERVICE, "subject": device_id, "comfort": Comfort.UNCHANGED, "target_c": None}
+    )
 
 
 def _is_empty(hint: PreferenceHint) -> bool:
@@ -153,10 +180,16 @@ class PersonalContext:
         config: ReasoningConfig,
         clock: Clock,
         client=None,
+        devices: KnownDevices | None = None,
     ) -> None:
+        """
+        :param devices: the devices in the room, kept current from the board
+            by whoever owns the blackboard; None where there are none to name.
+        """
         self._config = config
         self._clock = clock
         self._client = client if client is not None else self._connect(config)
+        self._devices = devices
 
     @staticmethod
     def _connect(config: ReasoningConfig):
@@ -196,6 +229,7 @@ class PersonalContext:
         # FR-44 again, against the words this time: the model's classification
         # is checked deterministically, and only ever moved away from the plant.
         hint = understood(hint, transcript, recent)
+        hint = routed(hint, transcript, self._devices)
         if _is_empty(hint):
             return None
         # The words themselves travel with the hint, so whatever acts on it --
@@ -204,6 +238,13 @@ class PersonalContext:
 
     def _complete(self, transcript: str, recent: tuple[ContextTurn, ...] = ()) -> str:
         prompt = PERSONAL_CONTEXT_PROMPT
+        operable = self._devices.operable() if self._devices is not None else []
+        if operable:
+            prompt += _DEVICES_PROMPT.format(
+                lines="\n".join(self._devices.lines()),
+                example_name=operable[0].name.lower(),
+                example_id=operable[0].device_id,
+            )
         if recent:
             lines = "\n".join(
                 f"- They said: {turn.said} / The system replied: {turn.replied}" for turn in recent

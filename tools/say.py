@@ -41,6 +41,7 @@ from src.common.schemas import (
     ValidationVerdict,
 )
 from src.common.tools import ToolInvocation, ToolResult
+from src.reasoning.devices import KnownDevices
 from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
 from tools.console import safe_console
 
@@ -248,8 +249,10 @@ def main(argv: list[str] | None = None) -> int:
     transport = build_transport(config.mqtt, CLIENT_ID, holder)
     blackboard = Blackboard(config.mqtt, transport)
     holder.append(blackboard)
+    devices = KnownDevices()
+    devices.subscribe(blackboard)
     conversation = Conversation(
-        config, clock, blackboard, PersonalContext(config.reasoning, clock), speaker=arguments.speaker
+        config, clock, blackboard, PersonalContext(config.reasoning, clock, devices=devices), speaker=arguments.speaker
     )
     conversation.subscribe()
     blackboard.start()
