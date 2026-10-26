@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.20 | **Music beyond the library** (§5.11; FR-96): a song the library lacks, or one asked for "from YouTube", is found with yt-dlp and streamed, decoded ahead by PyAV so the sound card never waits on the network; "play some music" stays in the library. A device now has 12 s to answer and the assistant waits 14 s, an ordering enforced at load. |
 | 1.19 | **Messages home** (§5.8.7; FR-95): someone away records a message on the Talk page; it plays in the room at once -- a chime, "Message from Ravi", then their own recording -- and the room listens for an answer without the wake word. The answer's audio is kept and sent back to the sender's page with sent, played and answered ticks. FR-51 gains its one stated exception. |
 | 1.18 | **Talking to the room from away** (§5.8.6; FR-94): the Talk page records on a phone's microphone, the console transcribes it with the room's Whisper and speaks the reply back to that device in the room's voice, the room silent; requests carry `remote`; the console also serves HTTPS with its own certificate. |
 | 1.17 | **A reply is a turn** (§5.8.5; FR-93): after a spoken reply the room listens for the answer without the wake word; every capture window opens with a chime; the console shows on every page when the room is listening, thinking and speaking; overheard speech is its own `overhearing` activity. Overheard plans are deduplicated by subject and day, not subject alone. **Remotes** (§5.11; FR-92): every device controllable by hand, through the same gates, with a remote chosen by device, kind, or its manifest. |
@@ -250,6 +251,7 @@ feature safe to ship at all.
 | FR-90 | Any MCP server named in configuration shall be mountable as a device, exposing only the tools configured, with the effect and class the configuration gives them. | S | T |
 | FR-91 | The console shall show every device and control it from what its manifest declares, with its availability, its state, and whether it is simulated. | S | D |
 | FR-94 | Someone away from the room shall be able to talk to the room from a phone or laptop on the network: speak on that device's microphone or type, and hear the answer on that device, with the room itself silent; see the shared calendar; and control every device. The recording is transcribed on the node and never kept or published. | S | D |
+| FR-96 | The music player shall play a song the occupant's library lacks, or one asked for online, by finding it online and streaming it; the library shall always be tried first, and a request naming nothing shall never leave it. It shall be possible to turn this off, leaving the player library-only. | C | D |
 | FR-95 | Someone away shall be able to leave a spoken message that plays in the room at once in their own voice, announced with who it is from, and the room shall listen for an answer without the wake word. The answer, words and voice, shall reach the sender's page, and the sender shall see whether it was sent, played and answered. Recordings shall stay on the node, never cross the blackboard, and be deleted after `messages.keep_days`. | S | D |
 | FR-93 | The occupant shall know when the room is listening to them: a chime whenever a capture window opens, and an indicator on every page of the console while it listens, thinks and speaks. After a reply is spoken, the room shall listen for an answer without the wake word. Overheard speech shall not be shown as listening. | S | D |
 | FR-92 | Every device, including one behind an MCP server, shall be controllable by hand from the console, through the same executor and gates as the assistant: a page of remotes and a page per device. A remote written for a device or its kind is used where one exists; any other device gets a remote drawn from its manifest. | S | D |
@@ -1621,6 +1623,22 @@ flowchart LR
 
 **The reference devices.** A simulated ceiling fan (on, off, speed 0 to 3, rate-limited); the music player on this machine (`miniaudio`: play by words or file name, pause, resume, stop, volume, what is playing; a file given in the console is kept under a safe name and only its name crosses the board); the air conditioner, as plant; and the lamp through the bridge.
 
+**Music beyond the library** (v1.20; FR-96). Asked for something the library does not have, or for something "from YouTube", the music player looks online (`src/devices/music/youtube.py`):
+
+- **Search.** yt-dlp runs a flat search of five results, which is quick. The first result short enough to be a song (`online_max_minutes`, 15) is the only one resolved to its audio stream. Live streams and ten-hour mixes are passed over.
+- **Playback.** Nothing is downloaded. PyAV opens the stream and decodes it on a thread of its own into a bounded buffer, up to 10 s ahead (`stream.py`). The sound card reads from that buffer, so a slow network costs a moment of silence and never stalls the audio callback.
+- **What stays local.** The library is always tried first. "Play some music", which names nothing, never leaves it, and `actuators.music.online: false` makes the player library-only.
+- **Caveats.** YouTube's terms restrict automated access, so this is for a personal room. yt-dlp must be kept current, because YouTube changes and an old yt-dlp stops finding anything.
+
+Searching and starting a stream takes 5 to 6 s, longer than any device answered before. A device was given 8 s, but the assistant stopped waiting at 5 s, so the song played while the occupant was told the device had not answered. Now a device has 12 s (`actuators.command_timeout_s`), the assistant waits 14 s (`assistance.result_timeout_s`), and the configuration refuses to load if the second is not the longer.
+
+**Measured live** (2026-10-26):
+- "Play bohemian rhapsody by queen", with only a chime in the library, was found and resolved in 5.2 s; the first sound came at 7.0 s, because the song opens quietly.
+- "Play some music" played the library's file in 0.2 s.
+- "Tum hi ho from youtube" went online and started in 6.1 s.
+- Pausing was silent within one buffer.
+- Through Jarvis, "play bohemian rhapsody by queen" was answered in about 10 s with "Playing Queen – Bohemian Rhapsody (Official Video Remastered) from YouTube.", while it played.
+
 **Remotes** (FR-92). People control every device directly, not only through the model. The console's **Remotes** page shows each device's remote, usable from the grid, and `/remotes/<device>` its full remote, its state, what it can do and what it was last asked. A remote never talks to a device, the broker or an MCP server itself: it publishes a `ToolInvocation` on `space/assist/proposed` exactly as `add_entry` does, so the executor's argument check, bounds and confirmation gate apply to a person's tap as to the model's call, and the device checks again. The air conditioner's remote is the climate controls: a preference through the validator, never a device command. Which remote a device gets is decided in `console/web/src/remotes/registry.ts`, first match wins -- one written for the device's id, then one for its kind (fan, light, music, ac), then the generic remote drawn from its manifest -- and a specialised remote that does not fit the device's capabilities gives way to the generic one. So a device nobody wrote a remote for is still controllable the moment it announces itself, and a remote of its own is one file and one line. A device behind MCP knows its state only once asked, so opening its page reads it quietly with its parameterless read capability. The console keeps each device's latest result, whoever asked, so a remote shows what it last did and whether it failed.
 
 **Measured live** (2026-10-26, qwen2.5:7b): "turn on the fan", "set the desk lamp to 30 percent" (through MCP), "is the lamp on?", "play the evening chime" and "turn the music volume down to 20" were each carried out and answered in the device's own words in 10 to 18 s; "set the ac to 25 degrees" became a preference goal of 25 °C through the validator with nothing published on `space/device/ac/command`; killing the fan's service marked it offline and withdrew its tools within a second, and `start.py` brought it back two seconds later. "Set the fan to 5" was not refused: shown the parameter's maximum, the model asked for 3 itself, and the reply said "speed 3 of 3".
@@ -2065,6 +2083,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-93 | §5.8.5 | Unit + demonstration |
 | FR-94 | §5.8.6 | Unit + demonstration |
 | FR-95 | §5.8.7 | Unit + demonstration |
+| FR-96 | §5.11 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

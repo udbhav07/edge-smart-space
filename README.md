@@ -267,7 +267,7 @@ blackboard (FR-87). `python start.py` runs three:
 | Service | Device | What it does |
 |---|---|---|
 | `fan` | Ceiling fan, simulated | on, off, speed 0–3 |
-| `music` | Music on this machine | plays files from `~/Music` (or one you upload on Home): play by words or name, pause, stop, volume |
+| `music` | Music on this machine | plays files from `~/Music` (or one you upload on Home): play by words or name, pause, stop, volume; a song your files don't have, or one asked for "from YouTube", is found online and streamed (FR-96) |
 | `mcp` | Desk lamp, through the MCP bridge | an ordinary MCP server (`examples/mcp_lamp/`), mounted as a device |
 
 Say "Hey Jarvis, turn on the fan" or "play some jazz", or use the **Devices**
@@ -375,6 +375,15 @@ toast shows the device's own answer. `parts.tsx` has the pieces the built-in
 remotes use: a power button, a slider that sends on release, the device's
 badges, and helpers to find a capability and its bounds. Rebuild with
 `npm run build` in `console/web`.
+
+
+**Songs from YouTube.** Ask for a song your music folder doesn't have, for
+example "play Hotel California", or say "from YouTube", and the player finds it
+online with yt-dlp and streams it (FR-96). "Play some music" always stays
+with your own files. It takes 5 to 6 s to start. YouTube's terms restrict
+automated access, so keep this to your own room. Keep yt-dlp current
+(`pip install -U yt-dlp`), because an old one stops finding anything. Set
+`actuators.music.online: false` to turn it off.
 
 ### Running one component directly
 
