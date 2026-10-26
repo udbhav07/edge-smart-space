@@ -38,6 +38,7 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, time as day_time
 from typing import Protocol
 
@@ -65,6 +66,24 @@ _CHIME_FADE_S = 0.012
 
 #: Plays 16-bit mono PCM at a sample rate, and returns when it has played.
 PcmPlayer = Callable[[bytes, int], None]
+
+#: How long after a message has played its reply window may still open, in s:
+#: a window offered while the microphone was muted is not opened minutes later.
+_MESSAGE_WINDOW_FRESH_S = 30.0
+
+
+@dataclass
+class _Item:
+    """One thing to say: a sentence, or a message home (FR-95)."""
+
+    text: str
+    reply: bool = False
+    #: A recording to play after ``text``: a message from someone away.
+    pcm: bytes = b""
+    rate_hz: int = 0
+    message_id: str = ""
+    on_start: Callable[[], None] | None = None
+    on_end: Callable[[], None] | None = None
 
 
 def chime_pcm(volume: float) -> bytes:
@@ -206,8 +225,7 @@ class Voice:
         self._on_speaking = on_speaking
         self._settings = SpeechSettings(ts=clock.now())
         self._mode: Mode | None = None
-        #: (text, whether it is a reply someone is waiting on)
-        self._queue: queue.Queue[tuple[str, bool]] = queue.Queue(maxsize=_QUEUE_LENGTH)
+        self._queue: queue.Queue[_Item] = queue.Queue(maxsize=_QUEUE_LENGTH)
         self._speaking = threading.Event()
         self._quiet_after_s = 0.0
         self._thread: threading.Thread | None = None
@@ -219,6 +237,8 @@ class Voice:
         self._follow_up = follow_up
         #: A reply was just said; the next quiet moment opens a window for the answer.
         self._answer_awaited = threading.Event()
+        #: A message home was just played: (message id, when), for its reply window.
+        self._message_awaited: tuple[str, float] | None = None
 
     @property
     def engine(self) -> str:
@@ -249,6 +269,37 @@ class Voice:
         self._answer_awaited.clear()
         return self._follow_up
 
+    def take_message_window(self) -> str | None:
+        """The message to listen for an answer to, once it has finished playing (FR-95).
+
+        None if there is none, if the room is still talking, or if the moment
+        has passed: a window is not opened on a reply nobody is still giving.
+        """
+        awaited = self._message_awaited
+        if awaited is None or self.busy:
+            return None
+        self._message_awaited = None
+        message_id, played_at = awaited
+        return message_id if self._clock.monotonic() - played_at <= _MESSAGE_WINDOW_FRESH_S else None
+
+    def play_message(
+        self,
+        message_id: str,
+        announce: str,
+        pcm: bytes,
+        rate_hz: int,
+        on_start: Callable[[], None] | None = None,
+        on_end: Callable[[], None] | None = None,
+    ) -> bool:
+        """Queue a message home: a chime, who it is from, then their own recording (FR-95).
+
+        Played as one item, so nothing is said between the announcement and
+        the voice it announces. Returns whether it was queued.
+        """
+        if self._player is None or not pcm:
+            return False
+        return self._enqueue(_Item(text=announce, pcm=pcm, rate_hz=rate_hz, message_id=message_id, on_start=on_start, on_end=on_end))
+
     def chime(self) -> None:
         """Say "I'm listening" without words: two short notes, on a thread of their own."""
         if not self._chime or self._player is None:
@@ -265,7 +316,8 @@ class Voice:
             LOGGER.warning("could not play the chime: %s", exc)
 
     def start(self) -> None:
-        if self._speaker is None or self._thread is not None:
+        # A message home plays even with no voice to announce it (FR-95).
+        if (self._speaker is None and self._player is None) or self._thread is not None:
             return
         self._thread = threading.Thread(target=self._run, name="voice", daemon=True)
         self._thread.start()
@@ -312,7 +364,9 @@ class Voice:
         """
         if self._speaker is None or not text.strip():
             return False
-        item = (text.strip(), reply)
+        return self._enqueue(_Item(text=text.strip(), reply=reply))
+
+    def _enqueue(self, item: _Item) -> bool:
         try:
             self._queue.put_nowait(item)
         except queue.Full:
@@ -329,23 +383,40 @@ class Voice:
     def speak_next(self, timeout_s: float = 0.5) -> bool:
         """Say one queued sentence, if any. Returns whether one was said."""
         try:
-            text, reply = self._queue.get(timeout=timeout_s)
+            item = self._queue.get(timeout=timeout_s)
         except queue.Empty:
             return False
         self._speaking.set()
         self._tell(True)
+        _call(item.on_start)
         try:
-            self._speaker.say(text, self._settings.volume)
+            if item.pcm:
+                self._play_message(item)
+            else:
+                self._speaker.say(item.text, self._settings.volume)
         except (OSError, RuntimeError, ValueError) as exc:
             # A playback failure costs this sentence, never the service.
             LOGGER.warning("could not speak: %s", exc)
         finally:
             self._quiet_after_s = self._clock.monotonic() + self._tail_s
-            if reply:
+            if item.reply:
                 self._answer_awaited.set()
+            if item.message_id:
+                self._message_awaited = (item.message_id, self._clock.monotonic())
             self._speaking.clear()
             self._tell(False)
+            _call(item.on_end)
         return True
+
+    def _play_message(self, item: _Item) -> None:
+        """The chime, who it is from, and the recording, while the microphone is held."""
+        volume = self._settings.volume
+        if self._chime:
+            self._player(chime_pcm(self._chime_volume * volume), _CHIME_RATE_HZ)
+        if item.text and self._speaker is not None:
+            self._speaker.say(item.text, volume)
+        samples = np.frombuffer(item.pcm, dtype=np.int16).astype(np.float32) * volume
+        self._player(np.clip(samples, -_INT16_FULL_SCALE, _INT16_FULL_SCALE).astype(np.int16).tobytes(), item.rate_hz)
 
     def _run(self) -> None:
         while True:
@@ -362,3 +433,13 @@ class Voice:
 
 def _hhmm(value: str) -> day_time:
     return datetime.strptime(value, "%H:%M").time()
+
+
+def _call(callback: Callable[[], None] | None) -> None:
+    """Tell whoever asked; a failure in telling never stops the playing."""
+    if callback is None:
+        return
+    try:
+        callback()
+    except (OSError, ValueError, RuntimeError) as exc:
+        LOGGER.warning("could not report a message's progress: %s", exc)

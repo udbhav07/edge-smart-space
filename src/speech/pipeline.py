@@ -28,7 +28,10 @@ from __future__ import annotations
 
 import logging
 from collections import deque
+from dataclasses import dataclass
 from enum import Enum
+
+import numpy as np
 
 from src.common.clock import Clock
 from src.common.config import SpeechConfig
@@ -39,6 +42,22 @@ LOGGER = logging.getLogger(__name__)
 
 #: Below this many words a repeated one is ordinary speech ("no, no, I said").
 _LOOP_CHECK_WORDS = 6
+
+
+@dataclass(frozen=True)
+class MessageReply:
+    """What someone at home said back to a message (FR-95).
+
+    The one utterance whose audio is kept: an answer they were invited to
+    give, recorded to be heard by the person who sent the message. Every
+    other window's audio is still dropped when it closes (FR-51).
+    """
+
+    message_id: str
+    transcript: str
+    pcm: bytes
+    rate_hz: int
+    duration_s: float
 
 
 class PipelineState(str, Enum):
@@ -72,7 +91,13 @@ class SpeechPipeline:
         speaker=None,
         conversations=None,
         on_activity=None,
+        reply_wait_s: float = 8.0,
     ) -> None:
+        """
+        :param reply_wait_s: how long a window opened for a reply to a message
+            waits for someone to start speaking (FR-95); longer than after the
+            wake word, because the answer is to something just heard.
+        """
         self._config = config
         self._clock = clock
         self._capture = capture
@@ -94,6 +119,10 @@ class SpeechPipeline:
         self._addressed = False
         preroll_frames = int(config.ambient_preroll_ms / 1000.0 * config.sample_rate_hz / config.chunk_samples)
         self._preroll: deque = deque(maxlen=max(preroll_frames, 1))
+        #: The message the open window is a reply to, if it is one (FR-95).
+        self._reply_to = ""
+        self._reply_wait_frames = int(reply_wait_s * config.sample_rate_hz / config.chunk_samples)
+        self._window_frames = 0
 
     @property
     def state(self) -> PipelineState:
@@ -144,6 +173,12 @@ class SpeechPipeline:
             self._utterance.reset()
             self._detector.reset()
 
+    def listen_for_reply(self, message_id: str) -> None:
+        """Open a window for an answer to a message just played (FR-95): its audio is kept."""
+        LOGGER.info("listening for a reply to %s", message_id)
+        self._open_addressed()
+        self._reply_to = message_id
+
     def listen_for_answer(self) -> None:
         """Open a window without the wake word: the room just asked or answered (FR-93).
 
@@ -158,6 +193,8 @@ class SpeechPipeline:
         self._open_addressed()
 
     def _open_addressed(self) -> None:
+        self._reply_to = ""
+        self._window_frames = 0
         self._detector.reset()
         self._utterance.reset()
         self._buffer = []
@@ -187,9 +224,11 @@ class SpeechPipeline:
             self._wake()
             return None
         self._buffer.append(frame)
+        self._window_frames += 1
         finished = self._utterance.accept(frame)
 
-        if self._utterance.silence_timed_out:
+        waiting_longer = self._reply_to and self._window_frames <= self._reply_wait_frames
+        if self._utterance.silence_timed_out and not waiting_longer:
             LOGGER.info("no speech in the capture window; closing it")
             return self._close(transcribe=False)
 
@@ -197,10 +236,12 @@ class SpeechPipeline:
             return self._close(transcribe=True)
         return None
 
-    def _close(self, transcribe: bool) -> PreferenceHint | AmbientUtterance | None:
-        """Close the capture window and discard the audio either way."""
+    def _close(self, transcribe: bool) -> PreferenceHint | AmbientUtterance | MessageReply | None:
+        """Close the capture window and discard the audio either way -- unless
+        it was a reply to a message, which is kept to be sent back (FR-95)."""
         frames, self._buffer = self._buffer, []
         addressed, self._addressed = self._addressed, False
+        reply_to, self._reply_to = self._reply_to, ""
         self._state = PipelineState.WAITING_FOR_WAKE_WORD
         self._capture.drain()
         if self._continuous:
@@ -212,9 +253,19 @@ class SpeechPipeline:
             return None
         self._tell(SpeechActivity.TRANSCRIBING if addressed else SpeechActivity.OVERHEARING)
         try:
+            if reply_to:
+                return self._reply(reply_to, frames)
             return self._understand(frames) if addressed else self._overheard(frames)
         finally:
             self._tell(SpeechActivity.WAITING)
+
+    def _reply(self, message_id: str, frames: list) -> MessageReply:
+        """The answer to a message, words and voice, never sent to the assistant."""
+        transcript = self._transcriber.transcribe(frames) or ""
+        LOGGER.info("a reply to %s: %d words", message_id, len(transcript.split()))
+        pcm = np.concatenate([np.asarray(frame, dtype=np.int16) for frame in frames]).tobytes() if frames else b""
+        duration_s = len(frames) * self._config.chunk_samples / self._config.sample_rate_hz
+        return MessageReply(message_id, transcript, pcm, self._config.sample_rate_hz, duration_s)
 
     def _overheard(self, frames: list) -> AmbientUtterance | None:
         """Words nobody addressed to the assistant, for the reasoning layer to read.

@@ -57,6 +57,12 @@ class FakePipeline:
         self.answers_awaited += 1
         self.listening_for_the_assistant = True
 
+    replies_awaited: list = []
+
+    def listen_for_reply(self, message_id):
+        self.replies_awaited = [*self.replies_awaited, message_id]
+        self.listening_for_the_assistant = True
+
     def accept(self, frame):
         self.seen += 1
         result = self._results.pop(0)
@@ -240,6 +246,12 @@ class _HeldVoice:
         self.chimes = 0
         self.follow_ups = 0
 
+    message_window = None
+
+    def take_message_window(self):
+        taken, self.message_window = self.message_window, None
+        return taken
+
     def take_follow_up(self):
         if self.follow_ups:
             self.follow_ups -= 1
@@ -300,3 +312,28 @@ class TestAWindowAnnounced:
         pipeline, voice = Waking([None, None]), _HeldVoice()
         self._run(config, pipeline, voice, 2)
         assert voice.chimes == 1  # when it opened; not again while it stays open
+
+
+class TestAMessageWindow:
+    """FR-95: after a message home has played, the room listens for the answer to it."""
+
+    def test_the_window_opens_for_that_message_and_chimes(self, config):
+        pipeline, voice = FakePipeline([None]), _HeldVoice()
+        voice.message_window = "msg_1"
+        runner.run(config, SimClock(), FakeCapture(["f"]), pipeline, RecordingBlackboard(), frames=1, voice=voice)
+        assert pipeline.replies_awaited == ["msg_1"] and voice.chimes == 1
+
+    def test_the_answer_goes_to_the_desk_not_the_assistant(self, config):
+        from src.speech.pipeline import MessageReply
+
+        class Desk:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, heard):
+                self.replies.append(heard)
+
+        heard = MessageReply("msg_1", "I'll call", b"\x00\x00", 16000, 0.1)
+        desk, blackboard = Desk(), RecordingBlackboard()
+        runner.run(config, SimClock(), FakeCapture(["f"]), FakePipeline([heard]), blackboard, frames=1, voice=_HeldVoice(), messages=desk)
+        assert desk.replies == [heard] and blackboard.published == []
