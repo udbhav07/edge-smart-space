@@ -94,7 +94,7 @@ export interface Diagnosis {
 
 export interface SpeechStatus {
   ts: number;
-  activity: "waiting" | "listening" | "transcribing" | "understanding" | "speaking" | "muted";
+  activity: "waiting" | "listening" | "overhearing" | "transcribing" | "understanding" | "speaking" | "muted";
   heard: string;
   microphone: string;
   wake_word: string;
