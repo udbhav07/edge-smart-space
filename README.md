@@ -273,7 +273,13 @@ blackboard (FR-87). `python start.py` runs three:
 **Songs from YouTube.** Ask for a song your music folder doesn't have, for
 example "play Hotel California", or say "from YouTube", and the player finds it
 online with yt-dlp and streams it (FR-96). "Play some music" always stays
-with your own files. It takes 5 to 6 s to start. YouTube's terms restrict
+with your own files. It takes 5 to 6 s to start.
+
+Jarvis says what he's playing first, and the song starts when he finishes.
+While the room is listening or speaking, the music drops to a quarter. "Stop"
+keeps your place, and "carry on" picks it up. When a song ends, the next one
+plays: what YouTube would play after it, or another of your own. "Next song"
+skips ahead, and the **Autoplay** switch on the music's remote turns this off. YouTube's terms restrict
 automated access, so keep this to your own room. Keep yt-dlp current
 (`pip install -U yt-dlp`), because an old one stops finding anything. Set
 `actuators.music.online: false` to turn it off.
