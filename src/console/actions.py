@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 from datetime import timedelta
+from pathlib import Path
 
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import Config
+from src.common.devices import TOOL_JOINER, DeviceClass
 from src.common.injection import (
     ACTUATOR_SUPPORTED_FAULTS,
     BINARY_SUPPORTED_FAULTS,
@@ -267,6 +270,48 @@ class ConsoleActions:
             raise ActionRefused("say whose suggestion, and which")
         return self._send("settle_fact", {"profile_id": profile_id.strip(), "fact": fact.strip(), "keep": bool(keep)})
 
+    # --- devices (FR-87, FR-91) ------------------------------------------------
+
+    def device(self, device_id: str, capability: str, arguments: dict) -> str:
+        """Ask a device to do one thing, through the executor like any tool.
+
+        The executor's registry checks the arguments and the confirmation
+        gate exactly as it does for the assistant; the console gets no
+        shortcut to a device (FR-88).
+        """
+        known = self._state.device(device_id)
+        if known is None:
+            raise ActionRefused(f"there is no device called {device_id}")
+        manifest = known["manifest"]
+        if not known["online"]:
+            raise ActionRefused(f"the {manifest['name'].lower()} is offline")
+        declared = next((c for c in manifest["capabilities"] if c["name"] == capability), None)
+        if declared is None:
+            raise ActionRefused(f"the {manifest['name'].lower()} can't {capability.replace('_', ' ')}")
+        if declared["device_class"] == DeviceClass.PLANT.value:
+            raise ActionRefused("the air conditioner is set through the temperature controls")
+        invocation = self._invoke(f"{device_id}{TOOL_JOINER}{capability}", dict(arguments))
+        self._state.expect_device(invocation.invocation_id)
+        self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
+        return invocation.invocation_id
+
+    def upload_music(self, filename: str, data: bytes) -> str:
+        """Keep a file the occupant gave, then play it. Only its name crosses the board."""
+        music = self._config.actuators.music
+        name = _safe_file_name(filename)
+        if Path(name).suffix.lower() not in {extension.lower() for extension in music.extensions}:
+            raise ActionRefused(f"music must be one of {', '.join(music.extensions)}")
+        if not data:
+            raise ActionRefused("the file is empty")
+        if len(data) > music.max_upload_mb * 1_000_000:
+            raise ActionRefused(f"the file is larger than {music.max_upload_mb:g} MB")
+        folder = Path(music.uploads_path)
+        folder.mkdir(parents=True, exist_ok=True)
+        temporary = folder / f".{name}.part"
+        temporary.write_bytes(data)
+        temporary.replace(folder / name)
+        return self.device(music.device_id, "play", {"file": name})
+
     def _invoke(self, tool: str, arguments: dict) -> ToolInvocation:
         now = self._clock.now()
         return ToolInvocation(
@@ -319,3 +364,12 @@ class ConsoleActions:
     def _require_operator(self) -> None:
         if not self._config.console.operator_controls:
             raise ActionRefused("operator controls are turned off for this console")
+
+
+def _safe_file_name(filename: str) -> str:
+    """A file name with no path in it and nothing a shell or a URL would trip on."""
+    base = Path(filename.replace("\\", "/")).name
+    cleaned = re.sub(r"[^\w .()-]+", "_", base).strip(" .")
+    if not cleaned:
+        raise ActionRefused("that file has no usable name")
+    return cleaned[:120]

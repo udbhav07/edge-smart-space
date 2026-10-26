@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -177,6 +177,10 @@ class MailRequest(BaseModel):
     body: str = Field(default="", max_length=4000)
 
 
+class DeviceRequest(BaseModel):
+    arguments: dict[str, bool | int | float | str | None] = Field(default_factory=dict)
+
+
 class ComfortRequest(BaseModel):
     direction: str = Field(min_length=1, max_length=16)
     profile_id: str = ""
@@ -248,6 +252,16 @@ def create_app(
     @app.post("/api/target")
     async def post_target(request: TargetRequest) -> JSONResponse:
         return act(actions.set_target, request.target_c, request.profile_id)
+
+    @app.post("/api/music/upload")
+    async def post_music_upload(request: Request, name: str = Query(min_length=1, max_length=200)) -> JSONResponse:
+        """The file itself is the body, so no form library is needed (FR-91)."""
+        data = await request.body()
+        return act(actions.upload_music, name, data)
+
+    @app.post("/api/devices/{device_id}/{capability}")
+    async def post_device(device_id: str, capability: str, request: DeviceRequest) -> JSONResponse:
+        return act(actions.device, device_id, capability, request.arguments)
 
     @app.post("/api/comfort")
     async def post_comfort(request: ComfortRequest) -> JSONResponse:

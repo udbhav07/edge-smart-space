@@ -1170,6 +1170,7 @@ class MusicConfig(_Section):
     )
     extensions: list[str] = Field(default_factory=lambda: [".mp3", ".flac", ".wav", ".ogg"])
     default_volume: int = Field(default=60, ge=0, le=100)
+    max_upload_mb: float = Field(default=100.0, gt=0.0, description="Largest file accepted from the console, in MB")
 
 
 class ActuatorsConfig(_Section):
