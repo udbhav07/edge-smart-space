@@ -109,3 +109,39 @@ class TestRunner:
         ticks = []
         harness([False, True, True], tick=lambda service: ticks.append(service.device_id))
         assert ticks == ["widget", "widget"]
+
+
+class TestSeveralDevices:
+    def _run(self, monkeypatch, device_ids):
+        made = []
+
+        def build_transport(_config, client_id, holder, will=None):
+            transport = _Transport(holder, [True])
+            transport.will, transport.client_id = will, client_id
+            made.append(transport)
+            return transport
+
+        class _Ticks:
+            def now(self):
+                return 1000.0
+
+            def sleep(self, _seconds):
+                for transport in made:
+                    transport.advance()
+
+        monkeypatch.setattr(runner, "build_transport", build_transport)
+        monkeypatch.setattr(runner, "RealClock", _Ticks)
+        parts = [
+            DeviceParts(manifest=DeviceManifest(ts=1.0, device_id=device_id, name=device_id, kind=DeviceKind.OTHER, simulated=True), handlers={}, state=lambda: {})
+            for device_id in device_ids
+        ]
+        return runner.run([], "test", "bridge", lambda _config, _clock: parts), made
+
+    def test_each_device_has_its_own_connection_and_last_will(self, monkeypatch):
+        _, made = self._run(monkeypatch, ["lamp", "kettle"])
+        assert [t.will[0] for t in made] == ["space/device/lamp/availability", "space/device/kettle/availability"]
+        assert [t.client_id for t in made] == ["bridge-lamp", "bridge-kettle"]
+
+    def test_nothing_configured_runs_nothing(self, monkeypatch):
+        code, made = self._run(monkeypatch, [])
+        assert code == 0 and made == []

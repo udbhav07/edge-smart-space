@@ -1,16 +1,21 @@
-"""Running a device service as a process: ``python -m src.devices.<name>``.
+"""Running device services as a process: ``python -m src.devices.<name>``.
 
 Each device's ``__main__`` hands :func:`run` a function that builds its
-:class:`DeviceParts` from the configuration; everything a service process
-needs besides -- the broker connection, the last will, re-announcing after a
-reconnect, saying goodbye on the way out -- is here, once.
+:class:`DeviceParts` from the configuration -- one device, or several, as the
+MCP bridge has one per server. Everything a service process needs besides --
+the broker connection, the last will, re-announcing after a reconnect,
+saying goodbye on the way out -- is here, once.
+
+Each device gets a broker connection of its own, because a connection
+carries one last will: two devices sharing one would both be reported alive
+by it, or both dead.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,7 +29,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/default.yaml")
 
-#: How often the process looks at its device and its connection, in s.
+#: How often the process looks at its devices and their connections, in s.
 TICK_S = 1.0
 
 
@@ -41,11 +46,19 @@ class DeviceParts:
     close: Callable[[], None] = field(default=lambda: None)
 
 
+@dataclass
+class _Running:
+    parts: DeviceParts
+    blackboard: Blackboard
+    service: DeviceService
+    announced: bool = False
+
+
 def run(
     argv: list[str] | None,
     description: str,
     client_id: str,
-    build: Callable[[Config, Clock], DeviceParts],
+    build: Callable[[Config, Clock], DeviceParts | Sequence[DeviceParts]],
 ) -> int:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -58,33 +71,47 @@ def run(
         return 2
 
     clock = RealClock()
-    parts = build(config, clock)
-    holder: list = []
-    transport = build_transport(config.mqtt, client_id, holder, will=last_will(parts.manifest.device_id, clock))
-    blackboard = Blackboard(config.mqtt, transport)
-    holder.append(blackboard)
-    service = DeviceService(parts.manifest, parts.handlers, parts.state, clock, blackboard)
-    blackboard.start()
-    LOGGER.info("%s (%s) is starting", parts.manifest.name, parts.manifest.device_id)
-    announced = False
+    built = build(config, clock)
+    devices = [_connect(config, clock, client_id, parts) for parts in ([built] if isinstance(built, DeviceParts) else built)]
+    if not devices:
+        LOGGER.info("no devices configured; nothing to run")
+        return 0
     try:
         while True:
-            # The broker publishes the last will if the link drops, so the
-            # device is announced again every time the link comes back.
-            if blackboard.connected and not announced:
-                service.start()
-                announced = True
-                LOGGER.info("%s is on the board", parts.manifest.device_id)
-            elif not blackboard.connected:
-                announced = False
-            if announced and parts.tick is not None:
-                parts.tick(service)
+            for device in devices:
+                _tick(device)
             clock.sleep(TICK_S)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:
-        if announced:
-            service.stop()
-        parts.close()
-        blackboard.stop()
+        for device in devices:
+            if device.announced:
+                device.service.stop()
+            device.parts.close()
+            device.blackboard.stop()
     return 0
+
+
+def _connect(config: Config, clock: Clock, client_id: str, parts: DeviceParts) -> _Running:
+    device_id = parts.manifest.device_id
+    holder: list = []
+    transport = build_transport(config.mqtt, f"{client_id}-{device_id}", holder, will=last_will(device_id, clock))
+    blackboard = Blackboard(config.mqtt, transport)
+    holder.append(blackboard)
+    service = DeviceService(parts.manifest, parts.handlers, parts.state, clock, blackboard)
+    blackboard.start()
+    LOGGER.info("%s (%s) is starting", parts.manifest.name, device_id)
+    return _Running(parts, blackboard, service)
+
+
+def _tick(device: _Running) -> None:
+    # The broker publishes the last will if the link drops, so the device is
+    # announced again every time the link comes back.
+    if device.blackboard.connected and not device.announced:
+        device.service.start()
+        device.announced = True
+        LOGGER.info("%s is on the board", device.service.device_id)
+    elif not device.blackboard.connected:
+        device.announced = False
+    if device.announced and device.parts.tick is not None:
+        device.parts.tick(device.service)
