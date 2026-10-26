@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, Refused } from "@/lib/api";
 import { REMOTE_REPLY_EVENT } from "@/lib/useConsole";
+import { useRecorder } from "@/lib/useRecorder";
+
+export { microphoneAllowed } from "@/lib/useRecorder";
 
 // Talking to the room from this device, away from it (FR-94): record on this
 // device's microphone, send it, wait for Jarvis's answer to *this* request,
@@ -16,23 +19,14 @@ export interface Exchange {
 
 /** How long to wait for Jarvis before saying it did not answer, in ms. */
 const REPLY_WAIT_MS = 90_000;
-/** A press shorter than this is a tap: recording continues until the next tap. */
-const TAP_MS = 350;
 /** A short silent WAV, played on the press itself so the device lets this page speak later. */
 const SILENCE =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
 
-/** Whether this page may use the microphone here: HTTPS, or this machine itself. */
-export const microphoneAllowed = () => typeof window !== "undefined" && window.isSecureContext && !!navigator.mediaDevices?.getUserMedia;
-
 export function useRemoteTalk() {
-  const [phase, setPhase] = useState<TalkPhase>("idle");
+  const [phase, setPhase] = useState<Exclude<TalkPhase, "recording">>("idle");
   const [error, setError] = useState("");
   const [exchanges, setExchanges] = useState<Exchange[]>([]);
-  const [held, setHeld] = useState(false);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const chunks = useRef<Blob[]>([]);
-  const pressedAt = useRef(0);
   const player = useRef<HTMLAudioElement | null>(null);
   const waiting = useRef<{ id: string; spoken: boolean; timer: number } | null>(null);
 
@@ -91,55 +85,21 @@ export function useRemoteTalk() {
     }
   };
 
-  const start = async () => {
-    setError("");
-    if (!microphoneAllowed()) {
-      setError("This page can't use the microphone over plain http.");
-      return;
-    }
-    // Unlock playback on the press itself: a phone lets a page speak only after a touch.
-    const element = player.current ?? new Audio();
-    player.current = element;
-    element.src = SILENCE;
-    void element.play().catch(() => undefined);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-      const media = new MediaRecorder(stream);
-      chunks.current = [];
-      media.ondataavailable = (event) => event.data.size && chunks.current.push(event.data);
-      media.onstop = () => {
-        stream.getTracks().forEach((track) => track.stop());
-        const recording = new Blob(chunks.current, { type: media.mimeType || "audio/webm" });
-        void send(recording);
-      };
-      media.start();
-      recorder.current = media;
-      pressedAt.current = Date.now();
-      setPhase("recording");
-    } catch {
-      setError("The microphone was not allowed. Allow it for this page in the browser's settings.");
-      setPhase("idle");
-    }
-  };
-
-  const stop = () => {
-    recorder.current?.stop();
-    recorder.current = null;
-    setHeld(false);
-  };
+  const microphone = useRecorder((recording) => void send(recording));
 
   /** Press: start. Release after holding: send. A quick tap: keep going until the next tap. */
   const press = () => {
-    if (phase === "recording") stop();
-    else if (phase === "idle" || phase === "speaking") {
-      player.current?.pause();
-      void start();
-      setHeld(true);
+    const mayStart = phase === "idle" || phase === "speaking";
+    if (mayStart && !microphone.recording) {
+      setError("");
+      // Unlock playback on the press itself: a phone lets a page speak only after a touch.
+      const element = player.current ?? new Audio();
+      player.current = element;
+      element.pause();
+      element.src = SILENCE;
+      void element.play().catch(() => undefined);
     }
-  };
-  const release = () => {
-    if (phase === "recording" && held && Date.now() - pressedAt.current >= TAP_MS) stop();
-    else setHeld(false);
+    microphone.press(mayStart);
   };
 
   const type = async (text: string) => {
@@ -153,5 +113,14 @@ export function useRemoteTalk() {
     }
   };
 
-  return { phase, error, exchanges, press, release, type, replay: say, tapped: phase === "recording" && !held };
+  return {
+    phase: (microphone.recording ? "recording" : phase) as TalkPhase,
+    error: error || microphone.error,
+    exchanges,
+    press,
+    release: microphone.release,
+    type,
+    replay: say,
+    tapped: microphone.tapped,
+  };
 }

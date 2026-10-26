@@ -9,6 +9,7 @@ import { useConsole } from "@/lib/useConsole";
 import { Button, Card, Switch } from "@/components/ui";
 import { Devices } from "@/components/Devices";
 import { Climate } from "@/components/Climate";
+import { MessagesCard } from "@/components/Messages";
 
 // Home: what someone living in the room reaches for, most often first (FR-80).
 // Every control here is a request: it goes through the same safety gate as
@@ -201,6 +202,9 @@ export function Home() {
       <div className="mt-4 grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-2">
         <Talk state={state} />
         <Today state={state} />
+      </div>
+      <div className="mt-4 grid grid-cols-[minmax(0,1fr)]">
+        <MessagesCard messages={state.messages ?? []} />
       </div>
       <div className="mt-4 grid grid-cols-[minmax(0,1fr)]">
         <Devices devices={state.devices ?? []} />

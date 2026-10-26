@@ -61,6 +61,7 @@ function applyOne(state: Snapshot, tail: BoardMessage[], event: ServerEvent): [S
     case "google":
     case "energy":
     case "devices":
+    case "messages":
       return [{ ...state, [type]: data }, tail];
     case "series": {
       const points = state.series[data.key] ?? [];

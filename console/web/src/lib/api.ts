@@ -57,6 +57,20 @@ export const api = {
     if (!response.ok || payload.ok === false) throw new Refused(payload.error ?? `Request failed (${response.status})`);
     return payload.result as { utterance_id: string; transcript: string };
   },
+  sendMessage: async (sender: string, recording: Blob) => {
+    let response: Response;
+    try {
+      response = await fetch(`/api/messages?sender=${encodeURIComponent(sender)}`, { method: "POST", headers: { "content-type": recording.type || "application/octet-stream" }, body: recording });
+    } catch {
+      throw new Refused("The console server is not reachable.");
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) throw new Refused(payload.error ?? `Sending failed (${response.status})`);
+    return payload.result as import("./types").HomeMessage;
+  },
+  replayMessage: (messageId: string) => post(`/api/messages/${encodeURIComponent(messageId)}/replay`),
+  messageAudio: (messageId: string) => `/api/messages/${encodeURIComponent(messageId)}/audio`,
+  replyAudio: (messageId: string) => `/api/messages/${encodeURIComponent(messageId)}/reply/audio`,
   talkText: (text: string) => post<{ utterance_id: string; text: string }>("/api/talk/text", { text, profile_id: "" }),
   speak: async (text: string) => {
     const response = await fetch("/api/voice/speak", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
