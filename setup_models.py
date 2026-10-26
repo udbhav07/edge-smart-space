@@ -4,8 +4,8 @@
     python setup_models.py --config path/to/config.yaml
 
 The deployed node has no outbound connection (NFR-06), so nothing may be
-downloaded at startup. The wake-word models and the Whisper model named in
-configuration are fetched here, into the local caches the services then
+downloaded at startup. The wake-word models, the Whisper model and the Piper
+voice named in configuration are fetched here, into the local caches the services then
 load from with network access refused.
 """
 
@@ -36,17 +36,8 @@ def fetch_whisper_model(model: str) -> None:
 
 
 def fetch_piper_voice(model_path: str) -> None:
-    """The voice replies are spoken in (FR-79), into the configured folder.
-
-    Without the voice extra this says so and moves on: the room then speaks
-    with the system's voices, or answers on screen only, and the speech
-    models fetched above are still what the node needs.
-    """
-    try:
-        from piper.download_voices import download_voice
-    except ImportError:
-        print('Skipping the Piper voice: install it with pip install -e ".[voice]", then run this again.')
-        return
+    """The voice replies are spoken in (FR-79), into the configured folder."""
+    from piper.download_voices import download_voice
 
     path = Path(model_path)
     print(f"Downloading the Piper voice {path.stem}...")

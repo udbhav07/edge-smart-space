@@ -5,6 +5,8 @@ the Whisper model fetched is the one the transcriber will later load
 offline, since a mismatch would only surface on the node, without internet.
 """
 
+from pathlib import Path
+
 import pytest
 
 import setup_models
@@ -52,11 +54,11 @@ def test_the_configured_voice_is_fetched(fetched):
     assert load_config(Path("config/default.yaml")).speech.voice_model_path in fetched
 
 
-def test_without_the_voice_extra_the_voice_is_skipped(monkeypatch, tmp_path, capsys):
-    """A machine without piper still finishes; it says how to add the voice."""
-    import sys
+def test_no_voice_is_fetched_when_speaking_is_off(fetched, tmp_path):
+    from src.common.config import load_config
 
-    monkeypatch.setitem(sys.modules, "piper", None)
-    setup_models.fetch_piper_voice(str(tmp_path / "voice.onnx"))
-    assert ".[voice]" in capsys.readouterr().out
-    assert not (tmp_path / "voice.onnx").exists()
+    config = Path("config/default.yaml").read_text(encoding="utf-8")
+    overlay = tmp_path / "quiet.yaml"
+    overlay.write_text(config.replace("voice_engine: piper", "voice_engine: none"), encoding="utf-8")
+    setup_models.main(["--config", str(overlay)])
+    assert load_config(Path("config/default.yaml")).speech.voice_model_path not in fetched

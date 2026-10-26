@@ -57,11 +57,12 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
 pip install -e ".[dev]"            # core + test tools
 pip install -e ".[dev,speech]"     # add voice (needs Python 3.11/3.12)
-pip install -e ".[voice]"          # the room speaks its replies (Piper)
-pip install -e ".[google]"         # Google Calendar and Gmail, once connected
 ```
 
-`speech` pulls torch, faster-whisper, openWakeWord, Silero VAD and PyAudio.
+The core includes the console and the Google client libraries; nothing
+reaches Google until you connect an account. `speech` pulls torch,
+faster-whisper, openWakeWord, Silero VAD, PyAudio, and the Piper voice the
+room speaks with.
 It is a large install and is why it is optional — everything except the voice
 pipeline works without it, and the speech tests skip themselves when it is
 absent.
@@ -208,7 +209,7 @@ node talks to Google's APIs and nowhere else (FR-84). It is set up once:
    **Web application**, with the authorised redirect URI
    `http://localhost:8077/api/google/callback`.
 4. Download its JSON to `state/google/client_secret.json` (`state/` is not
-   committed) and run `pip install -e ".[google]"`.
+   committed).
 5. Restart, open the console at **http://localhost:8077** (not 127.0.0.1:
    Google sends you back to exactly the address registered), go to
    **Settings** and press **Connect Google**.

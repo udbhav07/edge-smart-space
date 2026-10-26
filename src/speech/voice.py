@@ -120,13 +120,14 @@ def build_speaker(config: SpeechConfig) -> Speaker | None:
     if config.voice_engine == "piper":
         try:
             return PiperSpeaker(config.voice_model_path, config.voice_length_scale)
-        except (ImportError, OSError, RuntimeError, ValueError) as exc:
-            # A missing model, or no wheel on this platform: the system's
-            # voices are better than silence. Run setup_models.py to fix it.
+        except (OSError, RuntimeError, ValueError) as exc:
+            # A missing model file or no audio output: the system's voices
+            # are better than silence. Run setup_models.py to fetch the model.
             LOGGER.warning("Piper voice unavailable (%s); using the system's voices", exc)
     try:
         return SystemSpeaker()
-    except (ImportError, OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError) as exc:
+        # No speech engine on this machine (espeak on Linux, SAPI on Windows).
         LOGGER.warning("no voice available; replies will not be spoken: %s", exc)
         return None
 
