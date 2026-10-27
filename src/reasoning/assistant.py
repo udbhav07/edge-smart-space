@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import AssistanceConfig, Bounds
+from src.common.devices import TOOL_JOINER
 from src.common.localtime import local_time
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
@@ -325,6 +326,8 @@ class Assistant:
             # its own earlier reply, and told a guest about Ravi's meeting
             # as something it knew about them (S-05, S-06).
             reply = self._what_i_know(hint)
+        elif hint.command is not None:
+            reply = self._command(hint)
         elif hint.intent in (Intent.SERVICE, Intent.QUESTION):
             # A question is answered the same way a request is served: with
             # the room's state, the person's context and the read tools.
@@ -542,6 +545,27 @@ class Assistant:
             self._clock.sleep(_POLL_S)
 
     # --- service ------------------------------------------------------
+
+    def _command(self, hint: PreferenceHint) -> AssistantReply:
+        """A short device command recognised from the words: run, and the device's answer said (FR-97).
+
+        No model is asked. The call still goes through the executor, which
+        checks it against the device's manifest and gates as it does a
+        remote's tap; the reply is the device's own sentence.
+        """
+        command = hint.command
+        utterance = hint.transcript or hint.rationale
+        call = ToolCall(call_id="quick", name=f"{command.device_id}{TOOL_JOINER}{command.capability}", arguments=dict(command.arguments))
+        result = self._run(call, utterance, hint)
+        reply_text = result.message or _fallback([result]) or _NO_TOOL_REPLY
+        self._record(utterance, [], [result], reply_text)
+        return AssistantReply(
+            ts=self._clock.now(),
+            transcript=utterance,
+            intent=hint.intent,
+            reply=reply_text,
+            invocation_ids=(result.invocation_id,),
+        )
 
     def _serve(self, hint: PreferenceHint) -> AssistantReply:
         utterance = hint.transcript or hint.rationale

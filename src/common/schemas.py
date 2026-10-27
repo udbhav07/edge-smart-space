@@ -535,6 +535,14 @@ THERMAL_SUBJECTS = frozenset(
 )
 
 
+class DeviceCommand(BlackboardMessage):
+    """One device capability and its arguments, as a remote would send it (FR-97)."""
+
+    device_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    capability: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    arguments: Mapping[str, bool | int | float | str] = Field(default_factory=dict)
+
+
 class PreferenceHint(TimestampedMessage):
     """A spoken preference, forwarded as a supervisory input (FR-53).
 
@@ -605,6 +613,12 @@ class PreferenceHint(TimestampedMessage):
         le=86400.0,
         description="How long this preference outranks the supervisor, if not the "
         "configured hold: 'cooling off for three hours' (FR-81)",
+    )
+    command: DeviceCommand | None = Field(
+        default=None,
+        description="A short device command recognised from the words alone -- 'stop', "
+        "'next song', 'turn off the fan' -- run as a remote's tap is, through the "
+        "executor's checks, without asking a model (FR-97)",
     )
 
     @model_validator(mode="after")
