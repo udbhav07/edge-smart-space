@@ -535,6 +535,12 @@ class SpeechConfig(_Section):
     kws_threshold: float = Field(default=0.1, gt=0.0, le=1.0, description="The keyword spotter's trigger threshold")
     kws_boost: float = Field(default=3.0, gt=0.0, description="How much the spotter favours the phrases over other words")
     wake_agree_s: float = Field(default=1.5, gt=0.0, description="How close together 'both' detectors must fire, in s")
+    wake_keep_s: float = Field(
+        default=1.5,
+        ge=0.0,
+        le=5.0,
+        description="What was heard just before the wake word fired, kept as the start of the request, in s",
+    )
     wake_echo_cancel: bool = Field(
         default=True,
         description="Also listen with what the speakers play taken out of the microphone (FR-98)",

@@ -518,8 +518,20 @@ class TestListeningContinuously:
         (heard,) = _feed(pipeline, SPEECH, SPEECH, "wake", SPEECH, SILENCE)
         assert isinstance(heard, PreferenceHint)
 
-    def test_and_what_came_before_it_is_dropped(self, continuous):
+    def test_and_what_came_long_before_it_is_dropped(self, continuous):
+        pipeline, parts = _listening(continuous.model_copy(update={"wake_keep_s": 0.1}), SimClock())
+        _feed(pipeline, SPEECH, SPEECH, SPEECH, SPEECH, SPEECH, "wake", SPEECH, SILENCE)
+        kept = int(0.1 * continuous.sample_rate_hz / continuous.chunk_samples)
+        assert parts["transcriber"].calls == [kept + 2]
+
+    def test_the_moment_before_the_wake_is_kept(self, continuous):
+        """FR-98: a detector fires late, after "hey Jarvis, car-"; the start of the request is kept."""
         pipeline, parts = _listening(continuous, SimClock())
+        _feed(pipeline, SPEECH, SPEECH, SPEECH, "wake", SPEECH, SILENCE)
+        assert parts["transcriber"].calls == [5]
+
+    def test_nothing_kept_if_turned_off(self, continuous):
+        pipeline, parts = _listening(continuous.model_copy(update={"wake_keep_s": 0.0}), SimClock())
         _feed(pipeline, SPEECH, SPEECH, SPEECH, "wake", SPEECH, SILENCE)
         assert parts["transcriber"].calls == [2]
 

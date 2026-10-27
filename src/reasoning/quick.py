@@ -56,6 +56,8 @@ class QuickCommand:
 def quick_command(transcript: str, devices: KnownDevices) -> QuickCommand | None:
     """The device call a short utterance plainly asks for, or None to ask the model."""
     text = re.sub(r"[^a-z0-9% ]+", " ", transcript.lower())
+    # What follows the wake word is the request; a window may start a word or two before it.
+    text = text.rsplit("jarvis", 1)[-1] if "jarvis" in text else text
     text = " ".join(_AROUND.sub(" ", " ".join(text.split())).split())
     if not text or len(text.split()) > _MAX_WORDS:
         return None

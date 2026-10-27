@@ -122,6 +122,7 @@ class SpeechPipeline:
         #: The message the open window is a reply to, if it is one (FR-95).
         self._reply_to = ""
         self._reply_wait_frames = int(reply_wait_s * config.sample_rate_hz / config.chunk_samples)
+        self._wake_keep_frames = int(config.wake_keep_s * config.sample_rate_hz / config.chunk_samples)
         self._window_frames = 0
 
     @property
@@ -189,8 +190,18 @@ class SpeechPipeline:
         self._open_addressed()
 
     def _wake(self) -> None:
+        """Open a window for the assistant, keeping the moment before the wake (FR-98).
+
+        A detector fires a little after the phrase ends -- the keyword
+        spotter by a few hundred ms -- by when "hey Jarvis, carry on" may be
+        at "on": live, "carry on" was heard as "on." and "next song" as
+        "song.". So the last ``wake_keep_s`` of what was heard is kept as the
+        start of the window; anything said longer before is still dropped.
+        """
         LOGGER.info("wake word detected; opening capture window")
+        kept = list(self._buffer or self._preroll)[-self._wake_keep_frames:] if self._wake_keep_frames else []
         self._open_addressed()
+        self._buffer = kept
 
     def _open_addressed(self) -> None:
         self._reply_to = ""

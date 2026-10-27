@@ -67,6 +67,9 @@ class TestRecognised:
     def test_the_music_while_it_plays(self, text, capability):
         assert _call(text) == ("music", capability, {})
 
+    def test_only_what_follows_the_wake_word_counts(self):
+        assert _call("so anyway. Hey Jarvis, next song") == ("music", "next", {})
+
     def test_continue_works_once_paused(self):
         assert _call("continue", playing=False, paused=True) == ("music", "resume", {})
 
