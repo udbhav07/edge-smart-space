@@ -294,3 +294,23 @@ class TestAmbientListening:
     def test_ambient_mining_is_bounded(self):
         config = load_config(Path("config/default.yaml"))
         assert config.ambient.max_calls_per_min > 0 and config.ambient.max_lines > 0
+
+
+class TestJetsonConfigs:
+    """The two boards' configs load, and keep the rules section 5.7.5 and 9.2 set."""
+
+    @pytest.mark.parametrize("name", ["jetsonDefault.yaml", "jetson16.yaml"])
+    def test_it_loads(self, name):
+        load_config(Path("config") / name)
+
+    @pytest.mark.parametrize("name", ["jetsonDefault.yaml", "jetson16.yaml"])
+    def test_the_model_does_not_think_aloud(self, name):
+        assert "instruct" in load_config(Path("config") / name).reasoning.model
+
+    @pytest.mark.parametrize("name", ["jetsonDefault.yaml", "jetson16.yaml"])
+    def test_whisper_demands_the_gpu(self, name):
+        assert load_config(Path("config") / name).speech.asr_device == "cuda"
+
+    def test_only_what_the_board_changes_differs_from_the_default(self, default_config):
+        board, default = load_config(Path("config/jetsonDefault.yaml")), default_config
+        assert board.controller == default.controller and board.validator == default.validator

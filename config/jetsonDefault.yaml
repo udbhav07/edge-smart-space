@@ -1,0 +1,77 @@
+# Jetson AGX Orin 32 GB, the target board (DESIGN.md section 4.6), run flat
+# out: the largest models that keep a spoken reply quick, sized so the whole
+# node holds about 28 GB of the unified memory all the time.
+# Run with: python start.py --config config/jetsonDefault.yaml
+#
+# This exceeds NFR-05's 20 GB on purpose: every byte the board has is given to
+# the models. Raise NFR-05 to 29 GB, or fall back to config/default.yaml,
+# before E7 measures against it.
+#
+# The budget, estimated (tegrastats measures it; trust tegrastats over this):
+#
+#   JetPack, headless (multi-user.target), CUDA context    3.0 GB
+#   LLM qwen3:30b-a3b-instruct-2507 Q4_K_M weights       18.6 GB
+#   LLM KV cache: 16k context x 2 slots, q8_0               1.6 GB
+#   LLM compute buffers                                     0.8 GB
+#   Whisper large-v3-turbo int8_float16, twice              1.8 GB
+#     (the room's speech service, and the console's for the Talk page)
+#   Wake word, keyword spotter, VAD, voiceprints, Piper     0.5 GB
+#   Python services, broker, console                        1.5 GB
+#                                                          -------
+#                                                          27.8 GB of ~30.7 GB visible
+#
+# "All the time" is the server's to keep: the model is loaded at boot and
+# never unloaded, and Whisper loads when the speech service starts, since
+# continuous listening needs it from the first word. Set the server once:
+#
+#   sudo systemctl edit ollama        # then add:
+#   [Service]
+#   Environment="OLLAMA_KEEP_ALIVE=-1"          # never unload
+#   Environment="OLLAMA_CONTEXT_LENGTH=16384"   # device tools + 20 turns fit
+#   Environment="OLLAMA_NUM_PARALLEL=2"         # a request is not queued behind the supervisor
+#   Environment="OLLAMA_FLASH_ATTENTION=1"
+#   Environment="OLLAMA_KV_CACHE_TYPE=q8_0"     # half the KV cache, no measurable loss
+#   Environment="OLLAMA_MAX_LOADED_MODELS=1"    # one model serves every call site (5.7.5)
+#
+#   ollama pull qwen3:30b-a3b-instruct-2507-q4_K_M
+#   curl http://localhost:11434/api/generate -d '{"model": "qwen3:30b-a3b-instruct-2507-q4_K_M", "keep_alive": -1}'
+#   sudo nvpmodel -m 0 && sudo jetson_clocks   # MAXN, clocks pinned (section 9.2)
+#   sudo systemctl set-default multi-user.target   # no desktop: about 1 GB back
+#   python setup_models.py --config config/jetsonDefault.yaml
+#
+# faster-whisper has no prebuilt CUDA wheel for the Orin's ARM cores: use the
+# jetson-containers CTranslate2 image or build it (section 9.2).
+extends: default.yaml
+
+speech:
+  # Whisper's word error on Indian English falls as the model grows (Svarah,
+  # noted in default.yaml), and Whisper is the one model here that hears this
+  # household reliably. large-v3-turbo is large-v3's encoder with a four-layer
+  # decoder: close to large-v3 in accuracy at a fraction of its decode time.
+  # On the RTX 3050 it took 500 ms for a 4.7 s command; budget about twice
+  # that on the Orin's GPU until E7 measures it.
+  asr_model: large-v3-turbo
+  # int8 weights, float16 maths: half the memory of float16 for a few ms, and
+  # the model is loaded twice (speech and console).
+  asr_compute_type: int8_float16
+  # Demand the GPU. A silent CPU fallback on the Jetson looks like slow code
+  # rather than a broken CTranslate2 build (section 9.2).
+  asr_device: cuda
+
+reasoning:
+  # A mixture of experts: 30B parameters held, about 3B used per word. Decode
+  # is bound by the Orin's 204.8 GB/s, and each word reads only the active
+  # experts (~2 GB at Q4), so the ceiling is near 100 tokens/s and practice
+  # lands near half -- faster than the 7B dense model it replaces, which reads
+  # all 4.7 GB per word, while knowing far more. The 2507 instruct release
+  # never thinks aloud, which section 5.7.5 requires: thinking tokens are
+  # unaffordable at a spoken reply's cadence. Estimates, not measurements --
+  # no published Orin figure exists for it; run ollama run --verbose and
+  # record the eval rate at MAXN before relying on them.
+  #
+  # Considered: qwen3.5:35b-a3b (22 GB, newer) would leave no room for
+  # Whisper inside 28 GB; qwen3.6:27b (17 GB) is dense, and at ~12 tokens/s
+  # ceiling too slow for speech.
+  model: qwen3:30b-a3b-instruct-2507-q4_K_M
+  # The first call after boot pays for loading 18.6 GB from disk.
+  timeout_s: 45.0
