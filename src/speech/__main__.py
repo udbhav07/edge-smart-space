@@ -40,7 +40,7 @@ from src.speech.pipeline import MessageReply, SpeechPipeline
 from src.speech.speaker_profile import SpeakerIdentifier
 from src.speech.status import StatusPublisher
 from src.speech.voice import Voice, build_speaker
-from src.speech.wakeword import WakeWordDetector
+from src.speech.wakeword import build_wake_detector
 
 LOGGER = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ def build_pipeline(
         config=config.speech,
         clock=clock,
         capture=capture,
-        detector=WakeWordDetector(config.speech),
+        detector=build_wake_detector(config.speech),
         utterance=UtteranceDetector(config.speech),
         transcriber=Transcriber(config.speech),
         personal_context=PersonalContext(config.reasoning, clock, devices=devices),

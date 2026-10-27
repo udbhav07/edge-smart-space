@@ -17,8 +17,10 @@ from __future__ import annotations
 from enum import Enum
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.common.devices import DeviceClass, DeviceKind
@@ -518,6 +520,21 @@ class SpeechConfig(_Section):
         le=1.0,
         description="Detection score gate; low values make capture near-continuous",
     )
+    wake_engine: Literal["openwakeword", "sherpa", "both", "either"] = Field(
+        default="openwakeword",
+        description="Which wake word detector listens: openWakeWord, sherpa-onnx's keyword "
+        "spotter, both agreeing, or either (FR-98)",
+    )
+    kws_model_dir: str = Field(
+        default="models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+        description="The sherpa-onnx keyword spotting model",
+    )
+    kws_phrases: list[str] = Field(
+        default_factory=lambda: ["HEY JARVIS", "JARVIS"], min_length=1, description="What the keyword spotter listens for, as words"
+    )
+    kws_threshold: float = Field(default=0.1, gt=0.0, le=1.0, description="The keyword spotter's trigger threshold")
+    kws_boost: float = Field(default=3.0, gt=0.0, description="How much the spotter favours the phrases over other words")
+    wake_agree_s: float = Field(default=1.5, gt=0.0, description="How close together 'both' detectors must fire, in s")
     vad_silence_ms: int = Field(gt=0, description="Silence marking end of utterance")
     no_speech_timeout_s: float = Field(
         gt=0.0, description="Give up if nothing is said after the wake word"

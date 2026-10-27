@@ -240,6 +240,15 @@ speech:
   # follows a detection, but the false-wake rate is higher than the section
   # 5.8 privacy claim implies. Retrain or swap the model to raise this.
   wake_word_threshold: 0.1
+  # Which detector listens (FR-98). "either": openWakeWord above, or
+  # sherpa-onnx's keyword spotter listening for the words "hey jarvis" /
+  # "jarvis". Measured with tools/wake_eval.py on 45 synthesised takes mixed
+  # into two songs: with the music as loud as the voice, openWakeWord at 0.5
+  # caught 67 %, the pair 89 %; with it 5 dB louder, 29 % and 56 %; and the
+  # spotter added no false wakes on the music alone. Kept at 0.1 above, so
+  # nothing that wakes it today stops doing so; measure your own voices
+  # (python -m tools.wake_eval --voices DIR) before raising it.
+  wake_engine: either
   vad_silence_ms: 1000
   no_speech_timeout_s: 3.0
   command_timeout_s: 15.0

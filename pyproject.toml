@@ -63,6 +63,10 @@ speech = [
     "faster-whisper==1.1.1",
     "PyAudio==0.2.14",
     "silero-vad==5.1.2",
+    # The keyword spotter, which listens for "hey jarvis" as words alongside
+    # openWakeWord (FR-98); sentencepiece turns the phrases into its tokens.
+    "sherpa-onnx==2.0.1",
+    "sentencepiece==0.2.2",
     "torch==2.5.1",
     "torchaudio==2.5.1",
     # Speaking replies (FR-79), in the same service that listens. Piper is a

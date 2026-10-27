@@ -203,7 +203,7 @@ class TestWiringAgainstTheRealInterfaces:
             captured["clock"] = clock
             return object()
 
-        for name in ("WakeWordDetector", "UtteranceDetector", "Transcriber"):
+        for name in ("build_wake_detector", "UtteranceDetector", "Transcriber"):
             monkeypatch.setattr(runner, name, StubModel)
         monkeypatch.setattr(runner, "PersonalContext", _personal_context)
         monkeypatch.setattr(runner, "SpeechPipeline", lambda **kwargs: kwargs)
