@@ -89,3 +89,41 @@ def test_during_peak_the_held_temperature_is_named():
     )
     assert room.held_c(22.0) == (23.0, "peak tariff: held +1 C until 22:00")
     assert "held at 25 C" in room.summary()
+
+
+def _at(room, ts, t_in):
+    room._on_estimate(
+        "",
+        ThermalEstimate(ts=ts, t_in=t_in, t_pred=t_in, residual=0.0, residual_sigma=0.2, model_confidence=0.9, adaptation=AdaptationState.ACTIVE),
+    )
+
+
+class TestWhyItIsNotCoolingYet:
+    """The model is told enough to answer "why is it not cooling?" from fact."""
+
+    def test_the_trend_is_told(self):
+        room = RoomState()
+        for minute, temperature in enumerate((29.2, 29.0, 28.8, 28.6, 28.4, 28.3)):
+            _at(room, 1000.0 + 60 * minute, temperature)
+        assert "over the last 5 minutes: falling, 0.9 C (0.18 C a minute)" in room.summary()
+
+    def test_too_little_history_is_not_a_trend(self):
+        room = RoomState()
+        _at(room, 1000.0, 29.0)
+        _at(room, 1020.0, 28.9)
+        assert "over the last" not in room.summary()
+
+    def test_whether_the_air_conditioner_is_cooling(self):
+        from src.common.schemas import AckStatus, ActuatorState, CommandKind
+
+        room = RoomState()
+        room._on_actuator("", ActuatorState(ts=1.0, actuator_id="ac", simulated=True, kind=CommandKind.COOL, ack=AckStatus.ACKNOWLEDGED))
+        assert "- air conditioner: cooling" in room.summary()
+
+    def test_the_heat_outside(self):
+        from src.common.schemas import SensorReading, Unit
+
+        room = RoomState(outdoor_sensor_id="outdoor_01")
+        room._on_reading("", SensorReading(ts=1.0, sensor_id="outdoor_01", value=34.7, unit=Unit.CELSIUS))
+        room._on_reading("", SensorReading(ts=1.0, sensor_id="temp_01", value=28.0, unit=Unit.CELSIUS))
+        assert "- outside: 34.7 C" in room.summary()

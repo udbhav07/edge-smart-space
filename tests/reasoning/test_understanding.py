@@ -200,3 +200,27 @@ class TestATimeIsNotATemperature:
     def test_a_named_temperature_beside_a_time_still_wins(self):
         hint = understood(_hint(target_c=22.0), "make it 22 degrees at four")
         assert hint.intent is Intent.ENVIRONMENT and hint.target_c == 22.0
+
+
+class TestAQuestionAboutTheRoomIsAnswered:
+    """Live: "Can you see why my temperature is not actually cooling down?" lowered the target."""
+
+    @pytest.mark.parametrize(
+        "said",
+        [
+            "Can you see why my temperature is not actually cooling down? It's 28.5 from 5 minutes",
+            "Hey Jarvis, why is it still so hot?",
+            "Jarvis, could you check why the room isn't cooling",
+            "it's 28 degrees and not cooling, why?",
+        ],
+    )
+    def test_it_is_a_question_not_a_change(self, said):
+        heard = understood(_hint(Intent.ENVIRONMENT, Comfort.COOLER), said)
+        assert heard.intent is Intent.QUESTION
+
+    @pytest.mark.parametrize("said", ["Hey Jarvis, make it cooler", "Jarvis, can you cool it down a bit", "set the temperature to 18"])
+    def test_a_request_said_after_the_wake_word_stays_one(self, said):
+        assert understood(_hint(Intent.ENVIRONMENT, Comfort.COOLER), said).intent is Intent.ENVIRONMENT
+
+    def test_the_wake_word_does_not_hide_a_question(self):
+        assert understood(_hint(Intent.ENVIRONMENT, Comfort.COOLER), "Hey Jarvis, what's the temperature?").intent is Intent.QUESTION

@@ -58,6 +58,7 @@ def build_assistant(
         utc_offset_h=config.site.utc_offset_h,
         devices=devices,
         max_device_tools=config.actuators.max_device_tools,
+        outdoor_sensor_id=config.estimator.outdoor_sensor_id,
     )
 
 

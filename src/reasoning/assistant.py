@@ -232,8 +232,10 @@ class Assistant:
         utc_offset_h: float,
         devices: KnownDevices | None = None,
         max_device_tools: int = 6,
+        outdoor_sensor_id: str = "",
     ) -> None:
         """
+        :param outdoor_sensor_id: the outdoor sensor, so slow cooling is explained with the heat outside.
         :param devices: the devices in the room, for naming them (FR-89).
         :param max_device_tools: most tools of one device shown at once.
         """
@@ -254,7 +256,7 @@ class Assistant:
         self._corrections: list[str] = []
         self._specs = {spec.name: spec for spec in ASSISTANCE_TOOLS}
         #: What is true of the room, so a reply never claims otherwise.
-        self._room = RoomState()
+        self._room = RoomState(outdoor_sensor_id)
         self._profiles: dict[str, ProfileContext] = {}
         #: The entry each voice last put in or moved, so "move it" means that
         #: one. Bounded by the voices kept.
@@ -1154,6 +1156,14 @@ def _describe_verdict(
             # "Done" would claim an effect nothing will produce (U-03).
             return f"I've set the target to {applied:g} degrees."
         return f"Done. The room is now set to {applied:g} degrees."
+    if not safe_range_c.contains(asked) and hint.target_c is None:
+        # "Cooler" one below the lowest: the occupant named no number, so none
+        # is put in their mouth (live: "17 degrees is outside the safe range").
+        coolest = asked < safe_range_c.low
+        return (
+            f"It's already set as {'cool' if coolest else 'warm'} as I can make it: "
+            f"{applied:g} degrees, the {'lowest' if coolest else 'highest'} the safe range allows."
+        )
     if not safe_range_c.contains(asked):
         limit = safe_range_c.clamp(asked)
         now = (

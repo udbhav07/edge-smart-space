@@ -15,18 +15,25 @@ Nothing here can change the room; it only says what is true of it.
 
 from __future__ import annotations
 
+from collections import deque
+
 from src.common import topics
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
+    ActuatorState,
+    CommandKind,
     FaultDiagnosis,
     Mode,
     ModeState,
+    SensorReading,
     ThermalEstimate,
     TrackingState,
 )
 
 #: Explanations held; bounded by the faults that can be active at once.
 _DIAGNOSES_KEPT = 16
+#: Estimates remembered for the trend: at one every 5 s, the last five minutes.
+_HISTORY_KEPT = 60
 
 #: Modes in which the air conditioner is not being driven at all.
 _NOT_COOLING_MODES = frozenset({Mode.DEGRADED_ACTUATOR, Mode.SAFE_HOLD})
@@ -51,7 +58,16 @@ _MODE_TEXT = {
 class RoomState:
     """What is true of the room now, for the assistant to say."""
 
-    def __init__(self) -> None:
+    def __init__(self, outdoor_sensor_id: str = "") -> None:
+        """
+        :param outdoor_sensor_id: the outdoor temperature sensor, so a
+            question about slow cooling is answered with the heat outside.
+        """
+        self._outdoor_sensor_id = outdoor_sensor_id
+        self._outdoor_c: float | None = None
+        self._actuator: ActuatorState | None = None
+        #: (ts, indoor temperature), the last few minutes of it: whether it is falling.
+        self._history: deque[tuple[float, float]] = deque(maxlen=_HISTORY_KEPT)
         self._mode: ModeState | None = None
         self._estimate: ThermalEstimate | None = None
         self._tracking: TrackingState | None = None
@@ -62,6 +78,16 @@ class RoomState:
         blackboard.subscribe(topics.ESTIMATE_THERMAL, ThermalEstimate, self._on_estimate)
         blackboard.subscribe(topics.CONTROL_TRACKING, TrackingState, self._on_tracking)
         blackboard.subscribe(topics.DIAGNOSIS, FaultDiagnosis, self._on_diagnosis)
+        blackboard.subscribe(topics.ACTUATOR_STATE, ActuatorState, self._on_actuator)
+        if self._outdoor_sensor_id:
+            blackboard.subscribe(topics.SENSOR_STATE, SensorReading, self._on_reading)
+
+    def _on_actuator(self, _topic: str, state: ActuatorState) -> None:
+        self._actuator = state
+
+    def _on_reading(self, _topic: str, reading: SensorReading) -> None:
+        if reading.sensor_id == self._outdoor_sensor_id:
+            self._outdoor_c = reading.value
 
     def _on_mode(self, _topic: str, state: ModeState) -> None:
         self._mode = state
@@ -70,6 +96,7 @@ class RoomState:
 
     def _on_estimate(self, _topic: str, estimate: ThermalEstimate) -> None:
         self._estimate = estimate
+        self._history.append((estimate.ts, estimate.t_in))
 
     def _on_tracking(self, _topic: str, state: TrackingState) -> None:
         self._tracking = state
@@ -137,8 +164,26 @@ class RoomState:
             if held != self._tracking.setpoint_c:
                 target += f", held at {held:g} C ({self._tracking.reason})"
             lines.append(target)
+        if self._actuator is not None:
+            cooling = self._actuator.kind is CommandKind.COOL
+            lines.append(f"- air conditioner: {'cooling' if cooling else self._actuator.kind.value.lower()}")
+        trend = self.trend()
+        if trend is not None:
+            change, minutes = trend
+            way = "falling" if change < -0.05 else "rising" if change > 0.05 else "steady"
+            lines.append(f"- over the last {minutes:.0f} minutes: {way}, {abs(change):.1f} C ({abs(change) / minutes:.2f} C a minute)")
+        if self._outdoor_c is not None:
+            lines.append(f"- outside: {self._outdoor_c:.1f} C")
         lines.append(f"- status: {self.status()}")
         return "\n".join(lines)
+
+    def trend(self) -> tuple[float, float] | None:
+        """How much the room's temperature has changed, and over how many minutes; None if too little is known."""
+        if len(self._history) < 2:
+            return None
+        (first_ts, first_c), (last_ts, last_c) = self._history[0], self._history[-1]
+        minutes = (last_ts - first_ts) / 60.0
+        return (last_c - first_c, minutes) if minutes >= 1.0 else None
 
     def caveat(self, applied_c: float) -> str:
         """What an occupant must be told beside a new setpoint, if anything."""
