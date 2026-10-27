@@ -234,10 +234,15 @@ class TestTitles:
             ("Shape of You", "Ed Sheeran - Topic", ("Shape of You", "Ed Sheeran")),
             ("Billie Jean", "Michael Jackson", ("Billie Jean", "")),
             ("Miles Davis - So What", "", ("So What", "Miles Davis")),
+            ("Africa", "@TOTO", ("Africa", "")),
+            ("Toto - Africa (Official HD Video)", "@TOTO", ("Africa", "Toto")),
         ],
     )
     def test_a_video_title_becomes_a_song_name(self, title, channel, expected):
         assert tidy(title, channel) == expected
+
+    def test_a_handle_is_a_name(self):
+        assert tidy("Africa", "@TOTO", track="Africa", artist="@TOTO") == ("Africa", "TOTO")
 
     def test_metadata_wins(self):
         assert tidy("whatever", "x", track="Hotel California (2013 Remaster)", artist="Eagles, Don Henley") == ("Hotel California", "Eagles")

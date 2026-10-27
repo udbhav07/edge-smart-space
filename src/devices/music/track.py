@@ -58,7 +58,7 @@ def tidy(title: str, channel: str = "", track: str = "", artist: str = "") -> tu
     :returns: (title, artist); the artist may be empty.
     """
     if track:
-        return _strip(track), artist.split(",")[0].strip()
+        return _strip(track), artist.split(",")[0].strip().lstrip("@")
     text = title.split("|")[0].strip()
     quoted = re.search(r"[\"“]([^\"”]+)[\"”]", text)
     if quoted:
@@ -70,9 +70,10 @@ def tidy(title: str, channel: str = "", track: str = "", artist: str = "") -> tu
         if "|" in title and not by_channel:
             # "Kesariya - Brahmastra | Ranbir Kapoor": a film song is "Song - Film | cast".
             return _strip(left), artist
-        return _strip(right), artist or left
-    named = _CHANNEL_NOISE.sub("", channel.strip()) if _CHANNEL_NOISE.search(channel.strip()) else ""
-    return _strip(text), artist or named
+        return _strip(right), (artist or left).lstrip("@")
+    channel = channel.strip().lstrip("@")  # a handle, "@TOTO", is still the name
+    named = _CHANNEL_NOISE.sub("", channel) if _CHANNEL_NOISE.search(channel) else ""
+    return _strip(text), (artist or named).lstrip("@")
 
 
 def _same(a: str, b: str) -> bool:
