@@ -692,3 +692,32 @@ class TestOverhearingIsNotListening:
         pipeline, _ = _listening(continuous, SimClock(), text="secret word")
         _feed(pipeline, SPEECH, SILENCE)
         assert "fewer than" in caplog.text and "secret" not in caplog.text
+
+
+class TestCalledByName:
+    """FR-98: a sentence that opens with "Jarvis" is a request, though no detector fired."""
+
+    @pytest.mark.parametrize("said", ["Hey Jarvis, what's the time right now?", "Jarvis, stop.", "Yes Jarvis, play Daudi from Devara", "hi, jarvis next song"])
+    def test_it_is_heard_as_a_request(self, continuous, said):
+        pipeline, parts = _listening(continuous, SimClock(), text=said)
+        (heard,) = _feed(pipeline, SPEECH, SPEECH, SILENCE)
+        assert isinstance(heard, PreferenceHint) and parts["personal_context"].transcripts == [said]
+
+    @pytest.mark.parametrize("said", ["I told Jarvis about it yesterday", "the Jarvis in that film was great", "hey there how are you"])
+    def test_talk_about_it_is_not(self, continuous, said):
+        pipeline, parts = _listening(continuous, SimClock(), text=said)
+        (heard,) = _feed(pipeline, SPEECH, SPEECH, SILENCE)
+        assert isinstance(heard, AmbientUtterance) and parts["personal_context"].transcripts == []
+
+    def test_a_short_command_by_name_is_not_dropped_as_too_few_words(self, continuous):
+        pipeline, _ = _listening(continuous, SimClock(), text="Jarvis, louder")
+        assert isinstance(_feed(pipeline, SPEECH, SILENCE)[0], PreferenceHint)
+
+    def test_turned_off_it_is_overheard(self, continuous):
+        pipeline, _ = _listening(continuous.model_copy(update={"transcript_wake": False}), SimClock(), text="Hey Jarvis, what's the time right now?")
+        (heard,) = _feed(pipeline, SPEECH, SPEECH, SILENCE)
+        assert isinstance(heard, AmbientUtterance)
+
+    def test_another_name_can_be_used(self, continuous):
+        pipeline, _ = _listening(continuous.model_copy(update={"wake_names": ["friday"]}), SimClock(), text="Friday, lights off")
+        assert isinstance(_feed(pipeline, SPEECH, SILENCE)[0], PreferenceHint)

@@ -27,6 +27,7 @@ milliseconds, and like every buffer here it is dropped, never kept (FR-51).
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -124,6 +125,9 @@ class SpeechPipeline:
         self._reply_wait_frames = int(reply_wait_s * config.sample_rate_hz / config.chunk_samples)
         self._wake_keep_frames = int(config.wake_keep_s * config.sample_rate_hz / config.chunk_samples)
         self.woke_mid_speech = False
+        names = "|".join(re.escape(name) for name in config.wake_names)
+        #: "Jarvis", "Hey Jarvis", "Hi, Jarvis", and what Whisper makes of "hey": "Yes Jarvis", "A Jarvis".
+        self._called_by_name = re.compile(rf"^\W*(?:(?:hey|hi|hay|ok|okay|yes|yeah|a|oh|hello)\W+)?(?:{names})\b", re.IGNORECASE)
         self._window_frames = 0
 
     @property
@@ -291,6 +295,14 @@ class SpeechPipeline:
         state to be kept for whoever connects next (FR-76).
         """
         transcript = self._transcriber.transcribe(frames, confident_only=True)
+        if self._named_at_the_start(transcript):
+            # The wake word was in the words though no detector fired: live,
+            # "Hey Jarvis, what's the time right now?" came back from Whisper
+            # word for word while the keyword spotter heard nothing. Said to
+            # Jarvis by name, it is a request, and is heard as one -- again,
+            # with every segment and the household's words (FR-98).
+            LOGGER.info("the wake word was in what was said, though no detector fired: taken as a request")
+            return self._understand(frames)
         # Distinct words, not words: live, room noise came back from Whisper
         # as "No. No. No. No." -- four words, one of them, and nothing said.
         words = [word.strip(".,!?;:'\"").lower() for word in (transcript or "").split()]
@@ -313,6 +325,13 @@ class SpeechPipeline:
             profile_id=self._speaker_of(frames),
             duration_s=duration_s,
         )
+
+    def _named_at_the_start(self, transcript: str) -> bool:
+        """Whether a sentence opens by calling the assistant by name: "Jarvis, ...", "Hey Jarvis ...".
+
+        Only at the start: "I told Jarvis yesterday" is talk about it, not to it.
+        """
+        return bool(self._config.transcript_wake and transcript and self._called_by_name.match(transcript))
 
     def _understand(self, frames: list) -> PreferenceHint | None:
         transcript = self._transcriber.transcribe(frames)

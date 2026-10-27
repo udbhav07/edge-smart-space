@@ -541,6 +541,14 @@ class SpeechConfig(_Section):
         le=5.0,
         description="What was heard just before the wake word fired, kept as the start of the request, in s",
     )
+    transcript_wake: bool = Field(
+        default=True,
+        description="A sentence overheard that opens with the assistant's name is taken as a request, "
+        "though no wake word detector fired (FR-98)",
+    )
+    wake_names: list[str] = Field(
+        default_factory=lambda: ["jarvis"], min_length=1, description="The names a sentence may open with"
+    )
     wake_echo_cancel: bool = Field(
         default=True,
         description="Also listen with what the speakers play taken out of the microphone (FR-98)",
