@@ -638,6 +638,11 @@ class SpeechConfig(_Section):
         description="Shortest utterance a speaker is judged from, in s",
     )
     asr_model: str = Field(min_length=1, description="Whisper model size")
+    asr_hotwords: str = Field(
+        default="",
+        description="Words a request is likely to hold, which Whisper is nudged towards: "
+        "the wake word, people's names, the devices (FR-50)",
+    )
     asr_device: str = Field(
         min_length=1,
         description="auto (prefer CUDA, fall back to CPU), cuda, or cpu",

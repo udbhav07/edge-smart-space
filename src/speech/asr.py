@@ -194,7 +194,11 @@ class Transcriber:
         """Transcribe audio already decoded: 16 kHz mono float, as from a phone (FR-94)."""
         if audio.size == 0:
             return ""
-        segments, _ = self._model.transcribe(audio, beam_size=_BEAM_SIZE)
+        # Names Whisper is nudged towards -- "Jarvis", Indian names, the devices --
+        # only for a request made to it: on overheard talk a prompt makes Whisper
+        # more ready to hear words that were never said.
+        hotwords = None if confident_only or not self._config.asr_hotwords else self._config.asr_hotwords
+        segments, _ = self._model.transcribe(audio, beam_size=_BEAM_SIZE, hotwords=hotwords)
         if confident_only:
             heard = list(segments)
             segments = [segment for segment in heard if self._confident(segment)]

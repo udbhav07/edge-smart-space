@@ -149,9 +149,10 @@ class _Whisper:
         selection = resolve(config.asr_device, config.asr_compute_type)
         LOGGER.info("loading Whisper %s on %s/%s for devices away from the room", config.asr_model, selection.device, selection.compute_type)
         self._model = WhisperModel(config.asr_model, device=selection.device, compute_type=selection.compute_type, local_files_only=True)
+        self._hotwords = config.asr_hotwords or None
 
     def transcribe_audio(self, audio: np.ndarray) -> str:
-        segments, _ = self._model.transcribe(audio, beam_size=_BEAM_SIZE)
+        segments, _ = self._model.transcribe(audio, beam_size=_BEAM_SIZE, hotwords=self._hotwords)
         return " ".join(segment.text.strip() for segment in segments).strip()
 
 

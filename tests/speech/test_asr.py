@@ -49,8 +49,8 @@ class FakeWhisper:
         self.text = text
         self.calls: list[dict] = []
 
-    def transcribe(self, audio, beam_size):
-        self.calls.append({"samples": len(audio), "beam_size": beam_size})
+    def transcribe(self, audio, beam_size, hotwords=None):
+        self.calls.append({"samples": len(audio), "beam_size": beam_size, "hotwords": hotwords})
         segments = [type("Segment", (), {"text": part})() for part in self.text.split("|")]
         return segments, None
 
@@ -236,7 +236,8 @@ class _ScoredWhisper:
     def __init__(self, *segments):
         self.segments = list(segments)
 
-    def transcribe(self, audio, beam_size):
+    def transcribe(self, audio, beam_size, hotwords=None):
+        self.hotwords = hotwords
         return list(self.segments), None
 
 
@@ -285,3 +286,22 @@ class TestWhyOverheardSpeechWasDropped:
             SimpleNamespace(no_speech_prob=0.1, avg_logprob=-0.2, compression_ratio=1.0),
         ]
         assert _why_dropped(segments, config) == "1 likely silence, 1 low confidence, 1 repeating"
+
+
+class TestHotwords:
+    """Whisper is nudged towards the household's words when spoken to, never when overhearing."""
+
+    def test_a_request_carries_the_hotwords(self, config):
+        whisper = _ScoredWhisper(_Segment("play tum hi ho"))
+        Transcriber(config.model_copy(update={"asr_hotwords": "Jarvis, Arijit Singh"}), model=whisper).transcribe([FRAME])
+        assert whisper.hotwords == "Jarvis, Arijit Singh"
+
+    def test_overheard_talk_is_not_nudged(self, config):
+        whisper = _ScoredWhisper(_Segment("dentist on Thursday"))
+        Transcriber(config.model_copy(update={"asr_hotwords": "Jarvis"}), model=whisper).transcribe([FRAME], confident_only=True)
+        assert whisper.hotwords is None
+
+    def test_none_configured_is_none_sent(self, config):
+        whisper = _ScoredWhisper(_Segment("make it cooler"))
+        Transcriber(config.model_copy(update={"asr_hotwords": ""}), model=whisper).transcribe([FRAME])
+        assert whisper.hotwords is None

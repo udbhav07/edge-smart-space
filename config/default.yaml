@@ -280,13 +280,24 @@ speech:
   speaker_min_enrolment_utterances: 3
   speaker_min_audio_s: 1.0        # shorter utterances are judged as a guest
   speaker_min_speech_s: 1.5       # each enrolment take must hold this much speech
-  asr_model: base.en
+  # small.en, measured on an RTX 3050 (4 GB) for a 4.7 s command: 297 ms and
+  # 500 MiB at int8_float16, and the only size to get "Tum Hi Ho by Arijit
+  # Singh" and "speed 2" right; base.en (187 ms) heard "Tom Hye Ho by Ariget
+  # Singh", large-v3-turbo took 500 ms and 1.1 GB and did no better. On Indian
+  # English (Svarah) Whisper's word error falls from 13.6 % (base) as the model
+  # grows; small is what fits beside the 7B model on a 4 GB card.
+  asr_model: small.en
+  # Nudges Whisper towards these when a request is made to it, never for
+  # overheard talk. Add the household's names and the music they ask for.
+  asr_hotwords: "Jarvis, Arijit Singh, AC, fan, lamp"
   # GPU first. 'auto' prefers CUDA and falls back to CPU so a laptop still
   # runs (NFR-09); 'cuda' demands it and fails loudly if absent, which is what
   # you want on the Jetson where a silent CPU fallback looks like slow code
   # rather than a broken build (section 9.2).
   asr_device: auto
-  asr_compute_type: auto
+  # int8 weights with float16 maths: half the memory of float16 at a few ms
+  # more, which leaves the GPU to the 7B model (measured above).
+  asr_compute_type: int8_float16
 
 # Section 5.7.5. One server serves every call site.
 reasoning:
