@@ -51,6 +51,7 @@ class FakePipeline:
         self._results = list(results)
         self.seen = 0
         self.listening_for_the_assistant = False
+        self.woke_mid_speech = False
         self.answers_awaited = 0
 
     def listen_for_answer(self):
@@ -312,6 +313,18 @@ class TestAWindowAnnounced:
         pipeline, voice = Waking([None, None]), _HeldVoice()
         self._run(config, pipeline, voice, 2)
         assert voice.chimes == 1  # when it opened; not again while it stays open
+
+    def test_a_wake_word_said_mid_sentence_does_not_chime(self, config):
+        """FR-98: the person is already talking; the chime would hold back their words."""
+
+        class WakingMidSpeech(FakePipeline):
+            def accept(self, frame):
+                self.listening_for_the_assistant, self.woke_mid_speech = True, True
+                return super().accept(frame)
+
+        pipeline, voice = WakingMidSpeech([None]), _HeldVoice()
+        self._run(config, pipeline, voice, 1)
+        assert voice.chimes == 0
 
 
 class TestAMessageWindow:

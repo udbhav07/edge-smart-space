@@ -123,6 +123,7 @@ class SpeechPipeline:
         self._reply_to = ""
         self._reply_wait_frames = int(reply_wait_s * config.sample_rate_hz / config.chunk_samples)
         self._wake_keep_frames = int(config.wake_keep_s * config.sample_rate_hz / config.chunk_samples)
+        self.woke_mid_speech = False
         self._window_frames = 0
 
     @property
@@ -199,11 +200,16 @@ class SpeechPipeline:
         start of the window; anything said longer before is still dropped.
         """
         LOGGER.info("wake word detected; opening capture window")
+        mid_speech = self._state is PipelineState.LISTENING and not self._addressed
         kept = list(self._buffer or self._preroll)[-self._wake_keep_frames:] if self._wake_keep_frames else []
         self._open_addressed()
         self._buffer = kept
+        self.woke_mid_speech = mid_speech
 
     def _open_addressed(self) -> None:
+        #: Whether this window was opened by a wake word said in the middle of
+        #: speaking -- "hey Jarvis, next song" in one breath -- rather than before it.
+        self.woke_mid_speech = False
         self._reply_to = ""
         self._window_frames = 0
         self._detector.reset()

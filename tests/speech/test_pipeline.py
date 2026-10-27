@@ -530,6 +530,16 @@ class TestListeningContinuously:
         _feed(pipeline, SPEECH, SPEECH, SPEECH, "wake", SPEECH, SILENCE)
         assert parts["transcriber"].calls == [5]
 
+    def test_a_wake_mid_speech_is_known(self, continuous):
+        pipeline, _ = _listening(continuous, SimClock())
+        _feed(pipeline, SPEECH, SPEECH, "wake")
+        assert pipeline.woke_mid_speech is True
+
+    def test_a_wake_before_speaking_is_not_mid_speech(self, continuous):
+        pipeline, _ = _listening(continuous, SimClock())
+        _feed(pipeline, SILENCE, "wake")
+        assert pipeline.woke_mid_speech is False
+
     def test_nothing_kept_if_turned_off(self, continuous):
         pipeline, parts = _listening(continuous.model_copy(update={"wake_keep_s": 0.0}), SimClock())
         _feed(pipeline, SPEECH, SPEECH, SPEECH, "wake", SPEECH, SILENCE)

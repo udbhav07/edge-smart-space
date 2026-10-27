@@ -148,8 +148,12 @@ def run(
             # preference hint, not the audio pipeline (FR-47).
             LOGGER.warning("reasoning unavailable, dropping utterance: %s", exc)
             continue
-        if voice is not None and not was_listening and pipeline.listening_for_the_assistant:
-            voice.chime()  # the wake word was just heard
+        if voice is not None and not was_listening and pipeline.listening_for_the_assistant and not pipeline.woke_mid_speech:
+            # The wake word was just heard. Not when it was said in the same
+            # breath as the request: the person is already talking, and the
+            # frames the chime holds back would be their words -- live, "next
+            # song" was heard as "song" (FR-98). The indicator still shows it.
+            voice.chime()
 
         if isinstance(hint, MessageReply):
             # Not a request: words for the person who sent the message.
