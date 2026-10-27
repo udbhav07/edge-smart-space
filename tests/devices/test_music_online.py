@@ -508,3 +508,39 @@ class TestCarryingOn:
         player.position_s, player.broken = 40.0, True
         device.resume({})
         assert len(player.played) == 2 and player.start_s == 40.0 and device.state()["playing"]
+
+
+class _RefusingOnce(_HeldPlayer):
+    """YouTube's servers refusing the first address given."""
+
+    def __init__(self, refusals=1):
+        super().__init__()
+        self.refusals = refusals
+
+    def play(self, track, start_s=0.0, paused=False):
+        if self.refusals:
+            self.refusals -= 1
+            raise ValueError("That song couldn't be opened; try another.")
+        super().play(track, start_s, paused)
+
+
+class TestARefusedStream:
+    def _device(self, tmp_path, player):
+        catalogue = _Following([])
+        clock = _Clock()
+        device = MusicDevice(
+            Library([tmp_path / "music"], [".mp3"], random.Random(1)), player, MusicConfig(library_path=str(tmp_path / "music")),
+            catalogue, room=RoomVoice(clock, 45), clock=clock, background=lambda job: None,
+        )
+        return device, catalogue
+
+    def test_it_is_looked_up_again_and_played(self, tmp_path):
+        player = _RefusingOnce()
+        device, catalogue = self._device(tmp_path, player)
+        assert device.play({"query": "bohemian rhapsody"}).message.startswith("Playing")
+        assert catalogue.resolved == ["now"] and player.played[-1].url == "https://cdn.invalid/now"
+
+    def test_twice_refused_is_said_plainly(self, tmp_path):
+        device, _ = self._device(tmp_path, _RefusingOnce(refusals=2))
+        with pytest.raises(ValueError, match="couldn't be opened"):
+            device.play({"query": "bohemian rhapsody"})

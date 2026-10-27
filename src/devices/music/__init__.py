@@ -346,7 +346,7 @@ class MusicDevice:
         """Play a track -- or, asked for aloud, held until Jarvis has said he is playing it."""
         cue = asked and self._room is not None and self._clock is not None and self._room.awaiting_reply()
         self._apply_volume()
-        self._player.play(track, paused=cue)
+        track = self._open(track, paused=cue)
         self._track, self._paused = track, False
         self._cued_until = self._clock.now() + self._config.wait_for_reply_s if cue else None
         self._up_next.clear()
@@ -393,16 +393,31 @@ class MusicDevice:
         :raises ValueError: it cannot be found again.
         """
         track, position = self._track, self._player.position_s
-        try:
-            self._player.play(track, start_s=position)
-        except ValueError:
-            # A stream's address expires after some hours; find the song again.
-            fresh = self._catalogue.resolve(Candidate(track.video_id, track.title)) if self._catalogue and track.video_id else None
-            if fresh is None:
-                raise
-            self._player.play(fresh, start_s=position)
-            self._track = fresh
+        self._track = self._open(track, start_s=position)
         LOGGER.info("carrying on with %s from %.0f s", track.name, position)
+
+    def _open(self, track: Track, start_s: float = 0.0, paused: bool = False) -> Track:
+        """Play a track; a stream refused is looked up again once and tried afresh.
+
+        YouTube's servers refuse some addresses outright (live: 403 Forbidden,
+        and the same song opened a minute later from a fresh lookup), and an
+        address expires after some hours.
+
+        :returns: the track as played -- the fresh one, if it took a second look.
+        :raises ValueError: it could not be played, in words for the occupant.
+        """
+        try:
+            self._player.play(track, start_s=start_s, paused=paused)
+            return track
+        except ValueError:
+            if self._catalogue is None or not track.video_id:
+                raise
+            LOGGER.info("%s was refused; looking it up again", track.name)
+        fresh = self._catalogue.resolve(Candidate(track.video_id, track.title))
+        if fresh is None:
+            raise ValueError("That song couldn't be opened; try another.")
+        self._player.play(fresh, start_s=start_s, paused=paused)
+        return fresh
 
     def _following(self) -> Track | None:
         """What plays after the current song: YouTube's next, or another from the library."""
