@@ -260,6 +260,11 @@ class ValidatorConfig(_Section):
 
     setpoint_bounds_c: Bounds = Field(description="V-1 absolute bounds")
     max_step_c: float = Field(gt=0.0, description="V-2 rate limit per invocation")
+    pace_occupant: bool = Field(
+        default=False,
+        description="Also pace an occupant's own setpoint by max_step_c; off, a person who names "
+        "a temperature gets it at once, within the bounds",
+    )
     min_off_s: float = Field(ge=0.0, description="V-3 compressor dwell")
     min_command_interval_s: float = Field(
         gt=0.0, description="V-4 maximum command frequency"

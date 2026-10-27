@@ -109,6 +109,27 @@ class TestRuleV1AbsoluteBounds:
         assert validator.validate(_goal(clock, setpoint)).verdict is Verdict.ACCEPTED
 
 
+class TestRuleV2PacesTheSystemNotThePerson:
+    """A person's own setpoint is not paced; what the system proposes for itself is."""
+
+    def test_an_occupant_gets_a_distant_setpoint_at_once(self, goals, clock):
+        verdict = goals.validate(_goal(clock, START_SETPOINT_C - 6.0, source=GoalSource.PREFERENCE))
+        assert verdict.verdict is Verdict.ACCEPTED and verdict.applied[SETPOINT_KEY] == START_SETPOINT_C - 6.0
+
+    def test_but_still_within_the_bounds(self, goals, clock, config):
+        verdict = goals.validate(_goal(clock, 5.0, source=GoalSource.PREFERENCE))
+        assert verdict.reason is ReasonCode.BOUND_CLAMP and verdict.applied[SETPOINT_KEY] == config.setpoint_bounds_c.low
+
+    def test_the_supervisor_is_still_paced(self, goals, clock, config):
+        verdict = goals.validate(_goal(clock, START_SETPOINT_C - 6.0, source=GoalSource.SUPERVISOR))
+        assert verdict.reason is ReasonCode.RATE_LIMIT and verdict.applied[SETPOINT_KEY] == START_SETPOINT_C - config.max_step_c
+
+    def test_the_occupant_too_if_configured(self, config, clock):
+        paced = GoalValidator(config.model_copy(update={"pace_occupant": True}), clock, initial_setpoint_c=START_SETPOINT_C)
+        verdict = paced.validate(_goal(clock, START_SETPOINT_C - 6.0, source=GoalSource.PREFERENCE))
+        assert verdict.reason is ReasonCode.RATE_LIMIT
+
+
 class TestRuleV2RateLimit:
     def test_a_step_within_the_limit_is_accepted_unchanged(self, goals, clock):
         verdict = goals.validate(_goal(clock, START_SETPOINT_C + 1.0))
