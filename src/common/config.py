@@ -535,6 +535,13 @@ class SpeechConfig(_Section):
     kws_threshold: float = Field(default=0.1, gt=0.0, le=1.0, description="The keyword spotter's trigger threshold")
     kws_boost: float = Field(default=3.0, gt=0.0, description="How much the spotter favours the phrases over other words")
     wake_agree_s: float = Field(default=1.5, gt=0.0, description="How close together 'both' detectors must fire, in s")
+    wake_echo_cancel: bool = Field(
+        default=True,
+        description="Also listen with what the speakers play taken out of the microphone (FR-98)",
+    )
+    echo_delay_ms: int = Field(
+        default=55, ge=0, le=500, description="First guess at how late the microphone hears the speakers, in ms; 54 measured on the laptop"
+    )
     vad_silence_ms: int = Field(gt=0, description="Silence marking end of utterance")
     no_speech_timeout_s: float = Field(
         gt=0.0, description="Give up if nothing is said after the wake word"

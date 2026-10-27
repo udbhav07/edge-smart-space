@@ -205,7 +205,25 @@ class Either:
 
 
 def build_wake_detector(config: SpeechConfig) -> WakeDetector:
-    """The detector ``speech.wake_engine`` names (FR-98)."""
+    """The detector ``speech.wake_engine`` names (FR-98) -- listening twice, with
+    the room's own sound taken out of the second hearing, if ``wake_echo_cancel``."""
+    detector = _engine(config)
+    if not config.wake_echo_cancel:
+        return detector
+    from src.speech.echo import EchoCanceller, EchoUnavailable, ListeningTwice, LoopbackReference
+
+    try:
+        canceller = EchoCanceller(config.echo_delay_ms)
+        reference = LoopbackReference()
+    except (EchoUnavailable, OSError) as exc:
+        # Hearing over the music is better with it, but the room hears without it.
+        LOGGER.warning("wake word without echo cancelling: %s", exc)
+        return detector
+    LOGGER.info("wake word heard twice: as the microphone hears it, and with the room's own sound taken out")
+    return ListeningTwice(detector, _engine(config), canceller, reference)
+
+
+def _engine(config: SpeechConfig) -> WakeDetector:
     engine = config.wake_engine
     if engine == "openwakeword":
         return WakeWordDetector(config)

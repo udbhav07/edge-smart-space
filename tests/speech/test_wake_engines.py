@@ -127,10 +127,10 @@ class TestChosenByConfiguration:
 
     @pytest.mark.parametrize(("engine", "kind"), [("openwakeword", _Scripted), ("both", Agreeing), ("either", Either)])
     def test_the_engine_named_is_built(self, engine, kind):
-        assert isinstance(build_wake_detector(CONFIG.model_copy(update={"wake_engine": engine})), kind)
+        assert isinstance(build_wake_detector(CONFIG.model_copy(update={"wake_engine": engine, "wake_echo_cancel": False})), kind)
 
     def test_both_agree_within_the_configured_span(self):
-        detector = build_wake_detector(CONFIG.model_copy(update={"wake_engine": "both", "wake_agree_s": 1.6}))
+        detector = build_wake_detector(CONFIG.model_copy(update={"wake_engine": "both", "wake_agree_s": 1.6, "wake_echo_cancel": False}))
         assert detector._within == round(1.6 * 16000 / CONFIG.chunk_samples)
 
     def test_the_shipped_default_is_either(self):
