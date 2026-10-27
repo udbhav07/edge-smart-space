@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.22 | **Heard over the music, answered at once** (§5.8.8, §5.11; FR-97, FR-98): the wake word detector is a seam, and openWakeWord is joined by sherpa-onnx's keyword spotter; the wake word is also heard with the room's own sound taken out by echo cancelling against the speakers' output; the moment before the wake is kept and a wake mid-sentence does not chime; short device commands -- stop, carry on, next, louder -- are understood without a model; transcription moves to Whisper small.en with hotwords. |
 | 1.21 | **The room's music** (§5.11; FR-96, revised): a song asked for aloud waits for Jarvis to finish saying so; the music dips while the room listens or speaks; stop keeps the place and carry on picks it up; songs are named as they are said ("Bohemian Rhapsody by Queen"); autoplay plays what YouTube would next, or another of the occupant's own; `next` and `set_autoplay` added. |
 | 1.20 | **Music beyond the library** (§5.11; FR-96): a song the library lacks, or one asked for "from YouTube", is found with yt-dlp and streamed, decoded ahead by PyAV so the sound card never waits on the network; "play some music" stays in the library. A device now has 12 s to answer and the assistant waits 14 s, an ordering enforced at load. |
 | 1.19 | **Messages home** (§5.8.7; FR-95): someone away records a message on the Talk page; it plays in the room at once -- a chime, "Message from Ravi", then their own recording -- and the room listens for an answer without the wake word. The answer's audio is kept and sent back to the sender's page with sent, played and answered ticks. FR-51 gains its one stated exception. |
@@ -252,6 +253,8 @@ feature safe to ship at all.
 | FR-90 | Any MCP server named in configuration shall be mountable as a device, exposing only the tools configured, with the effect and class the configuration gives them. | S | T |
 | FR-91 | The console shall show every device and control it from what its manifest declares, with its availability, its state, and whether it is simulated. | S | D |
 | FR-94 | Someone away from the room shall be able to talk to the room from a phone or laptop on the network: speak on that device's microphone or type, and hear the answer on that device, with the room itself silent; see the shared calendar; and control every device. The recording is transcribed on the node and never kept or published. | S | D |
+| FR-97 | A short device command -- stop, pause, carry on, next, louder, quieter, a volume, a named device on or off -- shall be carried out and answered without a language model, through the same executor checks as a remote's tap. A command naming no device shall be taken this way only when exactly one media device is playing or paused; anything longer or less plain shall go to the model as before. | S | T |
+| FR-98 | The room shall be woken reliably while music plays. The wake word detector shall be swappable in configuration, and the room's own sound -- its music and its voice -- shall be taken out of what the wake word detector hears, without reaching what is transcribed. | S | T |
 | FR-96 | The music player shall play a song the occupant's library lacks, or one asked for online, by finding it online and streaming it; the library shall always be tried first, and a request naming nothing shall never leave it. It shall be possible to turn this off, leaving the player library-only. A song asked for aloud shall start after Jarvis has said he is playing it; the music shall be turned down while the room listens or speaks; stopping shall keep the place; and, unless turned off, another song shall follow when one ends. | C | D |
 | FR-95 | Someone away shall be able to leave a spoken message that plays in the room at once in their own voice, announced with who it is from, and the room shall listen for an answer without the wake word. The answer, words and voice, shall reach the sender's page, and the sender shall see whether it was sent, played and answered. Recordings shall stay on the node, never cross the blackboard, and be deleted after `messages.keep_days`. | S | D |
 | FR-93 | The occupant shall know when the room is listening to them: a chime whenever a capture window opens, and an indicator on every page of the console while it listens, thinks and speaks. After a reply is spoken, the room shall listen for an answer without the wake word. Overheard speech shall not be shown as listening. | S | D |
@@ -1405,6 +1408,60 @@ Neither carries audio, only words and a file name, which the schema restricts to
 - The status went *sent → playing → played → replied*, and Home showed it.
 
 Reach from outside the house is deferred. Options for later are Tailscale (the sender's phone joins the tailnet) or a Telegram bot adapter as a second producer of `HomeMessage`.
+#### 5.8.8 Heard over the music (v1.22; FR-98)
+
+With music playing, "Hey Jarvis" was hard to get heard, even through a headset. The openWakeWord model card says why: music or speech played from the same device causes "much higher false-reject rates unless acoustic echo cancellation is used". The model was already trained with music mixed in, so more of that is not the missing piece. No published benchmark covers wake words over music or in Indian-accented English, so the choices here were measured with `tools/wake_eval.py`. The research behind them is in `reports/Wake word over music.md`.
+
+**The detector is a seam.** The pipeline asks only `heard(frame)` and `reset()`, and `speech.wake_engine` chooses:
+
+- `openwakeword`: the trained `hey_jarvis` model;
+- `sherpa`: sherpa-onnx's streaming keyword spotter (zipformer, 3.3M parameters, CPU). It listens for "HEY JARVIS" and "JARVIS" as words, so another way of saying it is a line of configuration, not a retraining;
+- `both`: wakes when the two agree within 1.5 s, for fewer false wakes;
+- `either`: wakes when either hears it, for fewer missed wakes. This is the shipped setting.
+
+**Measured.** 45 synthesised takes (three Piper voices, five phrases, three speeds), mixed into "Hotel California" and "Tum Hi Ho", plus 6 minutes of the songs alone for false wakes:
+
+| Detector | +20 dB | +10 dB | +5 dB | 0 dB | −5 dB | False wakes per hour |
+|---|---|---|---|---|---|---|
+| openWakeWord @0.5 | 98 % | 98 % | 96 % | 67 % | 29 % | 10 |
+| openWakeWord @0.1 (setting before this) | 100 % | 100 % | 100 % | 96 % | 76 % | 40 |
+| sherpa @0.1, boost 3 | 91 % | 84 % | 91 % | 67 % | 29 % | 0 |
+| either (openWakeWord 0.5, sherpa 0.1) | 100 % | 100 % | 96 % | 89 % | 56 % | 10 |
+
+- **Tuning the spotter mattered.** Untuned (threshold 0.25, boost 1.5, "HEY JARVIS" only) it caught 44 % of clean takes. Adding the bare "JARVIS" with boost 3 took it to 96 %.
+- **The threshold stays at 0.1.** For this team's voices openWakeWord does not fire reliably at 0.5. So `either` keeps it at 0.1: nothing that wakes the room today stops doing so, and the spotter added no false wakes on the music. Raising the threshold waits on recordings of the household (`python -m tools.wake_eval --voices DIR`).
+- **The sample is small.** Six minutes of music makes 10 per hour a single event, and the voices are synthetic: none has an Indian accent.
+
+**The room's own sound taken out.** What the speakers play is recorded from their output (WASAPI loopback, through PyAudioWPatch), which carries the music and Jarvis's voice without any service having to share it. WebRTC's echo canceller (AEC3, through LiveKit's bindings) removes it from a copy of the microphone (`src/speech/echo.py`).
+
+- **Offline, it removed 33 to 46 dB of music.** But while someone spoke over it, it also took 15 to 22 dB off their voice, and alone it caught fewer wakes than the raw microphone.
+- **So it is used beside the microphone.** One detector hears the raw signal, a second the cancelled one, and either wakes the room:
+
+| Music against the voice | Raw microphone | Cancelled only | Both |
+|---|---|---|---|
+| As loud (0 dB) | 27 / 27 | 22 / 27 | 27 / 27 |
+| 5 dB louder | 22 / 27 | 14 / 27 | 26 / 27 |
+| 10 dB louder | 12 / 27 | 15 / 27 | 21 / 27 |
+
+- **Only the wake word hears the cancelled copy.** What is transcribed is the microphone as it was, with the music dipped by then (§5.11).
+- **Live on the laptop.** The reference first ran 320 ms behind the microphone, because a half-second backlog was kept, and 0.5 dB was removed. Kept to the 30 ms just played, it lines up (the microphone hears the speakers 54 ms after the loopback, now the canceller's starting guess) and removes 5.9 dB. That is through laptop speakers the microphone barely hears (−36 dBFS); external speakers give it more to remove.
+- **Cost.** Both detectors and the canceller take 0.8 ms per 32 ms frame (median), 19 ms at the 99th percentile.
+- **On Linux.** PipeWire's `module-echo-cancel` does the same in the sound server. Without a loopback, the room listens without it and says so in its log.
+
+**A wake mid-sentence.** A detector fires a little after the phrase, the spotter by a few hundred ms. Live, "hey Jarvis, carry on" was heard as "on." and "next song" as "song.", and the listening chime then held back more of the sentence. Now:
+- the last `wake_keep_s` (1.5 s) before the wake are kept as the start of the request;
+- a wake said in the same breath as the request does not chime. A wake before speaking still chimes, and the indicator shows either.
+
+**Transcription for Indian English.** On the Svarah benchmark of Indian-accented English, Whisper's word error falls from 13.6 % (base) to about 7 % (large-v3). Measured on this node's RTX 3050 (4 GB) for a 4.7 s command:
+
+| Model | Latency | GPU memory | What it heard |
+|---|---|---|---|
+| base.en | 187 ms | 339 MiB | "Tom Hye Ho by Ariget Singh" |
+| small.en (int8) | 297 ms | 500 MiB | "Tum Hi Ho by Arijit Singh" (and "speed 2" right) |
+| large-v3-turbo (int8) | 500 ms | 1.1 GB | "Tum Hai Ho by Arajit Singh" |
+
+`small.en` at int8_float16 is used, leaving the GPU to the 7B model. `asr_hotwords` nudges it towards the household's words, for requests only: on overheard talk a prompt makes Whisper readier to hear words never said.
+
 ### 5.9 Key Sequences
 
 #### 5.9.1 Nominal Supervisory Cycle
@@ -1658,6 +1715,26 @@ Searching and starting a stream takes 5 to 6 s, longer than any device answered 
 | "Play the next song" | "Next up, Still Loving You by Scorpions." | the next song from YouTube's mix, started after the reply |
 
 From the end of a request to the reply took 15 to 21 s. Most of that is the model (two calls) plus the 5 to 6 s online search.
+
+**Quick commands** (v1.22; FR-97). "Stop", "carry on", "next song", "louder", "turn off the fan": each of these used to take two model calls, one to read the request and one to choose the tool, which is 12 to 20 s for what a remote does at once.
+
+- **Recognised from the words alone.** `src/reasoning/quick.py` takes the words after "Jarvis". A device named in them is taken out, along with words that add nothing ("the", "music", "song"). If what remains is exactly a known verb, or a volume level with "volume", "turn" or "set" in it, the device's capability it names becomes the call.
+- **Which device.** A command that names no device goes to the one media device playing or paused. With nothing playing it goes to the model, because "stop" may be about the booking just offered, not the speaker. "Louder" and "quieter" move the volume 15 points from the device's published state.
+- **How it runs.** The call rides on the hint (`PreferenceHint.command`). The assistant runs it through the executor exactly as a remote's tap is run, with the same argument and manifest checks, and says the device's own sentence.
+- **What still goes to the model.** Anything longer: "stop the music in ten minutes", "play something by Queen".
+
+**Measured live** (2026-10-27), by voice through the speech service fed synthesised speech, from the start of speaking to the reply:
+
+| Said | Path | Time |
+|---|---|---|
+| "Stop" | quick | 2.8 s |
+| "Carry on" | quick | 3.5 s |
+| "Louder" (60 to 75 %) | quick | 3.1 s |
+| "Next song" | quick, plus opening the next stream | 5.7 s |
+| "Pause the music" | quick | 3.8 s |
+| "Play Hotel California by the Eagles" | model and search | 20 s |
+
+The same commands took 12 to 21 s through the model the day before. A song YouTube refuses to stream (live: a 403 on one address, and the same song opening a minute later) is now looked up again once and retried.
 
 **Remotes** (FR-92). People control every device directly, not only through the model. The console's **Remotes** page shows each device's remote, usable from the grid, and `/remotes/<device>` its full remote, its state, what it can do and what it was last asked. A remote never talks to a device, the broker or an MCP server itself: it publishes a `ToolInvocation` on `space/assist/proposed` exactly as `add_entry` does, so the executor's argument check, bounds and confirmation gate apply to a person's tap as to the model's call, and the device checks again. The air conditioner's remote is the climate controls: a preference through the validator, never a device command. Which remote a device gets is decided in `console/web/src/remotes/registry.ts`, first match wins -- one written for the device's id, then one for its kind (fan, light, music, ac), then the generic remote drawn from its manifest -- and a specialised remote that does not fit the device's capabilities gives way to the generic one. So a device nobody wrote a remote for is still controllable the moment it announces itself, and a remote of its own is one file and one line. A device behind MCP knows its state only once asked, so opening its page reads it quietly with its parameterless read capability. The console keeps each device's latest result, whoever asked, so a remote shows what it last did and whether it failed.
 
@@ -2104,6 +2181,8 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-94 | §5.8.6 | Unit + demonstration |
 | FR-95 | §5.8.7 | Unit + demonstration |
 | FR-96 | §5.11 | Unit + demonstration |
+| FR-97 | §5.11 | Unit + demonstration |
+| FR-98 | §5.8.8 | Unit + measurement (`tools/wake_eval.py`) + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

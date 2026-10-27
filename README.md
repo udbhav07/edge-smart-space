@@ -279,7 +279,27 @@ Jarvis says what he's playing first, and the song starts when he finishes.
 While the room is listening or speaking, the music drops to a quarter. "Stop"
 keeps your place, and "carry on" picks it up. When a song ends, the next one
 plays: what YouTube would play after it, or another of your own. "Next song"
-skips ahead, and the **Autoplay** switch on the music's remote turns this off. YouTube's terms restrict
+skips ahead, and the **Autoplay** switch on the music's remote turns this off.
+
+Short commands are answered at once, without the language model: "stop",
+"pause", "carry on", "next song", "louder", "quieter", "volume 30", "turn off
+the fan" (FR-97). They take about 3 s from when you start speaking, where the
+model takes 12 to 20 s. Anything longer still goes to the model.
+
+**Hearing "Hey Jarvis" over the music** (FR-98). Two detectors listen:
+openWakeWord, and sherpa-onnx's keyword spotter, which listens for "hey
+Jarvis" or "Jarvis" as words (`speech.wake_engine: either`). A second pair
+listens with the room's own music and voice taken out of the microphone. On
+Windows, the speakers' output is recorded as the reference and WebRTC's echo
+canceller removes it; on Linux, use PipeWire's echo-cancel module. To
+measure how well your own voices are heard over music, record a few dozen
+"Hey Jarvis" takes per person into a folder (16 kHz mono WAV) and run:
+
+    python -m tools.wake_eval --voices recordings/ --youtube "a song you play"
+
+Transcription uses Whisper `small.en`. It is better than `base.en` with
+Indian names and accents, and still fits a 4 GB GPU next to the 7B model. Add
+the names you say most to `speech.asr_hotwords`. YouTube's terms restrict
 automated access, so keep this to your own room. Keep yt-dlp current
 (`pip install -U yt-dlp`), because an old one stops finding anything. Set
 `actuators.music.online: false` to turn it off.
