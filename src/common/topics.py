@@ -163,6 +163,32 @@ ACTUATOR_STATE = TopicSpec(
 #: the same topics under their own id and carry ``simulated: true``.
 AIR_CONDITIONER_ID = "ac"
 
+# --- Device services (FR-87, FR-88) ------------------------------------------
+
+#: What a device is and can do. Retained, so a service that starts later --
+#: the assistance service, the console -- learns every device at once.
+DEVICE_MANIFEST = TopicSpec(
+    "space/device/{device_id}/manifest", Qos.AT_LEAST_ONCE, retain=True
+)
+#: Whether its service is reachable. Retained; the service's last will
+#: publishes ``online: false`` here if it dies without saying goodbye.
+DEVICE_AVAILABILITY = TopicSpec(
+    "space/device/{device_id}/availability", Qos.AT_LEAST_ONCE, retain=True
+)
+#: A ToolInvocation naming one capability. Not retained: a restarted device
+#: must not replay the last thing someone asked of it.
+DEVICE_COMMAND = TopicSpec(
+    "space/device/{device_id}/command", Qos.AT_LEAST_ONCE, retain=False
+)
+#: The ToolResult for a command, correlated by invocation id.
+DEVICE_RESULT = TopicSpec(
+    "space/device/{device_id}/result", Qos.AT_LEAST_ONCE, retain=False
+)
+#: What the device is doing now. Retained.
+DEVICE_STATE = TopicSpec(
+    "space/device/{device_id}/state", Qos.AT_LEAST_ONCE, retain=True
+)
+
 #: What the loop is holding the room to: the setpoint in force, and the
 #: temperature actually tracked, which differs during peak (FR-16). Retained:
 #: it is state an occupant, the assistant and the viewer all need.

@@ -31,6 +31,7 @@ from src.common.conversation import Conversations
 from src.common.device import resolve
 from src.common.mqtt_client import Blackboard, build_transport
 from src.common.schemas import AmbientUtterance, AssistantReply, ModeState, SpeechActivity, SpeechSettings
+from src.reasoning.devices import KnownDevices
 from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
 from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
@@ -56,6 +57,7 @@ def build_pipeline(
     capture: AudioCapture,
     conversations: Conversations | None = None,
     on_activity=None,
+    devices: KnownDevices | None = None,
 ) -> SpeechPipeline:
     """Assemble the pipeline from configuration.
 
@@ -70,7 +72,7 @@ def build_pipeline(
         detector=WakeWordDetector(config.speech),
         utterance=UtteranceDetector(config.speech),
         transcriber=Transcriber(config.speech),
-        personal_context=PersonalContext(config.reasoning, clock),
+        personal_context=PersonalContext(config.reasoning, clock, devices=devices),
         speaker=SpeakerIdentifier(config.speech),
         conversations=conversations,
         on_activity=on_activity,
@@ -183,7 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     blackboard.subscribe(topics.SYSTEM_MODE, ModeState, voice.on_mode)
     voice.start()
     status = StatusPublisher(config.speech, clock, blackboard, capture.microphone, voice=voice.engine)
-    pipeline = build_pipeline(config, clock, capture, conversations, on_activity=status.changed)
+    # The devices in the room, so "turn on the fan" is filed as being about the fan (FR-89).
+    devices = KnownDevices()
+    devices.subscribe(blackboard)
+    pipeline = build_pipeline(config, clock, capture, conversations, on_activity=status.changed, devices=devices)
 
     blackboard.start()
     capture.start()

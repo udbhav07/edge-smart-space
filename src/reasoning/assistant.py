@@ -65,6 +65,7 @@ from src.common.tools import (
     ASSISTANCE_TOOLS,
     PROFILE_TOOLS,
     REMEMBER,
+    ToolCatalogue,
     ToolInvocation,
     ToolRequester,
     ToolResult,
@@ -77,6 +78,7 @@ from src.reasoning.chat import (
     assistant_message,
     tool_message,
 )
+from src.reasoning.devices import KnownDevices
 from src.reasoning.dates import annotation, from_now, named_days, on_day, the_one_day, time_said
 from src.reasoning.room_state import RoomState
 from src.reasoning.understanding import memory_request
@@ -143,6 +145,16 @@ ASSISTANT_PROMPT = (
     "without calling any. Answer a question about the room, its temperature "
     "or the system from 'The room now' below and nothing else, and reply to "
     "a greeting in one friendly sentence."
+)
+
+#: For a request about one device (FR-89): only its tools are attached, so
+#: the prompt says nothing of calendars or bookings.
+DEVICE_PROMPT = (
+    "You are the voice assistant of a smart room, acting for the person who "
+    "lives in it. They are asking about the {name}. Use its tools to do what "
+    "they asked or to find out what they want to know, calling each at most "
+    "once. If it cannot be done with these tools, say so in one sentence "
+    "without calling any. Never claim something was done that no tool did."
 )
 
 ANSWER_PROMPT = (
@@ -217,7 +229,15 @@ class Assistant:
         chat: ChatClient,
         safe_range_c: Bounds,
         utc_offset_h: float,
+        devices: KnownDevices | None = None,
+        max_device_tools: int = 6,
     ) -> None:
+        """
+        :param devices: the devices in the room, for naming them (FR-89).
+        :param max_device_tools: most tools of one device shown at once.
+        """
+        self._devices = devices or KnownDevices()
+        self._max_device_tools = max_device_tools
         self._config = config
         self._utc_offset_h = utc_offset_h
         self._safe_range_c = safe_range_c
@@ -250,7 +270,13 @@ class Assistant:
             topics.AUDIT_VALIDATION, ValidationVerdict, self._on_verdict
         )
         self._blackboard.subscribe(topics.CONTEXT_PROFILE, ProfileContext, self._on_profile)
+        # The tools as the executor holds them, devices included (FR-87).
+        self._blackboard.subscribe(topics.ASSIST_CATALOGUE, ToolCatalogue, self._on_catalogue)
+        self._devices.subscribe(self._blackboard)
         self._room.subscribe(self._blackboard)
+
+    def _on_catalogue(self, _topic: str, catalogue: ToolCatalogue) -> None:
+        self._specs = {spec.name: spec for spec in catalogue.tools}
 
     def _on_profile(self, _topic: str, context: ProfileContext) -> None:
         if context.profile_id not in self._profiles and len(self._profiles) >= _PROFILES_KEPT:
@@ -388,12 +414,23 @@ class Assistant:
     def _tools_for(self, hint: PreferenceHint) -> tuple[dict[str, object], ...]:
         """The surface this speaker is offered: memory tools for a person only,
         and never the tools that only overheard speech or the console use."""
+        device = self._device_asked(hint)
+        if device:
+            # Only the device the request is about, however many are plugged
+            # in: a 7B model's context must not grow with the room (FR-89).
+            shown = [spec for spec in self._specs.values() if spec.device == device and spec.offered_to_assistant]
+            return tuple(spec.as_schema() for spec in shown[: self._max_device_tools])
         recognised = self._recognised(hint) is not None
         return tuple(
             spec.as_schema()
             for name, spec in self._specs.items()
-            if spec.offered_to_assistant and (recognised or name not in PROFILE_TOOLS)
+            if spec.offered_to_assistant and not spec.device and (recognised or name not in PROFILE_TOOLS)
         )
+
+    def _device_asked(self, hint: PreferenceHint) -> str:
+        """The device a request is about, if its subject names one with tools."""
+        subject = hint.subject
+        return subject if subject and any(spec.device == subject for spec in self._specs.values()) else ""
 
     def _memory_asked(self, hint: PreferenceHint, utterance: str) -> ToolCall | None:
         """The memory tool the words plainly ask for, for a recognised person."""
@@ -509,15 +546,19 @@ class Assistant:
     def _serve(self, hint: PreferenceHint) -> AssistantReply:
         utterance = hint.transcript or hint.rationale
         now = local_now(self._clock, self._utc_offset_h)
+        device = self._device_asked(hint)
+        instructions = (
+            DEVICE_PROMPT.format(name=self._devices.name_of(device).lower())
+            if device
+            else ASSISTANT_PROMPT.format(now=now, days=coming_days(self._clock, self._utc_offset_h))
+        )
         messages: list[dict[str, object]] = [
             {
                 "role": "system",
                 "content": "\n".join(
                     part
                     for part in (
-                        ASSISTANT_PROMPT.format(
-                            now=now, days=coming_days(self._clock, self._utc_offset_h)
-                        ),
+                        instructions,
                         self._person_prompt(hint),
                         self._room.summary(),
                     )

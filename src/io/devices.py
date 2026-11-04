@@ -32,6 +32,7 @@ from src.common import topics
 from src.common.clock import Clock
 from src.common.config import Config, SensorConfig
 from src.common.injection import ACTUATOR_SUPPORTED_FAULTS, FaultInjection, InjectedFault
+from src.common.devices import PlantAnnouncer
 from src.common.mqtt_client import Blackboard
 from src.common.occupancy import OccupancyTracker
 from src.common.schemas import (
@@ -73,6 +74,7 @@ class DeviceBridge:
         self._config = config
         self._clock = clock
         self._blackboard = blackboard
+        self._plant_device = PlantAnnouncer(blackboard, clock, simulated=False)
         devices = config.devices
         self._occupancy_id = config.estimator.occupancy_sensor_id
         self._tracker = OccupancyTracker(
@@ -165,19 +167,17 @@ class DeviceBridge:
         """Once per sensor period: occupancy, and the unit's reported state."""
         if self._occupancy_id in self._adapters:
             self._publish(self._occupancy_id)
-        self._blackboard.publish(
-            topics.ACTUATOR_STATE,
-            ActuatorState(
-                ts=self._clock.now(),
-                actuator_id=topics.AIR_CONDITIONER_ID,
-                simulated=False,
-                kind=self._last_kind,
-                setpoint_c=None,
-                ack=self._ack,
-                last_command_ts=self._last_command_ts,
-            ),
+        state = ActuatorState(
+            ts=self._clock.now(),
             actuator_id=topics.AIR_CONDITIONER_ID,
+            simulated=False,
+            kind=self._last_kind,
+            setpoint_c=None,
+            ack=self._ack,
+            last_command_ts=self._last_command_ts,
         )
+        self._blackboard.publish(topics.ACTUATOR_STATE, state, actuator_id=topics.AIR_CONDITIONER_ID)
+        self._plant_device.mirror(state)
 
     # --- the unit -----------------------------------------------------
 

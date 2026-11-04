@@ -43,6 +43,7 @@ place, and published (FR-73, FR-75).
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from enum import Enum
@@ -154,6 +155,9 @@ class ToolRequester(str, Enum):
     OPERATOR = "operator"
     #: Speech overheard without the wake word (FR-76): no one asked.
     AMBIENT = "ambient"
+    #: The executor, carrying a request already audited on
+    #: ``space/assist/proposed`` to the device that performs it (FR-87).
+    ASSISTANCE = "assistance"
 
 
 # --- Errors ----------------------------------------------------------------
@@ -233,6 +237,12 @@ class ToolParameter(BaseModel):
         "never shown to it: whose memory a fact goes into is decided by who "
         "was speaking, not by what a model wrote",
     )
+    minimum: float | None = Field(
+        default=None, description="Smallest value accepted, for a number or integer"
+    )
+    maximum: float | None = Field(
+        default=None, description="Largest value accepted, for a number or integer"
+    )
 
     @model_validator(mode="after")
     def _only_a_string_has_choices(self) -> ToolParameter:
@@ -244,12 +254,29 @@ class ToolParameter(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _only_a_number_has_bounds(self) -> ToolParameter:
+        """Bounds are the generic gate a device declares (FR-88): one check,
+        here, rather than one per device that each might forget."""
+        bounded = self.minimum is not None or self.maximum is not None
+        if bounded and self.type not in (ParameterType.NUMBER, ParameterType.INTEGER):
+            raise ValueError(
+                f"{self.name!r}: bounds apply to a number or integer, not {self.type.value}"
+            )
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError(f"{self.name!r}: minimum {self.minimum} is above maximum {self.maximum}")
+        return self
+
     def as_schema(self) -> dict[str, object]:
         """This parameter as a JSON-schema property."""
         schema: dict[str, object] = dict(_JSON_TYPES[self.type])
         schema["description"] = self.description
         if self.choices:
             schema["enum"] = list(self.choices)
+        if self.minimum is not None:
+            schema["minimum"] = self.minimum
+        if self.maximum is not None:
+            schema["maximum"] = self.maximum
         return schema
 
 
@@ -289,14 +316,14 @@ def _coerce(parameter: ToolParameter, value: ArgumentValue) -> ArgumentValue:
 
     if kind is ParameterType.INTEGER:
         if isinstance(value, int):
-            return value
+            return _within(parameter, value)
         if isinstance(value, float) and value.is_integer():
-            return int(value)
+            return _within(parameter, int(value))
         raise ToolArgumentError(f"{parameter.name!r} must be a whole number")
 
     if kind is ParameterType.NUMBER:
         if isinstance(value, (int, float)):
-            return float(value)
+            return _within(parameter, float(value))
         raise ToolArgumentError(f"{parameter.name!r} must be a number")
 
     if not isinstance(value, str) or not value:
@@ -317,6 +344,17 @@ def _coerce(parameter: ToolParameter, value: ArgumentValue) -> ArgumentValue:
             f"{parameter.name!r} must be one of {list(parameter.choices)}, "
             f"got {value!r}"
         )
+    return value
+
+
+def _within(parameter: ToolParameter, value: int | float) -> int | float:
+    """A number inside its declared bounds, or a refusal saying what they are."""
+    low, high = parameter.minimum, parameter.maximum
+    if (low is not None and value < low) or (high is not None and value > high):
+        span = f"from {low:g} to {high:g}" if low is not None and high is not None else (
+            f"at least {low:g}" if low is not None else f"at most {high:g}"
+        )
+        raise ToolArgumentError(f"{parameter.name!r} must be {span}, got {value:g}")
     return value
 
 
@@ -341,6 +379,12 @@ class ToolSpec(BaseModel):
         "behind overheard speech and the console's review buttons are run by "
         "their own requesters only, so a reply can never pencil, keep or "
         "settle anything (FR-77, FR-78)",
+    )
+    device: str = Field(
+        default="",
+        description="The device this tool reaches, if it is a device's "
+        "capability; how a request about one device is shown only that "
+        "device's tools (FR-89)",
     )
 
     @model_validator(mode="after")
@@ -966,6 +1010,9 @@ class ToolRegistry:
         self._clock = clock
         self._specs: dict[str, ToolSpec] = {}
         self._providers: dict[str, ToolProvider] = {}
+        # Devices arrive and leave on the network thread while invocations
+        # run on another (FR-87); the catalogue must never be read mid-change.
+        self._lock = threading.RLock()
         for spec in specs:
             self.declare(spec)
 
@@ -976,9 +1023,19 @@ class ToolRegistry:
             name would make which implementation runs depend on registration
             order.
         """
-        if spec.name in self._specs:
-            raise ValueError(f"tool {spec.name!r} is already declared")
-        self._specs[spec.name] = spec
+        with self._lock:
+            if spec.name in self._specs:
+                raise ValueError(f"tool {spec.name!r} is already declared")
+            self._specs[spec.name] = spec
+
+    def withdraw(self, name: str) -> bool:
+        """Remove a tool and its provider: a device went offline or changed (FR-87).
+
+        :returns: whether there was such a tool.
+        """
+        with self._lock:
+            self._providers.pop(name, None)
+            return self._specs.pop(name, None) is not None
 
     def bind(self, name: str, provider: ToolProvider) -> None:
         """Attach the implementation that fulfils a declared tool.
@@ -987,8 +1044,9 @@ class ToolRegistry:
             provider to an undeclared tool would leave it unreachable and
             look like a broken provider.
         """
-        self.spec(name)
-        self._providers[name] = provider
+        with self._lock:
+            self.spec(name)
+            self._providers[name] = provider
 
     def spec(self, name: str) -> ToolSpec:
         """The declaration for one tool.
@@ -996,7 +1054,8 @@ class ToolRegistry:
         :raises UnknownToolError: if it is not in the catalogue.
         """
         try:
-            return self._specs[name]
+            with self._lock:
+                return self._specs[name]
         except KeyError as exc:
             raise UnknownToolError(
                 f"no tool named {name!r}; available: {sorted(self._specs)}"
@@ -1004,14 +1063,16 @@ class ToolRegistry:
 
     @property
     def names(self) -> tuple[str, ...]:
-        return tuple(self._specs)
+        with self._lock:
+            return tuple(self._specs)
 
     def specs(self) -> tuple[ToolSpec, ...]:
-        return tuple(self._specs.values())
+        with self._lock:
+            return tuple(self._specs.values())
 
     def schemas(self) -> tuple[dict[str, object], ...]:
         """The tool surface as a model is shown it (FR-70)."""
-        return tuple(spec.as_schema() for spec in self._specs.values())
+        return tuple(spec.as_schema() for spec in self.specs())
 
     def catalogue(self) -> ToolCatalogue:
         """The retained catalogue message for ``space/assist/catalogue``."""
@@ -1061,7 +1122,8 @@ class ToolRegistry:
                 f"system and needs confirming"
             )
 
-        provider = self._providers.get(invocation.tool)
+        with self._lock:
+            provider = self._providers.get(invocation.tool)
         if provider is None:
             raise ToolUnavailableError(
                 f"{invocation.tool!r} is declared but nothing is bound to it"

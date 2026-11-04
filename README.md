@@ -150,7 +150,7 @@ Each page has its own address, so any of them can be bookmarked:
 
 | Page | What it shows |
 |---|---|
-| **Home** `/` | For the person living in the room: the temperature in plain words; a target to step, slide or pick from presets (Cool 22, Comfort 24, Sleep 25, Eco 26); warmer and cooler; back to automatic; cooling off for 1, 3 or 8 hours; Reset, only when the room is on hold; a box to ask Jarvis, with mute and spoken replies; the days ahead and anything waiting for a yes; energy used today and its cost |
+| **Home** `/` | For the person living in the room: the Devices card, with every device's controls; the temperature in plain words; a target to step, slide or pick from presets (Cool 22, Comfort 24, Sleep 25, Eco 26); warmer and cooler; back to automatic; cooling off for 1, 3 or 8 hours; Reset, only when the room is on hold; a box to ask Jarvis, with mute and spoken replies; the days ahead and anything waiting for a yes; energy used today and its cost |
 | **Overview** `/overview` | Indoor temperature, humidity, outside, presence, AC power and state, tariff; the temperature against the model's prediction and the setpoint held; faults, services and the latest decisions |
 | **Services** `/services` | Each process, judged by what it is publishing against its own cadence: live, late or silent, its rate, and its latest output per topic |
 | **Thermal model** `/estimator` | The RLS coefficients and what they mean (time constant, cooling rate, occupant gain), their history, the covariance trace, the one-step prediction and its residual against ±2σ |
@@ -234,6 +234,88 @@ each calendar entry carries an id derived from the local one (FR-86). Home and
 Settings show how many are waiting. In *Testing* mode Google ends the sign-in
 after seven days; Settings then says **Reconnect**, and nothing waiting is
 lost.
+
+### Devices: the fan, music, and anything you plug in
+
+Every actuator beyond the air conditioner is a **device service** on the
+blackboard (FR-87). `python start.py` runs three:
+
+| Service | Device | What it does |
+|---|---|---|
+| `fan` | Ceiling fan, simulated | on, off, speed 0–3 |
+| `music` | Music on this machine | plays files from `~/Music` (or one you upload on Home): play by words or name, pause, stop, volume |
+| `mcp` | Desk lamp, through the MCP bridge | an ordinary MCP server (`examples/mcp_lamp/`), mounted as a device |
+
+Say "Hey Jarvis, turn on the fan" or "play some jazz", or use the **Devices**
+card on Home, which draws each device's controls from what it says it can do.
+The air conditioner appears there too, but is only ever set through the
+temperature controls and the safety gate (FR-88).
+
+However many devices are plugged in, the model is shown one line per device
+and then only the tools of the one a request is about (FR-89), so a 7B
+model's context does not grow with the room.
+
+#### Adding a device
+
+A device is a manifest, a handler per capability, and its state. In Python,
+on the shared base (`src/devices/fan` is the whole of a working one):
+
+```python
+from src.common.devices import DeviceCapability, DeviceClass, DeviceKind, DeviceManifest
+from src.common.tools import ParameterType, ProviderOutcome, ToolEffect, ToolParameter
+from src.devices.runner import DeviceParts, run
+
+def build(config, clock):
+    kettle = {"on": False}
+
+    def boil(_args):
+        kettle["on"] = True
+        return ProviderOutcome(message="The kettle is on.")
+
+    manifest = DeviceManifest(
+        ts=clock.now(), device_id="kettle", name="Kettle", kind=DeviceKind.OTHER,
+        aliases=("the kettle",), simulated=False,
+        capabilities=(DeviceCapability(name="boil", purpose="Boil the kettle.",
+                                       effect=ToolEffect.WRITE, device_class=DeviceClass.COMFORT,
+                                       min_interval_s=30),),
+    )
+    return DeviceParts(manifest=manifest, handlers={"boil": boil}, state=lambda: dict(kettle))
+
+if __name__ == "__main__":
+    raise SystemExit(run(None, "The kettle.", "device-kettle", build))
+```
+
+Run it, and the kettle is on the board, a tool for Jarvis, and a card on Home.
+Nothing else changes.
+
+**Without Python** -- an ESPHome or Tasmota node -- publish the same topics:
+the manifest (retained) on `space/device/<id>/manifest`, `{"online": true}`
+(retained, with a last will of `false`) on `space/device/<id>/availability`,
+answer each `ToolInvocation` on `space/device/<id>/command` with a
+`ToolResult` on `space/device/<id>/result`, and keep your values on
+`space/device/<id>/state`. The topic guide in the console has every field.
+
+**An MCP server** -- add it to `actuators.mcp_servers` in your config. Only
+the tools you list are exposed, and you say what each may do; the server's
+own claims about itself are not trusted (FR-90):
+
+```yaml
+actuators:
+  mcp_servers:
+    - device_id: spotify
+      name: Spotify
+      kind: media
+      aliases: [spotify]
+      simulated: false
+      command: uvx
+      args: [some-spotify-mcp-server]
+      tools:
+        play: {effect: write, device_class: media}
+        pause: {effect: write, device_class: media}
+```
+
+`plant` is refused for an MCP tool: the room's temperature is reached only
+through the safety gate.
 
 ### Running one component directly
 

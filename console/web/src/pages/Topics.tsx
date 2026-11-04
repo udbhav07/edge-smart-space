@@ -19,6 +19,7 @@ const GROUPS: { group: TopicDoc["group"]; intro: string }[] = [
   { group: "Faults", intro: "Faults found, the mode they put the system in, and the operator's hand on it." },
   { group: "Conversation", intro: "Speech and chat: what was heard, understood and answered, and who said it." },
   { group: "Tools", intro: "Calendar, bookings, mail and memory, each behind its own gate." },
+  { group: "Devices", intro: "Every device beyond the thermal loop, as a service on the board: what it can do, whether it is here, what it was asked and what it did." },
   { group: "Audit", intro: "The record of every decision the safety gate and the language model made." },
 ];
 

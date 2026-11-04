@@ -23,6 +23,7 @@ from typing import Any
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import ConsoleConfig
+from src.common.devices import DeviceAvailability, DeviceManifest, DeviceState
 from src.common.localtime import local_time
 from src.common.mqtt_client import PAYLOAD_ENCODING, topic_matches
 from src.common.plain import NEXT_STEP, mode_sentence
@@ -139,6 +140,10 @@ class ConsoleState:
         self._speech_settings: dict | None = None
         #: Whether Google is connected, and what waits for it (FR-84).
         self._google: dict | None = None
+        #: Every device on the board: what it is, whether it is here, how it is (FR-91).
+        self._devices: dict[str, dict] = {}
+        #: Device calls made from here, whose answers the page shows.
+        self._device_requests: set[str] = set()
         #: Today's electricity, integrated from the meter (FR-80).
         self._energy = {"day": "", "kwh": 0.0, "cost": 0.0}
         self._last_power: tuple[float, float] | None = None
@@ -183,6 +188,9 @@ class ConsoleState:
             (topics.SPEECH_STATUS.wildcard(), SpeechStatus, self._on_speech),
             (topics.SPEECH_SETTINGS.wildcard(), SpeechSettings, self._on_speech_settings),
             (topics.ASSIST_GOOGLE.wildcard(), GoogleStatus, self._on_google),
+            (topics.DEVICE_MANIFEST.wildcard(), DeviceManifest, self._on_device_manifest),
+            (topics.DEVICE_AVAILABILITY.wildcard(), DeviceAvailability, self._on_device_availability),
+            (topics.DEVICE_STATE.wildcard(), DeviceState, self._on_device_state),
             (topics.FAULT.wildcard(), FaultEvent, self._on_fault),
             (topics.DIAGNOSIS.wildcard(), FaultDiagnosis, self._on_diagnosis),
             (topics.CONTEXT_UTTERANCE.wildcard(), ConsoleUtterance, self._on_typed),
@@ -233,6 +241,7 @@ class ConsoleState:
             "tools": self._catalogue,
             "operator_controls": self._config.operator_controls,
             "speech_settings": self._speech_settings,
+            "devices": self._device_list(),
             "google": self._google,
             "energy": {**self._energy, "currency": self._config.currency},
             "presets": self._config.presets_c,
@@ -314,6 +323,39 @@ class ConsoleState:
         self._energy["kwh"] = round(self._energy["kwh"] + kwh, 4)
         self._energy["cost"] = round(self._energy["cost"] + kwh * price, 3)
         return True
+
+    def _device(self, device_id: str) -> dict:
+        # online is None until a manifest or an availability message says.
+        return self._devices.setdefault(device_id, {"device_id": device_id, "manifest": None, "online": None, "state": {}, "state_ts": None})
+
+    def _device_list(self) -> list[dict]:
+        return [device for _, device in sorted(self._devices.items()) if device["manifest"] is not None]
+
+    def device(self, device_id: str) -> dict | None:
+        """One device as the page knows it, or None if it never announced itself."""
+        found = self._devices.get(device_id)
+        return found if found and found["manifest"] is not None else None
+
+    def expect_device(self, invocation_id: str) -> None:
+        """A device call made from here; its answer is shown when it comes."""
+        self._device_requests.add(invocation_id)
+
+    def _on_device_manifest(self, _topic, manifest: DeviceManifest):
+        device = self._device(manifest.device_id)
+        device["manifest"] = _dump(manifest)
+        if device["online"] is None:
+            # Announcing itself is being here, unless its availability says otherwise.
+            device["online"] = True
+        return [self._event("devices", self._device_list())]
+
+    def _on_device_availability(self, _topic, availability: DeviceAvailability):
+        self._device(availability.device_id)["online"] = availability.online
+        return [self._event("devices", self._device_list())]
+
+    def _on_device_state(self, _topic, state: DeviceState):
+        device = self._device(state.device_id)
+        device["state"], device["state_ts"] = dict(state.values), state.ts
+        return [self._event("devices", self._device_list())] if device["manifest"] is not None else []
 
     def _on_speech_settings(self, _topic, settings: SpeechSettings):
         self._speech_settings = _dump(settings)
@@ -466,6 +508,10 @@ class ConsoleState:
         return [self._step("tool", f"Called {invocation.tool}", detail=arguments, ref=invocation.invocation_id)]
 
     def _on_result(self, _topic, result: ToolResult):
+        if result.invocation_id in self._device_requests:
+            self._device_requests.discard(result.invocation_id)
+            answer = {"invocation_id": result.invocation_id, "tool": result.tool, "status": result.status.value, "message": result.message}
+            return [self._event("device_result", answer)]
         if result.invocation_id in self._calendar_requests:
             self._calendar_requests.discard(result.invocation_id)
             self._calendar = _calendar_from(result, self._clock.now())
@@ -507,7 +553,7 @@ class ConsoleState:
         return events
 
     def _on_catalogue(self, _topic, catalogue: ToolCatalogue):
-        self._catalogue = [{"name": t.name, "purpose": t.purpose, "effect": t.effect.value} for t in catalogue.tools]
+        self._catalogue = [{"name": t.name, "purpose": t.purpose, "effect": t.effect.value, "device": t.device} for t in catalogue.tools]
         return [self._event("tools", self._catalogue)]
 
     # --- audit ---------------------------------------------------------------
