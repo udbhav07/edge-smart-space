@@ -262,11 +262,12 @@ lost.
 ### Devices: the fan, music, and anything you plug in
 
 Every actuator beyond the air conditioner is a **device service** on the
-blackboard (FR-87). `python start.py` runs three:
+blackboard (FR-87). `python start.py` runs four:
 
 | Service | Device | What it does |
 |---|---|---|
-| `fan` | Ceiling fan, simulated | on, off, speed 0–3 |
+| `home` | The house's fans, lights and TV, simulated | two fans (speed 0–3), a light in every room (0–100 %), a TV (channels 1–9), each standing in a room of the house (FR-99) |
+| `robot` | A home robot, simulated | feeds the dog, cleans the bathroom, switches on the TV, goes to a room, returns to its dock; one errand at a time, with a battery (FR-100) |
 | `music` | Music on this machine | plays files from `~/Music` (or one you upload on Home): play by words or name, pause, stop, volume; a song your files don't have, or one asked for "from YouTube", is found online and streamed (FR-96) |
 | `mcp` | Desk lamp, through the MCP bridge | an ordinary MCP server (`examples/mcp_lamp/`), mounted as a device |
 
@@ -312,6 +313,14 @@ temperature controls and the safety gate (FR-88).
 However many devices are plugged in, the model is shown one line per device
 and then only the tools of the one a request is about (FR-89), so a 7B
 model's context does not grow with the room.
+
+**The House page** draws the house in 3D: four rooms, every device where it
+stands, doing what its service says. Fans spin, lights glow, the TV plays,
+the air conditioner blows over a living room coloured by its real temperature,
+and the robot walks its errands while the dog goes to its bowl. **Top view**
+shows it as a plan; tap any device for its remote. Try "Jarvis, feed the dog",
+"turn on the bedroom fan" or "send the robot to the bedroom". The floor plan
+is `house` in the configuration (FR-99, FR-100).
 
 #### Adding a device
 

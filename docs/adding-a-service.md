@@ -286,8 +286,9 @@ person's tap:
 The call is audited like any other, and the answer comes back on
 `space/assist/result` with the same `invocation_id`.
 
-This is planned with the robot (FR-100). It will add a requester of its own,
-so the audit names the device that asked. No device does this yet.
+The robot does exactly this to switch on the TV (`src/devices/robot`,
+`_press_tv`). Its invocation carries the requester `device`, so the audit
+names a device, not a person, as having asked.
 
 ## 7. Safety, in one place
 
@@ -313,7 +314,31 @@ generic remote. A remote's `call` goes through the executor, never to the
 device. The [README](../README.md#remotes-controlling-devices-by-hand) has a
 worked example. Rebuild with `npm run build` in `console/web`.
 
-## 9. Tests, and when it's done
+## 9. A place in the house
+
+The console's **House** page draws the floor plan in `house` (in
+`src/common/config.py`, `HouseConfig`) and stands each device where
+`house.placements` says:
+
+```yaml
+house:
+  placements:
+    kettle: {room: kitchen, x: 7.0, y: 0.4, z: 0.9}   # metres from the plan's top left; z is height
+```
+
+**How it is drawn:**
+- **A kind the House page knows** (fan, light, tv, media, robot) is drawn
+  doing what its state says: a fan spins at `speed`, a light glows at
+  `brightness`.
+- **Any other kind** is not drawn yet; add a model for it in
+  `console/web/src/house/Scene.tsx` (`bodyFor`).
+
+A device in the house's `home` service gives its room in
+`actuators.home.devices`. A new room, door or spot is a change to `house`
+alone. The configuration refuses a plan whose doors are not on a shared wall,
+or whose rooms cannot be reached.
+
+## 10. Tests, and when it's done
 
 Test the service with `SimClock` and `LoopbackTransport`, so tests need no
 broker and no waiting. `tests/devices/test_fan.py` is the pattern:
