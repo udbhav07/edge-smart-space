@@ -130,8 +130,12 @@ class ConsoleState:
         inbox_path: Path | None = None,
         utc_offset_h: float = 0.0,
         bounds_c: tuple[float, float] = (18.0, 30.0),
+        house: dict | None = None,
     ) -> None:
         self._config = config
+        #: The floor plan and where each device stands, to draw the house (FR-99).
+        #: Configuration, not board state: the robot reads the same file.
+        self._house = house
         self._clock = clock
         #: Where the inbox is kept across restarts; None keeps it in memory
         #: only, which is what every test wants (S-10).
@@ -259,6 +263,7 @@ class ConsoleState:
             "cooling_off_c": self._config.cooling_off_c,
             "bounds_c": list(self._bounds_c),
             "tls_port": self._config.tls_port,
+            "house": self._house,
         }
 
     def accept(self, topic: str, payload: bytes) -> list[Event]:

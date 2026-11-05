@@ -1,4 +1,4 @@
-import { CloudOff, Fan, Lightbulb, Music, Plug, Power, Thermometer, type LucideIcon } from "lucide-react";
+import { Bot, CloudOff, Fan, Lightbulb, Music, Plug, Power, Thermometer, Tv, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/format";
 import type { Device, DeviceCapability, DeviceParameter } from "@/lib/types";
@@ -7,7 +7,7 @@ import { Pill } from "@/components/ui";
 // The pieces remotes share. A remote written for a new kind of device should
 // be mostly these, arranged for that device.
 
-export const KIND_ICON: Record<string, LucideIcon> = { ac: Thermometer, fan: Fan, light: Lightbulb, media: Music, other: Plug };
+export const KIND_ICON: Record<string, LucideIcon> = { ac: Thermometer, fan: Fan, light: Lightbulb, media: Music, tv: Tv, robot: Bot, other: Plug };
 
 export const iconOf = (device: Device): LucideIcon => KIND_ICON[device.manifest.kind] ?? Plug;
 

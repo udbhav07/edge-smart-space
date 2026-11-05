@@ -4,6 +4,7 @@ import { fanRemote } from "./FanRemote";
 import { GenericRemote } from "./GenericRemote";
 import { lightRemote } from "./LightRemote";
 import { musicRemote } from "./MusicRemote";
+import { robotRemote } from "./RobotRemote";
 import type { RemoteProps, RemoteSpec } from "./types";
 
 // Which remote a device gets (FR-92). The first that fits wins:
@@ -23,6 +24,7 @@ const BY_KIND: Record<string, RemoteSpec> = {
   fan: fanRemote,
   light: lightRemote,
   media: musicRemote,
+  robot: robotRemote,
 };
 
 export function remoteFor(device: Device): React.ComponentType<RemoteProps> {
