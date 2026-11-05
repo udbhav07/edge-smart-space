@@ -314,3 +314,56 @@ class TestJetsonConfigs:
     def test_only_what_the_board_changes_differs_from_the_default(self, default_config):
         board, default = load_config(Path("config/jetsonDefault.yaml")), default_config
         assert board.controller == default.controller and board.validator == default.validator
+
+
+
+def _extending(home_device: str) -> str:
+    """A config file over the default whose house holds this one device."""
+    return f"extends: {DEFAULT_CONFIG_PATH.resolve().as_posix()}\nactuators:\n  home:\n    devices:\n      - {home_device}\n"
+
+
+class TestTheHouse:
+    """The floor plan is whole, and holds what is said to be in it (FR-99, FR-100)."""
+
+    @staticmethod
+    def _house(default_config, **update):
+        from src.common.config import HouseConfig
+
+        return HouseConfig(**{**default_config.house.model_dump(), **update})
+
+    def test_the_default_house_loads(self, default_config):
+        assert {room.room_id for room in default_config.house.rooms} == {"living_room", "kitchen", "bathroom", "bedroom"}
+
+    def test_a_door_off_the_shared_wall_is_refused(self, default_config):
+        doors = [{"between": ["living_room", "kitchen"], "x": 3.0, "y": 2.0}]
+        with pytest.raises(ValueError, match="not on a wall they share"):
+            self._house(default_config, doors=doors)
+
+    def test_a_room_no_door_leads_into_is_refused(self, default_config):
+        doors = [door for door in default_config.house.model_dump()["doors"] if "bathroom" not in door["between"]]
+        with pytest.raises(ValueError, match="no door leads into"):
+            self._house(default_config, doors=doors)
+
+    def test_a_device_placed_outside_its_room_is_refused(self, default_config):
+        placements = {"tv": {"room": "kitchen", "x": 1.0, "y": 1.0, "z": 1.0}}
+        with pytest.raises(ValueError, match="not inside the room"):
+            self._house(default_config, placements=placements)
+
+    def test_a_home_device_in_a_room_the_house_lacks_is_refused(self, tmp_path):
+        path = _write(tmp_path, _extending("{device_id: garage_light, name: Garage light, kind: light, room: garage}"))
+        with pytest.raises(ConfigError, match="no room for"):
+            load_config(path)
+
+    def test_a_device_id_used_twice_is_refused(self, tmp_path):
+        path = _write(tmp_path, _extending("{device_id: music, name: Radio, kind: light, room: kitchen}"))
+        with pytest.raises(ConfigError, match="used twice"):
+            load_config(path)
+
+    def test_the_robot_needs_its_spots(self, default_config):
+        from src.common.config import Config
+
+        spots = {name: spot for name, spot in default_config.house.model_dump()["spots"].items() if name != "dog_bowl"}
+        data = default_config.model_dump()
+        data["house"]["spots"] = spots
+        with pytest.raises(ValueError, match="dog_bowl"):
+            Config(**data)

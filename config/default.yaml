@@ -542,10 +542,27 @@ ambient:
 actuators:
   command_timeout_s: 12.0
   max_device_tools: 6
+  # The smallest complete device, kept as the example to copy (src/devices/fan);
+  # start.py runs the house's fans through `home` below instead.
   fan:
     enabled: true              # simulated (FR-15): no thermal effect is claimed
     max_speed: 3
     min_interval_s: 1.0
+  # FR-99. The simulated house's fans, lights and TV, one service for them all,
+  # each standing in a room of `house` below. The defaults (src/common/config.py,
+  # HomeConfig) are two fans, a light in every room and a TV; list `devices`
+  # here to change them. The bare "fan" stays with the living room's.
+  home:
+    enabled: true
+  # FR-100. A home robot with scripted errands -- feed the dog, clean the
+  # bathroom, switch on the TV, go to a room -- walking the floor plan below.
+  # It moves nothing real. Every duration is here so a demo can be paced.
+  robot:
+    enabled: true
+    speed_m_s: 0.5
+    feed_s: 8.0
+    press_s: 2.0
+    low_battery_pct: 20.0
   music:
     enabled: true
     library_path: ~/Music
@@ -567,7 +584,8 @@ actuators:
     - device_id: lamp
       name: Desk lamp
       kind: light
-      aliases: [the lamp, desk lamp, light]
+      room: bedroom
+      aliases: [the lamp, desk lamp, bedroom lamp]
       simulated: true
       command: python
       args: [examples/mcp_lamp/server.py]
@@ -596,3 +614,15 @@ messages:
   max_kept: 50
   announce: true          # "Message from Ravi" before the recording
   reply_wait_s: 8         # how long the room listens for an answer afterwards
+
+# FR-99. The house, seen from above, in metres: four rooms, the doors the
+# robot walks through, named spots (its dock, the dog's bowl) and where each
+# device stands. The robot plans its walks from this and the console draws it,
+# so the two never disagree. The defaults are in src/common/config.py
+# (HouseConfig); give `house:` here, or in a site file, to draw another. The
+# air conditioner stands in the living room, the room the thermal model is.
+# house:
+#   rooms:
+#     - {room_id: living_room, name: Living room, x: 0, y: 0, width: 6, depth: 4.5}
+#   doors:
+#     - {between: [living_room, kitchen], x: 6, y: 2.6}

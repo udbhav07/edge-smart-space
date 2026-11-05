@@ -20,33 +20,34 @@ from src.devices.runner import DeviceParts
 class SimulatedFan:
     """A fan's switch and speed, kept in memory."""
 
-    def __init__(self, max_speed: int) -> None:
+    def __init__(self, max_speed: int, name: str = "fan") -> None:
         self._max_speed = max_speed
+        self._name = name.lower()
         self.on = False
         self.speed = 0
 
     def turn_on(self, _arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         if self.on:
-            return ProviderOutcome(message=f"The fan is already on, at speed {self.speed}.", detail=self.state())
+            return ProviderOutcome(message=f"The {self._name} is already on, at speed {self.speed}.", detail=self.state())
         self.on = True
         self.speed = self.speed or 1
-        return ProviderOutcome(message=f"The fan is on, at speed {self.speed} (simulated).", detail=self.state())
+        return ProviderOutcome(message=f"The {self._name} is on, at speed {self.speed} (simulated).", detail=self.state())
 
     def turn_off(self, _arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         was_on = self.on
         self.on = False
-        return ProviderOutcome(message="The fan is off (simulated)." if was_on else "The fan was already off.", detail=self.state())
+        return ProviderOutcome(message=f"The {self._name} is off (simulated)." if was_on else f"The {self._name} was already off.", detail=self.state())
 
     def set_speed(self, arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         speed = int(arguments["speed"])
         if speed == 0:
             return self.turn_off(arguments)
         self.on, self.speed = True, speed
-        return ProviderOutcome(message=f"The fan is at speed {speed} of {self._max_speed} (simulated).", detail=self.state())
+        return ProviderOutcome(message=f"The {self._name} is at speed {speed} of {self._max_speed} (simulated).", detail=self.state())
 
     def status(self, _arguments: Mapping[str, ArgumentValue]) -> ProviderOutcome:
         said = f"on, at speed {self.speed} of {self._max_speed}" if self.on else "off"
-        return ProviderOutcome(message=f"The fan is {said} (simulated).", detail=self.state())
+        return ProviderOutcome(message=f"The {self._name} is {said} (simulated).", detail=self.state())
 
     def state(self) -> dict[str, ArgumentValue]:
         return {"on": self.on, "speed": self.speed if self.on else 0, "max_speed": self._max_speed}
@@ -70,6 +71,7 @@ def manifest(config: FanConfig, now: float) -> DeviceManifest:
         device_id=config.device_id,
         name=config.name,
         kind=DeviceKind.FAN,
+        room=config.room,
         aliases=tuple(config.aliases),
         simulated=True,
         capabilities=(

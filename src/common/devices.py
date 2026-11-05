@@ -67,6 +67,9 @@ class DeviceKind(str, Enum):
     FAN = "fan"
     LIGHT = "light"
     MEDIA = "media"
+    TV = "tv"
+    #: Moves about the house on errands (FR-100).
+    ROBOT = "robot"
     OTHER = "other"
 
 
