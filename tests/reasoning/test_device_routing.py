@@ -243,3 +243,29 @@ class TestEndToEnd:
         boards[1].publish(topics.CONTEXT_PREFERENCE, PreferenceHint(ts=clock.now(), intent=Intent.SERVICE, comfort=Comfort.UNCHANGED, subject="kettle", transcript="boil the kettle", command=command))
         (reply,) = assistant.process_pending()
         assert reply.reply and "boiled" not in reply.reply.lower()
+
+
+class TestWhatOnlyOneDeviceDoes:
+    """A request for what only one device does is about that device, named or not (FR-89, FR-100)."""
+
+    ROBOT = _manifest("robot", "Home robot", "the robot", capabilities=("feed_the_dog", "clean_the_bathroom", "go_to", "stop"))
+
+    def test_its_line_says_what_it_can_do(self):
+        assert _known(self.ROBOT).lines() == ["- robot: Home robot (also: the robot); it can feed the dog, clean the bathroom"]
+
+    def test_switching_on_and_off_is_not_listed(self):
+        assert _known(_manifest("fan", "Ceiling fan", capabilities=("turn_on", "turn_off", "set_speed"))).lines() == ["- fan: Ceiling fan"]
+
+    def test_an_errand_names_its_device(self):
+        assert _known(self.ROBOT, _manifest("fan", "Ceiling fan")).named_in("jarvis, feed the dog please") == "robot"
+
+    def test_a_name_still_wins(self):
+        assert _known(self.ROBOT, _manifest("fan", "Ceiling fan")).named_in("feed the dog and turn on the ceiling fan") == "fan"
+
+    def test_an_errand_two_devices_do_names_neither(self):
+        other = _manifest("feeder", "Pet feeder", capabilities=("feed_the_dog",))
+        assert _known(self.ROBOT, other).named_in("feed the dog") is None
+
+    def test_routed_to_the_robot(self):
+        hint = routed(_hint(Intent.SERVICE, subject="reminder"), "Jarvis, feed the dog", _known(self.ROBOT))
+        assert (hint.intent, hint.subject) == (Intent.SERVICE, "robot")
