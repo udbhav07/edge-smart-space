@@ -156,7 +156,7 @@ export interface DeviceCapability {
 export interface DeviceManifest {
   device_id: string;
   name: string;
-  kind: "ac" | "fan" | "light" | "media" | "other";
+  kind: "ac" | "fan" | "light" | "media" | "tv" | "robot" | "other";
   room: string;
   aliases: string[];
   simulated: boolean;
@@ -222,6 +222,33 @@ export interface Room {
   tariff: { band: "normal" | "peak"; next_transition_ts: number } | null;
 }
 
+/** One room of the floor plan, a rectangle in metres seen from above (FR-99). */
+export interface HouseRoom {
+  room_id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+}
+
+/** A place on the floor plan; z is the height above the floor, in m. */
+export interface HousePlace {
+  room: string;
+  x: number;
+  y: number;
+  z?: number;
+}
+
+/** The simulated house: its rooms, doors, named spots and where each device stands (FR-99). */
+export interface HousePlan {
+  wall_height_m: number;
+  rooms: HouseRoom[];
+  doors: { between: [string, string]; x: number; y: number }[];
+  spots: Record<string, HousePlace>;
+  placements: Record<string, HousePlace>;
+}
+
 export interface Snapshot {
   server_ts: number;
   broker: boolean;
@@ -253,6 +280,8 @@ export interface Snapshot {
   messages: HomeMessage[];
   /** Where the console is also served over HTTPS, so a phone may use its microphone (FR-94); 0 if not. */
   tls_port: number;
+  /** The floor plan, to draw the house with its devices in it (FR-99); null if not configured. */
+  house: HousePlan | null;
 }
 
 export interface TopicRow {

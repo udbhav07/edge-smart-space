@@ -77,11 +77,19 @@ class KnownDevices:
         return manifest.name if manifest else device_id
 
     def lines(self) -> list[str]:
-        """One line per operable device, as the extraction is shown them."""
+        """One line per operable device, as the extraction is shown them.
+
+        A device that does something only it does -- the robot feeds the dog --
+        says so on its line, so "feed the dog" is understood as being about it
+        though the robot was never named. Switching on and off says nothing a
+        name does not, and is left off: the line grows by errands, not tools.
+        """
         lines = []
         for manifest in self.operable():
             also = f" (also: {', '.join(manifest.aliases)})" if manifest.aliases else ""
-            lines.append(f"- {manifest.device_id}: {manifest.name}{also}")
+            errands = _errands(manifest)
+            does = f"; it can {', '.join(errands)}" if errands else ""
+            lines.append(f"- {manifest.device_id}: {manifest.name}{also}{does}")
         return lines
 
     def named_in(self, text: str) -> str | None:
@@ -94,7 +102,31 @@ class KnownDevices:
         for manifest in self.operable():
             for name in (manifest.device_id.replace("_", " "), manifest.name, *manifest.aliases):
                 name = name.lower().strip()
-                if name and re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", said):
+                if name and _said(name, said):
                     if best is None or len(name) > best[0]:
                         best = (len(name), manifest.device_id)
-        return best[1] if best else None
+        if best is not None:
+            return best[1]
+        # Unnamed, a request that asks for what only one device does is about
+        # that device: "feed the dog" is the robot's, whoever is not mentioned.
+        doers = {manifest.device_id for manifest in self.operable() for errand in _errands(manifest) if _said(errand, said)}
+        return doers.pop() if len(doers) == 1 else None
+
+
+#: A capability this many words long or more says what a device does in a
+#: way no other is likely to: "feed the dog", not "turn on".
+_ERRAND_WORDS = 3
+
+
+def _errands(manifest: DeviceManifest) -> list[str]:
+    """What a device does, in its capabilities' own words, where those words are distinctive."""
+    return [
+        capability.name.replace("_", " ")
+        for capability in manifest.capabilities
+        if capability.device_class is not DeviceClass.PLANT and len(capability.name.split("_")) >= _ERRAND_WORDS
+    ]
+
+
+def _said(phrase: str, text: str) -> bool:
+    """Whether the phrase is in the words, as whole words."""
+    return re.search(rf"(?<![a-z0-9]){re.escape(phrase)}(?![a-z0-9])", text) is not None

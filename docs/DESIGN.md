@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.18 |
+| Version | 1.25 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,8 @@
 
 | Version | Change |
 |---|---|
+| 1.25 | **The house, and a robot** (§5.11, §5.12; FR-99, FR-100): a floor plan of four rooms in configuration, read by the robot to plan its walks and by the console to draw the house; the house's fans, lights and TV as one home service, each standing in a room; a home robot with scripted errands -- feed the dog, clean the bathroom, switch on the TV, go to a room -- whose progress is its state, and which uses the TV only by asking the executor; a 3D House page where every device does what its service says; and a request for what only one device does is routed to that device. |
+| 1.24 | **How to add a service** (§5.12; FR-87, FR-90): the rules every new device service keeps -- the three routes onto one contract, the safety class declared and never inferred, another device used only through the executor, long tasks reported through state -- with the step-by-step guide in `docs/adding-a-service.md`. |
 | 1.23 | **A named temperature at once; a question answered** (§5.4, §5.7; FR-53, FR-98): V-2 paces only what the system proposes for itself, so an occupant's named temperature is applied at once within the bounds; a question about the room ("why is it not cooling?") is answered rather than read as "cooler", past a leading "hey Jarvis" and by "why" anywhere, and the model is told whether the AC is cooling, the last minutes' trend and the heat outside; a sentence opening with "Jarvis" is a request though no detector fired. |
 | 1.22 | **Heard over the music, answered at once** (§5.8.8, §5.11; FR-97, FR-98): the wake word detector is a seam, and openWakeWord is joined by sherpa-onnx's keyword spotter; the wake word is also heard with the room's own sound taken out by echo cancelling against the speakers' output; the moment before the wake is kept and a wake mid-sentence does not chime; short device commands -- stop, carry on, next, louder -- are understood without a model; transcription moves to Whisper small.en with hotwords. |
 | 1.21 | **The room's music** (§5.11; FR-96, revised): a song asked for aloud waits for Jarvis to finish saying so; the music dips while the room listens or speaks; stop keeps the place and carry on picks it up; songs are named as they are said ("Bohemian Rhapsody by Queen"); autoplay plays what YouTube would next, or another of the occupant's own; `next` and `set_autoplay` added. |
@@ -256,6 +258,8 @@ feature safe to ship at all.
 | FR-94 | Someone away from the room shall be able to talk to the room from a phone or laptop on the network: speak on that device's microphone or type, and hear the answer on that device, with the room itself silent; see the shared calendar; and control every device. The recording is transcribed on the node and never kept or published. | S | D |
 | FR-97 | A short device command -- stop, pause, carry on, next, louder, quieter, a volume, a named device on or off -- shall be carried out and answered without a language model, through the same executor checks as a remote's tap. A command naming no device shall be taken this way only when exactly one media device is playing or paused; anything longer or less plain shall go to the model as before. | S | T |
 | FR-98 | The room shall be woken reliably while music plays. The wake word detector shall be swappable in configuration, and the room's own sound -- its music and its voice -- shall be taken out of what the wake word detector hears, without reaching what is transcribed. | S | T |
+| FR-99 | The simulated house shall be drawn live: a floor plan of rooms, given once in configuration, with every device standing in its room and shown doing what its service reports -- a fan spinning at its speed, a light at its brightness, the air conditioner cooling over a floor tinted by the room's measured temperature. Every device in the drawing shall open its remote. | S | D |
+| FR-100 | A home robot shall be a device service with errands that take time -- feed the dog, clean the bathroom, switch on the TV, go to a room -- answering at once and reporting its progress through its state. It shall use another device only by asking the executor, as a remote does, so the executor's checks and audit apply to it. A request for what only one device does shall be routed to that device though it is not named. | S | T |
 | FR-96 | The music player shall play a song the occupant's library lacks, or one asked for online, by finding it online and streaming it; the library shall always be tried first, and a request naming nothing shall never leave it. It shall be possible to turn this off, leaving the player library-only. A song asked for aloud shall start after Jarvis has said he is playing it; the music shall be turned down while the room listens or speaks; stopping shall keep the place; and, unless turned off, another song shall follow when one ends. | C | D |
 | FR-95 | Someone away shall be able to leave a spoken message that plays in the room at once in their own voice, announced with who it is from, and the room shall listen for an answer without the wake word. The answer, words and voice, shall reach the sender's page, and the sender shall see whether it was sent, played and answered. Recordings shall stay on the node, never cross the blackboard, and be deleted after `messages.keep_days`. | S | D |
 | FR-93 | The occupant shall know when the room is listening to them: a chime whenever a capture window opens, and an indicator on every page of the console while it listens, thinks and speaks. After a reply is spoken, the room shall listen for an answer without the wake word. Overheard speech shall not be shown as listening. | S | D |
@@ -1741,6 +1745,41 @@ The same commands took 12 to 21 s through the model the day before. A song YouTu
 
 **Measured live** (2026-10-26, qwen2.5:7b): "turn on the fan", "set the desk lamp to 30 percent" (through MCP), "is the lamp on?", "play the evening chime" and "turn the music volume down to 20" were each carried out and answered in the device's own words in 10 to 18 s; "set the ac to 25 degrees" became a preference goal of 25 °C through the validator with nothing published on `space/device/ac/command`; killing the fan's service marked it offline and withdrew its tools within a second, and `start.py` brought it back two seconds later. "Set the fan to 5" was not refused: shown the parameter's maximum, the model asked for 3 itself, and the reply said "speed 3 of 3".
 
+**The house** (v1.25; FR-99, FR-100). The simulation was a dashboard: a remote said "the fan is on (simulated)" and nothing could be seen to happen. The room is now a house that can be watched.
+
+- **One floor plan.** `house` in the configuration gives four rooms as rectangles in metres, the doors between them, named spots (the robot's dock, the dog's bed and bowl, in front of the TV) and where each device stands. It is checked at load: every door on a wall its two rooms share, every spot and device inside its room, every room reachable through doors. The robot plans its walks from it and the console draws it, so the two cannot disagree.
+- **The house's devices** are one service, `home` (`src/devices/home`): two fans, a light in every room and a TV, each its own device with its own connection and last will, standing in a room. The fans are the reference fan, reused. "The fan" stays the living room's, so a quick command never has two to choose between; "the bedroom fan" names the other. Nothing in the core changed to add them.
+- **The robot** (`src/devices/robot`) runs errands that take time. Feeding the dog is a walk through the kitchen door to the bowl, eight seconds filling it, and a walk back to its dock; cleaning the bathroom is back-and-forth passes over its floor; `go_to` walks to a room and waits there. A command must be answered in 12 s, so the handler answers at once ("On my way to feed the dog, about 25 s") and the errand's progress is the robot's published state: its place, its heading, its battery, and the leg it is walking with when it started and ends, so the console moves it smoothly between ticks using only differences between the node's own timestamps. One errand at a time; another is refused in words; `stop` stops it where it is; below 20 % battery it refuses and docks. Every sentence says "(simulated)".
+- **The robot uses the TV as a person would.** `switch_on_tv` walks to the TV, then publishes `tv_turn_on` on `space/assist/proposed` with the requester `device` -- what a remote's tap publishes -- so the executor's checks and audit apply, and the robot never touches the TV's command topic. It repeats the TV's own answer from `space/assist/result`.
+- **Routing an errand.** "Jarvis, feed the dog" names no device, and the model, shown only device names, offered a reminder. A device's line now lists what it alone can do -- capabilities of three words or more, so "turn on" adds nothing -- and a request saying an errand only one device has is routed to that device, the same deterministic rule that routes a request naming one.
+- **The House page** (`console/web/src/house`) draws the plan in 3D with three.js, loaded only with that page: fans spin at their speed and slow to a stop, lights glow and light the floor at their brightness, the TV plays, the music's speaker pulses, the air conditioner blows over a living room tinted by the measured temperature, the robot walks its legs with its errand and battery above it, and the dog walks to its bowl when the robot fills it. A top view shows it as a plan. Tapping a device opens its remote, the same as on the Remotes page.
+
+**Measured live** (2026-11-05, qwen2.5:7b): the robot's `switch_on_tv` from a remote walked to the TV in about 5 s, `tv_turn_on` ran through the executor as `device`, the TV came on and the robot repeated "The TV is on, channel 1 (simulated)." and went back to charge; "Jarvis, feed the dog" ran `robot_feed_the_dog` once the errand rule was in place (before it, the model offered a reminder); "turn on the bedroom light" and "send the robot to the bedroom" each ran on the device named.
+
+### 5.12 How to add a service (v1.24; FR-87, FR-90)
+
+A new device is a new **service**, not a change to the core. The assistant, the executor, the console and the control loop learn about a device from its announcement and nothing else. Adding a fan, a kettle or a robot is therefore writing one service, registering it, and testing it. The step-by-step guide is [docs/adding-a-service.md](adding-a-service.md); this section states the rules it follows.
+
+**What every service is.** A manifest (retained), an availability flag under a last will (retained), a handler per capability answering `space/device/<id>/command` on `.../result`, and its state (retained) -- the contract of §5.11, nothing more.
+
+**Three routes, one contract.**
+
+| Route | When | Reference |
+|---|---|---|
+| Native Python service | The device's logic lives here; its state changes on its own (`tick`) or it follows other topics (`subscribe`) | `src/devices/fan`, `src/devices/home`, `src/devices/robot`, `src/devices/music` |
+| MCP server through the bridge | Something already speaks MCP; it answers when asked | `examples/mcp_lamp`, `actuators.mcp_servers` |
+| No Python | A microcontroller publishing the same JSON | ESPHome or Tasmota, the topics in §6.1 |
+
+**The rules a new service must keep.**
+- **Its class is declared, never inferred.** `plant` is never a tool, and the room's temperature is reached only through the validator (FR-88). For an MCP server, the effect and class come from the configuration, not the server (FR-90).
+- **Its numbers are bounded.** Every parameter declares its bounds, and both the executor and the device service check them. Every capability can declare a rate limit.
+- **It uses another device the way a person does.** It publishes a `ToolInvocation` on `space/assist/proposed` and never touches another device's command topic. The executor's gates and audit then apply to it as to a remote's tap.
+- **It works in long tasks through state.** A handler answers within `actuators.command_timeout_s`. Anything slower (a robot walking) answers "on my way", and its progress is its published state.
+- **It obeys the layer rules.** Its time comes from the injected `Clock`, its topics from `topics.py`, and its tunables from config. It imports only `src.common` and `src/devices`.
+- **It is registered once.** One `Service` entry in `start.py` means it starts, restarts and stops with everything else. A remote of its own is optional: a device with none is controlled through the generic remote drawn from its manifest.
+
+**Done means:** manifest and handler tests with `SimClock`, the gate green, a requirement ID in the commit, a line in the README's device table, and the device seen on Remotes, used by Jarvis by name, and greyed out when its service stops.
+
 ---
 
 ## 6. Interface Specifications
@@ -2184,6 +2223,8 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-96 | §5.11 | Unit + demonstration |
 | FR-97 | §5.11 | Unit + demonstration |
 | FR-98 | §5.8.8 | Unit + measurement (`tools/wake_eval.py`) + demonstration |
+| FR-99 | §5.11 | Unit + demonstration |
+| FR-100 | §5.11, §5.12 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 

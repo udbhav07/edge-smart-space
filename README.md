@@ -262,11 +262,12 @@ lost.
 ### Devices: the fan, music, and anything you plug in
 
 Every actuator beyond the air conditioner is a **device service** on the
-blackboard (FR-87). `python start.py` runs three:
+blackboard (FR-87). `python start.py` runs four:
 
 | Service | Device | What it does |
 |---|---|---|
-| `fan` | Ceiling fan, simulated | on, off, speed 0–3 |
+| `home` | The house's fans, lights and TV, simulated | two fans (speed 0–3), a light in every room (0–100 %), a TV (channels 1–9), each standing in a room of the house (FR-99) |
+| `robot` | A home robot, simulated | feeds the dog, cleans the bathroom, switches on the TV, goes to a room, returns to its dock; one errand at a time, with a battery (FR-100) |
 | `music` | Music on this machine | plays files from `~/Music` (or one you upload on Home): play by words or name, pause, stop, volume; a song your files don't have, or one asked for "from YouTube", is found online and streamed (FR-96) |
 | `mcp` | Desk lamp, through the MCP bridge | an ordinary MCP server (`examples/mcp_lamp/`), mounted as a device |
 
@@ -313,67 +314,29 @@ However many devices are plugged in, the model is shown one line per device
 and then only the tools of the one a request is about (FR-89), so a 7B
 model's context does not grow with the room.
 
+**The House page** draws the house in 3D: four rooms, every device where it
+stands, doing what its service says. Fans spin, lights glow, the TV plays,
+the air conditioner blows over a living room coloured by its real temperature,
+and the robot walks its errands while the dog goes to its bowl. **Top view**
+shows it as a plan; tap any device for its remote. Try "Jarvis, feed the dog",
+"turn on the bedroom fan" or "send the robot to the bedroom". The floor plan
+is `house` in the configuration (FR-99, FR-100).
+
 #### Adding a device
 
-A device is a manifest, a handler per capability, and its state. In Python,
-on the shared base (`src/devices/fan` is the whole of a working one):
+A device is a **service**: a manifest saying what it is and what it can do, a
+handler per capability, and its state. Write the service, add one line to
+`start.py`, and it is on the board, a tool for Jarvis, and a remote on the
+console. Nothing in the core changes. There are three routes onto the same
+contract:
 
-```python
-from src.common.devices import DeviceCapability, DeviceClass, DeviceKind, DeviceManifest
-from src.common.tools import ParameterType, ProviderOutcome, ToolEffect, ToolParameter
-from src.devices.runner import DeviceParts, run
+- **A native Python service.** `src/devices/fan` is the whole of a working one.
+- **An MCP server**, added to `actuators.mcp_servers`. Only the tools you list
+  are exposed, with the effect and safety class you give them (FR-90).
+- **A microcontroller** (ESPHome, Tasmota) publishing the same JSON topics.
 
-def build(config, clock):
-    kettle = {"on": False}
-
-    def boil(_args):
-        kettle["on"] = True
-        return ProviderOutcome(message="The kettle is on.")
-
-    manifest = DeviceManifest(
-        ts=clock.now(), device_id="kettle", name="Kettle", kind=DeviceKind.OTHER,
-        aliases=("the kettle",), simulated=False,
-        capabilities=(DeviceCapability(name="boil", purpose="Boil the kettle.",
-                                       effect=ToolEffect.WRITE, device_class=DeviceClass.COMFORT,
-                                       min_interval_s=30),),
-    )
-    return DeviceParts(manifest=manifest, handlers={"boil": boil}, state=lambda: dict(kettle))
-
-if __name__ == "__main__":
-    raise SystemExit(run(None, "The kettle.", "device-kettle", build))
-```
-
-Run it, and the kettle is on the board, a tool for Jarvis, and a card on Home.
-Nothing else changes.
-
-**Without Python** -- an ESPHome or Tasmota node -- publish the same topics:
-the manifest (retained) on `space/device/<id>/manifest`, `{"online": true}`
-(retained, with a last will of `false`) on `space/device/<id>/availability`,
-answer each `ToolInvocation` on `space/device/<id>/command` with a
-`ToolResult` on `space/device/<id>/result`, and keep your values on
-`space/device/<id>/state`. The topic guide in the console has every field.
-
-**An MCP server** -- add it to `actuators.mcp_servers` in your config. Only
-the tools you list are exposed, and you say what each may do; the server's
-own claims about itself are not trusted (FR-90):
-
-```yaml
-actuators:
-  mcp_servers:
-    - device_id: spotify
-      name: Spotify
-      kind: media
-      aliases: [spotify]
-      simulated: false
-      command: uvx
-      args: [some-spotify-mcp-server]
-      tools:
-        play: {effect: write, device_class: media}
-        pause: {effect: write, device_class: media}
-```
-
-`plant` is refused for an MCP tool: the room's temperature is reached only
-through the safety gate.
+The step-by-step guide, with a worked example, the safety rules and a
+checklist, is **[docs/adding-a-service.md](docs/adding-a-service.md)**.
 
 #### Remotes: controlling devices by hand
 

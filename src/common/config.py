@@ -736,6 +736,13 @@ class AssistanceConfig(_Section):
         gt=0,
         description="Tool-call rounds one reasoning call may make before answering",
     )
+    argument_retries: int = Field(
+        default=1,
+        ge=0,
+        description="Times the model is asked again after a call refused for its own "
+        "arguments -- one it does not take, one missing or out of bounds -- before the "
+        "occupant is told it could not be done",
+    )
     result_timeout_s: float = Field(
         gt=0.0, description="Seconds to wait for a tool result before answering without"
     )
@@ -1227,6 +1234,7 @@ class FanConfig(_Section):
     device_id: str = Field(default="fan", pattern=r"^[a-z][a-z0-9_]*$")
     name: str = "Ceiling fan"
     aliases: list[str] = Field(default_factory=lambda: ["the fan", "ceiling fan", "fan"])
+    room: str = Field(default="", description="The house room it hangs in (FR-99)")
     max_speed: int = Field(default=3, gt=0, description="Highest speed setting")
     min_interval_s: float = Field(default=1.0, ge=0.0, description="Shortest time between switches, in s")
 
@@ -1276,6 +1284,219 @@ class MessagesConfig(_Section):
     )
 
 
+_ID = r"^[a-z][a-z0-9_]*$"
+
+
+class HouseRoom(_Section):
+    """One room of the floor plan, a rectangle in metres seen from above (FR-99).
+
+    x runs left to right and y top to bottom of the plan, the way it is drawn.
+    """
+
+    room_id: str = Field(pattern=_ID)
+    name: str = Field(min_length=1)
+    x: float = Field(description="Left edge, in m")
+    y: float = Field(description="Top edge, in m")
+    width: float = Field(gt=0.0, description="In m")
+    depth: float = Field(gt=0.0, description="In m")
+
+    def contains(self, x: float, y: float) -> bool:
+        return self.x - 1e-6 <= x <= self.x + self.width + 1e-6 and self.y - 1e-6 <= y <= self.y + self.depth + 1e-6
+
+    @property
+    def centre(self) -> tuple[float, float]:
+        return (self.x + self.width / 2.0, self.y + self.depth / 2.0)
+
+
+class HouseDoor(_Section):
+    """A doorway on the wall two rooms share; the robot walks only through these."""
+
+    between: tuple[str, str]
+    x: float
+    y: float
+
+
+class HouseSpot(_Section):
+    """A named place on the floor: the robot's dock, the dog's bowl."""
+
+    room: str
+    x: float
+    y: float
+
+
+class HousePlacement(_Section):
+    """Where a device stands, so the house is drawn with it in place."""
+
+    room: str
+    x: float
+    y: float
+    z: float = Field(default=0.0, ge=0.0, description="Height above the floor, in m")
+
+
+def _room(room_id: str, name: str, x: float, y: float, width: float, depth: float) -> HouseRoom:
+    return HouseRoom(room_id=room_id, name=name, x=x, y=y, width=width, depth=depth)
+
+
+class HouseConfig(_Section):
+    """The simulated house: its floor plan and what stands where (FR-99, FR-100).
+
+    One description, read by the robot to plan its walks and by the console
+    to draw the house, so the two can never disagree about where a door is.
+    The air conditioner's room is the one the thermal model simulates; the
+    other rooms hold the house's other devices.
+    """
+
+    wall_height_m: float = Field(default=2.7, gt=0.0)
+    rooms: list[HouseRoom] = Field(
+        default_factory=lambda: [
+            _room("living_room", "Living room", 0.0, 0.0, 6.0, 4.5),
+            _room("kitchen", "Kitchen", 6.0, 0.0, 4.0, 4.5),
+            _room("bathroom", "Bathroom", 0.0, 4.5, 3.5, 3.5),
+            _room("bedroom", "Bedroom", 3.5, 4.5, 6.5, 3.5),
+        ],
+        min_length=1,
+    )
+    doors: list[HouseDoor] = Field(
+        default_factory=lambda: [
+            HouseDoor(between=("living_room", "kitchen"), x=6.0, y=2.6),
+            HouseDoor(between=("living_room", "bathroom"), x=1.8, y=4.5),
+            HouseDoor(between=("living_room", "bedroom"), x=4.8, y=4.5),
+        ]
+    )
+    spots: dict[str, HouseSpot] = Field(
+        default_factory=lambda: {
+            "dock": HouseSpot(room="living_room", x=5.3, y=3.9),
+            "dog_bed": HouseSpot(room="kitchen", x=9.2, y=1.6),
+            "dog_bowl": HouseSpot(room="kitchen", x=9.2, y=3.0),
+            "tv_front": HouseSpot(room="living_room", x=3.0, y=1.1),
+            "bathroom_floor": HouseSpot(room="bathroom", x=1.75, y=6.25),
+        }
+    )
+    placements: dict[str, HousePlacement] = Field(
+        default_factory=lambda: {
+            "ac": HousePlacement(room="living_room", x=0.15, y=2.2, z=2.2),
+            "fan": HousePlacement(room="living_room", x=3.0, y=2.4, z=2.6),
+            "living_light": HousePlacement(room="living_room", x=1.4, y=1.4, z=2.65),
+            "tv": HousePlacement(room="living_room", x=3.0, y=0.15, z=1.1),
+            "music": HousePlacement(room="living_room", x=5.5, y=0.4, z=0.0),
+            "kitchen_light": HousePlacement(room="kitchen", x=8.0, y=2.2, z=2.65),
+            "bedroom_fan": HousePlacement(room="bedroom", x=6.8, y=6.2, z=2.6),
+            "bedroom_light": HousePlacement(room="bedroom", x=8.8, y=5.4, z=2.65),
+            "lamp": HousePlacement(room="bedroom", x=9.5, y=7.4, z=0.75),
+            "bathroom_light": HousePlacement(room="bathroom", x=1.75, y=6.25, z=2.65),
+        }
+    )
+
+    def room(self, room_id: str) -> HouseRoom | None:
+        return next((room for room in self.rooms if room.room_id == room_id), None)
+
+    def room_at(self, x: float, y: float) -> HouseRoom | None:
+        """The room a point is in; a point on a shared wall is in the first listed."""
+        return next((room for room in self.rooms if room.contains(x, y)), None)
+
+    @model_validator(mode="after")
+    def _the_plan_is_whole(self) -> HouseConfig:
+        ids = [room.room_id for room in self.rooms]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"house rooms must have distinct ids: {ids}")
+        for door in self.doors:
+            first, second = (self.room(room_id) for room_id in door.between)
+            if first is None or second is None or first is second:
+                raise ValueError(f"a door must join two rooms of the house: {door.between}")
+            if not (first.contains(door.x, door.y) and second.contains(door.x, door.y)):
+                raise ValueError(f"the door between {door.between} at ({door.x}, {door.y}) is not on a wall they share")
+        for kind, places in (("spot", self.spots), ("placement", self.placements)):
+            for name, place in places.items():
+                room = self.room(place.room)
+                if room is None or not room.contains(place.x, place.y):
+                    raise ValueError(f"house {kind} {name!r} at ({place.x}, {place.y}) is not inside the room {place.room!r}")
+        reached, frontier = {ids[0]}, [ids[0]]
+        while frontier:
+            here = frontier.pop()
+            for door in self.doors:
+                if here in door.between:
+                    there = door.between[1] if door.between[0] == here else door.between[0]
+                    if there not in reached:
+                        reached.add(there)
+                        frontier.append(there)
+        if reached != set(ids):
+            raise ValueError(f"no door leads into {sorted(set(ids) - reached)}; the robot could never reach it")
+        return self
+
+
+class HomeDeviceConfig(_Section):
+    """One simulated device of the house (FR-99)."""
+
+    device_id: str = Field(pattern=_ID)
+    name: str = Field(min_length=1)
+    kind: Literal["fan", "light", "tv"]
+    room: str = Field(min_length=1)
+    aliases: list[str] = Field(default_factory=list)
+    max_speed: int = Field(default=3, gt=0, description="A fan's highest speed")
+    channels: int = Field(default=9, gt=0, description="A TV's channels, 1 to this")
+    min_interval_s: float = Field(default=1.0, ge=0.0, description="Shortest time between switches, in s")
+
+
+def _home(device_id: str, name: str, kind: str, room: str, *aliases: str) -> HomeDeviceConfig:
+    return HomeDeviceConfig(device_id=device_id, name=name, kind=kind, room=room, aliases=list(aliases))
+
+
+class HomeConfig(_Section):
+    """The simulated house's fans, lights and TV, one service for all of them (FR-99).
+
+    Aliases are what people say. The bare "fan" stays with the living room's,
+    so "turn off the fan" never has two fans to choose between; "the bedroom
+    fan" names the other.
+    """
+
+    enabled: bool = True
+    devices: list[HomeDeviceConfig] = Field(
+        default_factory=lambda: [
+            _home("fan", "Ceiling fan", "fan", "living_room", "the fan", "ceiling fan", "fan", "living room fan"),
+            _home("bedroom_fan", "Bedroom fan", "fan", "bedroom", "bedroom fan"),
+            _home("living_light", "Living room light", "light", "living_room", "living room light", "the lights"),
+            _home("kitchen_light", "Kitchen light", "light", "kitchen", "kitchen light"),
+            _home("bedroom_light", "Bedroom light", "light", "bedroom", "bedroom light"),
+            _home("bathroom_light", "Bathroom light", "light", "bathroom", "bathroom light"),
+            _home("tv", "TV", "tv", "living_room", "the tv", "tv", "television", "telly"),
+        ]
+    )
+
+    @model_validator(mode="after")
+    def _ids_are_distinct(self) -> HomeConfig:
+        ids = [device.device_id for device in self.devices]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"home devices must have distinct ids: {ids}")
+        return self
+
+
+class RobotConfig(_Section):
+    """The home robot, a device service with scripted tasks (FR-100).
+
+    Nothing it does is real: it walks the floor plan in ``house`` and says so.
+    Every duration is here so a demo can be paced without touching code.
+    """
+
+    enabled: bool = True
+    device_id: str = Field(default="robot", pattern=_ID)
+    name: str = "Home robot"
+    aliases: list[str] = Field(default_factory=lambda: ["the robot", "robot", "robo"])
+    dock_spot: str = "dock"
+    speed_m_s: float = Field(default=0.5, gt=0.0, description="Walking speed, in m/s")
+    feed_s: float = Field(default=8.0, gt=0.0, description="Time to fill the dog's bowl, in s")
+    press_s: float = Field(default=2.0, gt=0.0, description="Time to press a button, in s")
+    sweep_spacing_m: float = Field(default=0.6, gt=0.0, description="Distance between cleaning passes, in m")
+    sweep_margin_m: float = Field(default=0.5, ge=0.0, description="How far from the walls it cleans, in m")
+    bowl_empties_after_s: float = Field(default=300.0, gt=0.0, description="The dog finishes its food in this, in s")
+    tv_device_id: str = Field(default="tv", pattern=_ID, description="The device switch_on_tv asks to turn on")
+    battery_drain_moving_pct_s: float = Field(default=0.15, ge=0.0, description="Battery used walking, in %/s")
+    battery_drain_working_pct_s: float = Field(default=0.10, ge=0.0, description="Battery used working, in %/s")
+    battery_charge_pct_s: float = Field(default=0.5, ge=0.0, description="Battery gained on the dock, in %/s")
+    low_battery_pct: float = Field(default=20.0, ge=0.0, le=100.0, description="Below this it takes no task, and docks")
+    min_interval_s: float = Field(default=2.0, ge=0.0, description="Shortest time between two of the same task, in s")
+    result_wait_s: float = Field(default=15.0, gt=0.0, description="How long it waits for another device's answer, in s")
+
+
 class ActuatorsConfig(_Section):
     """Device services beyond the thermal loop, and how the assistant reaches them (FR-87 to FR-91)."""
 
@@ -1289,6 +1510,8 @@ class ActuatorsConfig(_Section):
         "model's context must not grow with every device plugged in",
     )
     fan: FanConfig = FanConfig()
+    home: HomeConfig = HomeConfig()
+    robot: RobotConfig = RobotConfig()
     music: MusicConfig = MusicConfig()
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
 
@@ -1341,6 +1564,29 @@ class Config(_Section):
     google: GoogleConfig = GoogleConfig()
     actuators: ActuatorsConfig = ActuatorsConfig()
     messages: MessagesConfig = MessagesConfig()
+    house: HouseConfig = HouseConfig()
+
+    @model_validator(mode="after")
+    def _the_house_holds_its_devices(self) -> Config:
+        """Every house device stands in a room the plan has, and the robot's places exist (FR-99, FR-100)."""
+        rooms = {room.room_id for room in self.house.rooms}
+        for device in self.actuators.home.devices:
+            if device.room not in rooms:
+                raise ValueError(f"home device {device.device_id!r} is in {device.room!r}, which the house has no room for")
+        robot = self.actuators.robot
+        if robot.enabled:
+            needed = {robot.dock_spot, "dog_bowl", "tv_front", "bathroom_floor"}
+            missing = needed - set(self.house.spots)
+            if missing:
+                raise ValueError(f"the robot needs the house spots {sorted(missing)}")
+            if self.house.room("bathroom") is None:
+                raise ValueError("the robot's clean_the_bathroom needs a room with the id 'bathroom'")
+        ids = [device.device_id for device in self.actuators.home.devices]
+        others = [robot.device_id, self.actuators.music.device_id, *(server.device_id for server in self.actuators.mcp_servers)]
+        clash = set(ids) & set(others)
+        if clash:
+            raise ValueError(f"device ids are used twice: {sorted(clash)}")
+        return self
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:

@@ -6,7 +6,7 @@ import { RemoteTile } from "@/remotes/RemoteTile";
 // Every device's remote, usable from here (FR-92). Each is the same remote as
 // the device's own page, compact; the name opens the full one.
 
-const ORDER: Record<string, number> = { ac: 0, fan: 1, light: 2, media: 3, other: 4 };
+const ORDER: Record<string, number> = { ac: 0, fan: 1, light: 2, tv: 3, media: 4, robot: 5, other: 6 };
 
 export function Remotes() {
   const { state } = useConsole();

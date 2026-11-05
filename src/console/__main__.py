@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     state = ConsoleState(
         config.console, clock, inbox_path=Path(config.console.inbox_path), utc_offset_h=config.site.utc_offset_h,
         bounds_c=(config.validator.setpoint_bounds_c.low, config.validator.setpoint_bounds_c.high),
+        house=config.house.model_dump(mode="json"),
     )
     lock = threading.Lock()
     hub = Hub()

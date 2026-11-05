@@ -737,3 +737,38 @@ class TestRepliesSayHowTheyWereAsked:
         room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
         reply = room.say("what is on Thursday", intent=Intent.QUESTION, typed=True, remote=True)
         assert reply.remote is True and reply.spoken is False
+
+
+class TestTheModelsOwnMistake:
+    """A call refused for its own arguments is retried, never read out (FR-44)."""
+
+    WRONG = call("get_events", from_time="2026-10-01T00:00:00", to_time="2026-10-01T23:59:00", room="bathroom")
+    RIGHT = call("get_events", from_time="2026-10-01T00:00:00", to_time="2026-10-01T23:59:00")
+
+    def test_it_is_told_why_and_asked_again(self, config):
+        chat = ScriptedChat(calling(self.WRONG), calling(self.RIGHT), saying("You have nothing on Thursday."))
+        reply = Room(config, chat).say("what is on Thursday")
+        assert reply.reply == "You have nothing on Thursday."
+        told = chat.requests[1][0][-1]
+        assert told["role"] == "tool" and "does not take ['room']" in told["content"]
+
+    def test_the_refusal_is_never_said(self, config):
+        chat = ScriptedChat(calling(self.WRONG), calling(self.WRONG))
+        reply = Room(config, chat).say("what is on Thursday")
+        assert "does not take" not in reply.reply and "say it another way" in reply.reply
+
+    def test_it_is_asked_again_only_so_often(self, config):
+        chat = ScriptedChat(calling(self.WRONG), calling(self.WRONG), calling(self.RIGHT))
+        Room(config, chat).say("what is on Thursday")
+        assert len(chat.requests) == 1 + config.assistance.argument_retries
+
+    def test_a_refusal_about_the_request_is_still_said(self, config):
+        chat = ScriptedChat(calling(call("cancel_event", subject="the plumber")))
+        reply = Room(config, chat).say("cancel the plumber")
+        assert "say it another way" not in reply.reply and len(chat.requests) == 1
+
+    def test_switched_off_it_is_not_asked_again(self, config):
+        quiet = config.model_copy(update={"assistance": config.assistance.model_copy(update={"argument_retries": 0})})
+        chat = ScriptedChat(calling(self.WRONG), calling(self.RIGHT))
+        reply = Room(quiet, chat).say("what is on Thursday")
+        assert len(chat.requests) == 1 and "does not take" not in reply.reply

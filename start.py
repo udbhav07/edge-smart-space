@@ -145,9 +145,14 @@ SERVICES = (
         description="Wake word, transcription, and the Personal Context call",
     ),
     Service(
-        name="fan",
-        module="src.devices.fan",
-        description="Simulated ceiling fan, a device service (FR-87)",
+        name="home",
+        module="src.devices.home",
+        description="The simulated house: fans, lights and a TV in four rooms (FR-99)",
+    ),
+    Service(
+        name="robot",
+        module="src.devices.robot",
+        description="A home robot with scripted errands, a device service (FR-100)",
     ),
     Service(
         name="music",

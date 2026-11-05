@@ -158,6 +158,9 @@ class ToolRequester(str, Enum):
     #: The executor, carrying a request already audited on
     #: ``space/assist/proposed`` to the device that performs it (FR-87).
     ASSISTANCE = "assistance"
+    #: A device using another, as a person at a remote would: the robot
+    #: switching on the TV (FR-100). Its rationale names the device.
+    DEVICE = "device"
 
 
 # --- Errors ----------------------------------------------------------------

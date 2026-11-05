@@ -228,3 +228,18 @@ class TestLastResult:
         result = self._result(clock).model_copy(update={"invocation_id": invocation_id})
         state.accept(topics.ASSIST_RESULT.pattern, result.model_dump_json().encode())
         assert any(step["text"].startswith("fan_turn_on") for step in state.snapshot()["activity"])
+
+
+class TestTheHouse:
+    """The floor plan reaches the browser, to draw the house with its devices in it (FR-99)."""
+
+    def test_the_snapshot_carries_the_floor_plan(self):
+        config = load_config(Path("config/default.yaml"))
+        state = ConsoleState(config.console, SimClock(start_epoch_s=1000.0), house=config.house.model_dump(mode="json"))
+        house = state.snapshot()["house"]
+        assert {room["room_id"] for room in house["rooms"]} == {"living_room", "kitchen", "bathroom", "bedroom"}
+        assert house["placements"]["tv"]["room"] == "living_room"
+
+    def test_without_one_there_is_nothing_to_draw(self):
+        config = load_config(Path("config/default.yaml"))
+        assert ConsoleState(config.console, SimClock(start_epoch_s=1000.0)).snapshot()["house"] is None
