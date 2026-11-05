@@ -58,7 +58,7 @@ export function House() {
       ) : (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
           <div className="card relative h-[64vh] min-h-[420px] overflow-hidden rounded-[22px] bg-gradient-to-b from-slate-100 to-slate-300 dark:from-slate-800 dark:to-slate-950">
-            <Canvas camera={{ position: [9, 10, 11], fov: 45 }} dpr={[1, 2]}>
+            <Canvas shadows camera={{ position: [7, 8, 9], fov: 40 }} dpr={[1, 2]}>
               <CameraRig view={view} span={Math.max(frameOf(plan).width, frameOf(plan).depth)} />
               <HouseScene plan={plan} devices={devices} acMode={acMode} roomC={roomC} thermalRoom={thermalRoom} selected={selected} onSelect={setSelected} />
             </Canvas>
@@ -102,7 +102,7 @@ function CameraRig({ view, span }: { view: View; span: number }) {
     moving.current = true;
   }
   const goal = useMemo(
-    () => (view === "top" ? new THREE.Vector3(0, span * 1.35, 0.001) : new THREE.Vector3(span * 0.75, span * 0.85, span * 0.95)),
+    () => (view === "top" ? new THREE.Vector3(0, span * 1.55, 0.001) : new THREE.Vector3(span * 0.5, span * 0.78, span * 0.82)),
     [view, span],
   );
   useFrame((_, dt) => {

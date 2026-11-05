@@ -1359,8 +1359,8 @@ class HouseConfig(_Section):
     spots: dict[str, HouseSpot] = Field(
         default_factory=lambda: {
             "dock": HouseSpot(room="living_room", x=5.3, y=3.9),
-            "dog_bed": HouseSpot(room="kitchen", x=9.0, y=1.0),
-            "dog_bowl": HouseSpot(room="kitchen", x=9.1, y=3.8),
+            "dog_bed": HouseSpot(room="kitchen", x=9.2, y=1.6),
+            "dog_bowl": HouseSpot(room="kitchen", x=9.2, y=3.0),
             "tv_front": HouseSpot(room="living_room", x=3.0, y=1.1),
             "bathroom_floor": HouseSpot(room="bathroom", x=1.75, y=6.25),
         }
