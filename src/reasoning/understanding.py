@@ -50,8 +50,14 @@ _MEMORY_QUESTION = re.compile(
 #: How a question opens. "How about..." is a suggestion, not a question.
 _QUESTION_OPENING = re.compile(
     r"^\s*(why|what|what's|whats|how(?!\s+about)|when|where|who|which|"
-    r"is|are|was|were|do|does|did|have|has|can\s+you\s+tell|tell\s+me)\b"
+    r"is|are|was|were|do|does|did|have|has|tell\s+me|"
+    r"(can|could|would)\s+you\s+(tell|see|check|explain|find\s+out|look\s+into|work\s+out))\b"
 )
+#: "Why" anywhere asks for a reason, not a change: "it's not cooling, why?"
+_ASKS_WHY = re.compile(r"\bwhy\b")
+#: The wake word said first -- kept at the start of a request since v1.22 --
+#: is not part of what was asked: "Hey Jarvis, why is it not cooling?"
+_CALLED_FIRST = re.compile(r"^\W*(?:(?:hey|hi|hay|ok|okay|yes|yeah|a|oh|hello)\W+)?jarvis\b\W*")
 
 #: A greeting or small talk, which deserves an answer and asks for nothing.
 _SMALL_TALK = re.compile(
@@ -165,7 +171,7 @@ def understood(
     :param recent: the conversation so far, newest last, used only to tell a
         follow-up from a request about the room.
     """
-    text = transcript.strip().lower()
+    text = _CALLED_FIRST.sub("", transcript.strip().lower())
     if not text:
         return hint
 
@@ -175,7 +181,10 @@ def understood(
         return _as(hint, Intent.SERVICE, "memory")
     if _SMALL_TALK.match(text):
         return _as(hint, Intent.QUESTION, "conversation")
-    if _QUESTION_OPENING.match(text) and not _REQUEST_VERB.search(text):
+    if (_QUESTION_OPENING.match(text) or _ASKS_WHY.search(text)) and not _REQUEST_VERB.search(text):
+        # Live: "Can you see why my temperature is not actually cooling down?
+        # It's 28.5" came back as "make it cooler", lowered the target, and
+        # was answered about a number nobody said. A question is answered.
         return _as(hint, Intent.QUESTION, hint.subject or "room")
 
     named = _NAMED_TEMPERATURE.search(text)

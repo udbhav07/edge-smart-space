@@ -1,0 +1,55 @@
+# A 16 GB Jetson Orin (Orin NX 16 GB, 102.4 GB/s): half the memory and half
+# the bandwidth of the AGX Orin 32 GB, sized so the node holds about 13 GB of
+# the ~15.3 GB visible, leaving room for a burst without the OOM killer.
+# Run with: python start.py --config config/jetson16.yaml
+#
+# The budget, estimated (tegrastats measures it; trust tegrastats over this):
+#
+#   JetPack, headless (multi-user.target), CUDA context    2.0 GB
+#   LLM qwen3:4b-instruct-2507 Q8_0 weights                 4.3 GB
+#   LLM KV cache: 16k context x 2 slots, q8_0               2.4 GB
+#   LLM compute buffers                                     0.5 GB
+#   Whisper large-v3-turbo int8_float16, twice              1.8 GB
+#     (the room's speech service, and the console's for the Talk page)
+#   Wake word, keyword spotter, VAD, voiceprints, Piper     0.5 GB
+#   Python services, broker, console                        1.5 GB
+#                                                          -------
+#                                                          13.0 GB of ~15.3 GB visible
+#
+# Set the server once, as in jetsonDefault.yaml:
+#
+#   sudo systemctl edit ollama        # then add:
+#   [Service]
+#   Environment="OLLAMA_KEEP_ALIVE=-1"
+#   Environment="OLLAMA_CONTEXT_LENGTH=16384"
+#   Environment="OLLAMA_NUM_PARALLEL=2"
+#   Environment="OLLAMA_FLASH_ATTENTION=1"
+#   Environment="OLLAMA_KV_CACHE_TYPE=q8_0"
+#   Environment="OLLAMA_MAX_LOADED_MODELS=1"
+#
+#   ollama pull qwen3:4b-instruct-2507-q8_0
+#   curl http://localhost:11434/api/generate -d '{"model": "qwen3:4b-instruct-2507-q8_0", "keep_alive": -1}'
+#   sudo nvpmodel -m 0 && sudo jetson_clocks   # MAXN (MAXN SUPER on JetPack 6.2)
+#   sudo systemctl set-default multi-user.target
+#   python setup_models.py --config config/jetson16.yaml
+extends: default.yaml
+
+speech:
+  # As on the 32 GB board: Whisper is what hears this household, so it gets
+  # the larger model. The NX's GPU is half the AGX's; if a command takes over
+  # about 1.5 s to transcribe, small.en (0.5 GB each) is the step back.
+  asr_model: large-v3-turbo
+  asr_compute_type: int8_float16
+  asr_device: cuda
+
+reasoning:
+  # At 102.4 GB/s decode speed is the bandwidth over the bytes each word reads.
+  # Measured on an Orin NX 16 GB at 40 W: Qwen3-8B Q4 at 13 tokens/s -- but
+  # Qwen3-8B thinks aloud, which section 5.7.5 rules out, and nothing here
+  # turns it off. Qwen3-4B-Instruct-2507 does not think, and at Q8_0 (4.3 GB,
+  # near-lossless for a small model) reads less per word than the 8B at Q4,
+  # so about the same speed or better, with a 256k-token window. A 14B (9.3 GB)
+  # would fit but crawl at ~6 tokens/s. Unmeasured on this model: run
+  # ollama run --verbose at MAXN and record the eval rate.
+  model: qwen3:4b-instruct-2507-q8_0
+  timeout_s: 45.0

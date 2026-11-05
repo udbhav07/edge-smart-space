@@ -160,6 +160,8 @@ Each page has its own address, so any of them can be bookmarked:
 | **Calendar** `/calendar` | The week ahead; add and remove entries |
 | **Bookings** `/bookings` | Requests waiting for your yes, a booking form, and what has been booked |
 | **Mail** `/mail` | An inbox of what the room tells you; sending waits for your yes, then goes through Gmail if Google is connected (or waits in the outbox while offline), and to a mock outbox if not |
+| **Talk** `/talk` | For someone away from the room, on a phone or laptop: hold to talk on that device's microphone, or type, and hear Jarvis answer there -- the room stays silent; or leave a message home in your own voice, played in the room, with their spoken answer back; what is coming up on the shared calendar; every device's remote |
+| **Remotes** `/remotes` | A remote for every device -- the fan, the lamp behind MCP, the music, the air conditioner, anything plugged in -- usable from the grid; `/remotes/<device>` has its full remote, its state, what it can do and what it was last asked |
 | **Settings** `/settings` | Connect or disconnect Google; the microphone, which replies are spoken, alerts, volume and quiet hours; the presets |
 
 `Ctrl-K` opens every action from anywhere. The operator's fault injection
@@ -170,6 +172,22 @@ drops. It has no authority: typed words go through the same extraction as
 speech, a comfort setting is a preference the validator gates, and nothing
 it does can reach the actuator (FR-56, FR-57). Stop it, or never start it,
 and the room runs exactly the same.
+
+**From a phone, away from the room.** Open the console from any device on
+the same network and go to **Talk** (FR-94): hold the button and speak, and
+Jarvis answers on that device. Browsers only allow a microphone over HTTPS,
+so the console is also served at **https://&lt;this machine&gt;:8443**
+(`console.tls_port`) with a certificate it makes for itself; the first visit
+shows a warning, which is expected -- continue to the site once, per device.
+The recording is transcribed on this machine and never kept.
+
+**Leaving a message home.** On the same page, **Message home** (or
+`/talk?mode=message`) records a message in your own voice. It plays in the room
+straight away: a chime, "Message from Ravi", then your recording. The room then
+listens for an answer without the wake word, and the answer comes back to your
+page in their voice, with sent, played and answered ticks (FR-95). Messages and
+answers are kept in `state/messages/` for `messages.keep_days` (7) and then
+deleted; Home's **Messages** card lists them to hear or play again.
 
 It listens on this machine only. To open it to phones on the same network,
 set `console.host` to this machine's LAN address; its page loads nothing
@@ -195,6 +213,12 @@ which nothing is said unprompted. While the room is speaking, and for
 `speech.speaking_tail_ms` after, the microphone is ignored, so its own voice is
 never overheard as someone talking. **Microphone off**, on Home or Settings,
 captures nothing at all until it is turned back on (FR-82).
+
+Every time the room starts listening to you -- after "Hey Jarvis", or after it
+has replied -- it plays a short chime, and the console shows **Listening…** at
+the bottom of every page, then what it heard while it thinks. After a reply,
+just answer: no wake word is needed for the next few seconds (FR-93).
+`speech.chime` and `speech.follow_up_after_reply` turn either off.
 
 ### Google Calendar and Gmail
 
@@ -243,8 +267,42 @@ blackboard (FR-87). `python start.py` runs three:
 | Service | Device | What it does |
 |---|---|---|
 | `fan` | Ceiling fan, simulated | on, off, speed 0–3 |
-| `music` | Music on this machine | plays files from `~/Music` (or one you upload on Home): play by words or name, pause, stop, volume |
+| `music` | Music on this machine | plays files from `~/Music` (or one you upload on Home): play by words or name, pause, stop, volume; a song your files don't have, or one asked for "from YouTube", is found online and streamed (FR-96) |
 | `mcp` | Desk lamp, through the MCP bridge | an ordinary MCP server (`examples/mcp_lamp/`), mounted as a device |
+
+**Songs from YouTube.** Ask for a song your music folder doesn't have, for
+example "play Hotel California", or say "from YouTube", and the player finds it
+online with yt-dlp and streams it (FR-96). "Play some music" always stays
+with your own files. It takes 5 to 6 s to start.
+
+Jarvis says what he's playing first, and the song starts when he finishes.
+While the room is listening or speaking, the music drops to a quarter. "Stop"
+keeps your place, and "carry on" picks it up. When a song ends, the next one
+plays: what YouTube would play after it, or another of your own. "Next song"
+skips ahead, and the **Autoplay** switch on the music's remote turns this off.
+
+Short commands are answered at once, without the language model: "stop",
+"pause", "carry on", "next song", "louder", "quieter", "volume 30", "turn off
+the fan" (FR-97). They take about 3 s from when you start speaking, where the
+model takes 12 to 20 s. Anything longer still goes to the model.
+
+**Hearing "Hey Jarvis" over the music** (FR-98). Two detectors listen:
+openWakeWord, and sherpa-onnx's keyword spotter, which listens for "hey
+Jarvis" or "Jarvis" as words (`speech.wake_engine: either`). A second pair
+listens with the room's own music and voice taken out of the microphone. On
+Windows, the speakers' output is recorded as the reference and WebRTC's echo
+canceller removes it; on Linux, use PipeWire's echo-cancel module. To
+measure how well your own voices are heard over music, record a few dozen
+"Hey Jarvis" takes per person into a folder (16 kHz mono WAV) and run:
+
+    python -m tools.wake_eval --voices recordings/ --youtube "a song you play"
+
+Transcription uses Whisper `small.en`. It is better than `base.en` with
+Indian names and accents, and still fits a 4 GB GPU next to the 7B model. Add
+the names you say most to `speech.asr_hotwords`. YouTube's terms restrict
+automated access, so keep this to your own room. Keep yt-dlp current
+(`pip install -U yt-dlp`), because an old one stops finding anything. Set
+`actuators.music.online: false` to turn it off.
 
 Say "Hey Jarvis, turn on the fan" or "play some jazz", or use the **Devices**
 card on Home, which draws each device's controls from what it says it can do.
@@ -316,6 +374,42 @@ actuators:
 
 `plant` is refused for an MCP tool: the room's temperature is reached only
 through the safety gate.
+
+#### Remotes: controlling devices by hand
+
+Every device has a remote on the console's **Remotes** page (FR-92), the same
+checks applying to a tap as to Jarvis. A device with no remote written for it
+gets one drawn from its manifest -- a button per action, a slider per bounded
+number -- so the kettle above is controllable the moment it starts.
+
+To give a kind of device a remote of its own, add one file to
+`console/web/src/remotes/` and one line to `registry.ts`:
+
+```tsx
+// console/web/src/remotes/KettleRemote.tsx
+import { Button } from "@/components/ui";
+import { has } from "./parts";
+import type { RemoteProps, RemoteSpec } from "./types";
+
+function KettleRemote({ device, call }: RemoteProps) {
+  return <Button variant="primary" disabled={!device.online} onClick={() => void call("boil")}>Boil</Button>;
+}
+
+// Used only if the device can boil; otherwise the generic remote is.
+export const kettleRemote: RemoteSpec = { component: KettleRemote, fits: (device) => has(device, "boil") };
+```
+
+```ts
+// registry.ts
+const BY_ID: Record<string, RemoteSpec> = { kettle: kettleRemote };   // or BY_KIND, for every device of a kind
+```
+
+`call` goes through the executor, never to the device directly, and the
+toast shows the device's own answer. `parts.tsx` has the pieces the built-in
+remotes use: a power button, a slider that sends on release, the device's
+badges, and helpers to find a capability and its bounds. Rebuild with
+`npm run build` in `console/web`.
+
 
 ### Running one component directly
 

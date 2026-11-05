@@ -50,6 +50,19 @@ class FakePipeline:
     def __init__(self, results):
         self._results = list(results)
         self.seen = 0
+        self.listening_for_the_assistant = False
+        self.woke_mid_speech = False
+        self.answers_awaited = 0
+
+    def listen_for_answer(self):
+        self.answers_awaited += 1
+        self.listening_for_the_assistant = True
+
+    replies_awaited: list = []
+
+    def listen_for_reply(self, message_id):
+        self.replies_awaited = [*self.replies_awaited, message_id]
+        self.listening_for_the_assistant = True
 
     def accept(self, frame):
         self.seen += 1
@@ -191,7 +204,7 @@ class TestWiringAgainstTheRealInterfaces:
             captured["clock"] = clock
             return object()
 
-        for name in ("WakeWordDetector", "UtteranceDetector", "Transcriber"):
+        for name in ("build_wake_detector", "UtteranceDetector", "Transcriber"):
             monkeypatch.setattr(runner, name, StubModel)
         monkeypatch.setattr(runner, "PersonalContext", _personal_context)
         monkeypatch.setattr(runner, "SpeechPipeline", lambda **kwargs: kwargs)
@@ -230,6 +243,24 @@ class _HeldVoice:
 
         self.settings = SpeechSettings(ts=1.0, listening=listening)
         self.busy = busy
+        self.chiming = False
+        self.chimes = 0
+        self.follow_ups = 0
+
+    message_window = None
+
+    def take_message_window(self):
+        taken, self.message_window = self.message_window, None
+        return taken
+
+    def take_follow_up(self):
+        if self.follow_ups:
+            self.follow_ups -= 1
+            return True
+        return False
+
+    def chime(self):
+        self.chimes += 1
 
 
 class TestTheMicrophoneIsHeld:
@@ -253,3 +284,69 @@ class TestTheMicrophoneIsHeld:
     def test_otherwise_frames_flow_as_before(self, config):
         pipeline, blackboard = self._run(config, _HeldVoice(), [_hint()])
         assert pipeline.seen == 1 and len(blackboard.published) == 1
+
+
+class TestAWindowAnnounced:
+    """FR-93: a window opened after a reply needs no wake word, and every window chimes."""
+
+    def _run(self, config, pipeline, voice, frames):
+        runner.run(config, SimClock(), FakeCapture(["f"] * frames), pipeline, RecordingBlackboard(), frames=frames, voice=voice)
+
+    def test_after_a_reply_the_window_opens_and_chimes(self, config):
+        pipeline, voice = FakePipeline([None, None]), _HeldVoice()
+        voice.follow_ups = 1
+        self._run(config, pipeline, voice, 2)
+        assert pipeline.answers_awaited == 1 and voice.chimes == 1
+
+    def test_the_chimes_own_sound_is_not_fed_to_the_window(self, config):
+        pipeline, voice = FakePipeline([]), _HeldVoice()
+        voice.chiming = True
+        self._run(config, pipeline, voice, 3)
+        assert pipeline.seen == 0
+
+    def test_the_wake_word_chimes_once(self, config):
+        class Waking(FakePipeline):
+            def accept(self, frame):
+                self.listening_for_the_assistant = True
+                return super().accept(frame)
+
+        pipeline, voice = Waking([None, None]), _HeldVoice()
+        self._run(config, pipeline, voice, 2)
+        assert voice.chimes == 1  # when it opened; not again while it stays open
+
+    def test_a_wake_word_said_mid_sentence_does_not_chime(self, config):
+        """FR-98: the person is already talking; the chime would hold back their words."""
+
+        class WakingMidSpeech(FakePipeline):
+            def accept(self, frame):
+                self.listening_for_the_assistant, self.woke_mid_speech = True, True
+                return super().accept(frame)
+
+        pipeline, voice = WakingMidSpeech([None]), _HeldVoice()
+        self._run(config, pipeline, voice, 1)
+        assert voice.chimes == 0
+
+
+class TestAMessageWindow:
+    """FR-95: after a message home has played, the room listens for the answer to it."""
+
+    def test_the_window_opens_for_that_message_and_chimes(self, config):
+        pipeline, voice = FakePipeline([None]), _HeldVoice()
+        voice.message_window = "msg_1"
+        runner.run(config, SimClock(), FakeCapture(["f"]), pipeline, RecordingBlackboard(), frames=1, voice=voice)
+        assert pipeline.replies_awaited == ["msg_1"] and voice.chimes == 1
+
+    def test_the_answer_goes_to_the_desk_not_the_assistant(self, config):
+        from src.speech.pipeline import MessageReply
+
+        class Desk:
+            def __init__(self):
+                self.replies = []
+
+            def reply(self, heard):
+                self.replies.append(heard)
+
+        heard = MessageReply("msg_1", "I'll call", b"\x00\x00", 16000, 0.1)
+        desk, blackboard = Desk(), RecordingBlackboard()
+        runner.run(config, SimClock(), FakeCapture(["f"]), FakePipeline([heard]), blackboard, frames=1, voice=_HeldVoice(), messages=desk)
+        assert desk.replies == [heard] and blackboard.published == []

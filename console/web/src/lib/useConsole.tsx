@@ -61,6 +61,7 @@ function applyOne(state: Snapshot, tail: BoardMessage[], event: ServerEvent): [S
     case "google":
     case "energy":
     case "devices":
+    case "messages":
       return [{ ...state, [type]: data }, tail];
     case "series": {
       const points = state.series[data.key] ?? [];
@@ -183,6 +184,7 @@ function useConnection(): ConsoleData {
       }
       if (event.type === "calendar_stale") setCalendarStale((n) => n + 1);
       if (event.type === "device_result") window.dispatchEvent(new CustomEvent(DEVICE_RESULT_EVENT, { detail: event.data }));
+      if (event.type === "remote_reply") window.dispatchEvent(new CustomEvent(REMOTE_REPLY_EVENT, { detail: event.data }));
       pending.current.push(event);
       if (flushTimer.current === null) flushTimer.current = window.setTimeout(flush, BATCH_MS);
     };
@@ -218,6 +220,9 @@ export function ConsoleProvider({ children }: { children: React.ReactNode }) {
 }
 
 export const useConsole = () => useContext(ConsoleContext);
+
+/** Jarvis's answer to something asked from a device away from the room (FR-94). */
+export const REMOTE_REPLY_EVENT = "smart-space:remote-reply";
 
 /** A device's answer to a call made from this page, for whoever made it. */
 export const DEVICE_RESULT_EVENT = "smart-space:device-result";

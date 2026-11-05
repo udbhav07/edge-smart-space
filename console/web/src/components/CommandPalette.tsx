@@ -1,6 +1,7 @@
 import { Command } from "cmdk";
-import { CalendarDays, Gauge, MessageSquare, RefreshCw, RotateCcw, Thermometer, Unplug } from "lucide-react";
+import { CalendarDays, Gauge, MessageSquare, RefreshCw, RotateCcw, SlidersHorizontal, Thermometer, Unplug } from "lucide-react";
 import { NAV } from "@/lib/nav";
+import { useConsole } from "@/lib/useConsole";
 
 export interface PaletteActions {
   ask: (text: string) => void;
@@ -21,6 +22,7 @@ const Item = ({ icon: Icon, label, hint, onSelect }: { icon: typeof Gauge; label
 );
 
 export function CommandPalette({ open, onOpenChange, actions, operator }: { open: boolean; onOpenChange: (open: boolean) => void; actions: PaletteActions; operator: boolean }) {
+  const devices = useConsole().state?.devices ?? [];
   const run = (action: () => void) => () => {
     onOpenChange(false);
     action();
@@ -44,6 +46,13 @@ export function CommandPalette({ open, onOpenChange, actions, operator }: { open
             <Item key={item.to} icon={item.icon} label={item.label} onSelect={run(() => actions.go(item.to))} />
           ))}
         </Command.Group>
+        {devices.length > 0 && (
+          <Command.Group heading="Remotes">
+            {devices.map((device) => (
+              <Item key={device.device_id} icon={SlidersHorizontal} label={`Open the ${device.manifest.name.toLowerCase()} remote`} hint={device.online ? undefined : "offline"} onSelect={run(() => actions.go(`/remotes/${encodeURIComponent(device.device_id)}`))} />
+            ))}
+          </Command.Group>
+        )}
         <Command.Group heading="Ask Jarvis">
           <Item icon={MessageSquare} label="Open the chat" onSelect={run(actions.focusComposer)} />
           <Item icon={CalendarDays} label="What's on my calendar today?" onSelect={run(() => actions.ask("What's on my calendar today?"))} />

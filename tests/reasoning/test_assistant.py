@@ -268,6 +268,14 @@ class TestTemperatureReplies:
         assert "outside the safe range of 18 to 30" in reply
         assert "the closest I can do is 18 degrees" in reply
 
+    def test_cooler_at_the_limit_names_no_number_nobody_said(self, config):
+        """Live: "why is it not cooling?" read as "cooler" from 18 was answered about 17 degrees."""
+        room = Room(config, ScriptedChat())
+        hint = PreferenceHint(ts=room.clock.now(), intent=Intent.ENVIRONMENT, comfort=Comfort.COOLER, subject="temperature", transcript="make it cooler")
+        self._verdict(room, 17.0, 18.0, Verdict.CLAMPED, ReasonCode.BOUND_CLAMP)
+        reply = room.assistant.answer(hint).reply
+        assert "17" not in reply and "as cool as I can make it: 18 degrees" in reply
+
     def test_a_rate_limited_request_says_it_is_on_its_way(self, config):
         room = Room(config, ScriptedChat())
         hint = self._ask(room, 20.0)
@@ -723,3 +731,9 @@ class TestRepliesSayHowTheyWereAsked:
     def test_a_typed_request_does_not(self, config):
         room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
         assert room.say("what is on Thursday", intent=Intent.QUESTION, typed=True).spoken is False
+
+    def test_a_remote_request_gets_a_remote_reply(self, config):
+        """FR-94: answered on the device that asked, not in the room."""
+        room = Room(config, ScriptedChat(saying("Nothing on Thursday.")))
+        reply = room.say("what is on Thursday", intent=Intent.QUESTION, typed=True, remote=True)
+        assert reply.remote is True and reply.spoken is False

@@ -188,3 +188,130 @@ class TestNoVoice:
             voice.say(f"sentence {n}")
         said = _said(voice, speaker)
         assert len(said) <= 4 and said[-1] == "sentence 9"
+
+
+class _Player:
+    def __init__(self, fails=False):
+        self.played: list[tuple[int, int]] = []
+        self.fails = fails
+
+    def __call__(self, pcm, rate_hz):
+        if self.fails:
+            raise OSError("no output device")
+        self.played.append((len(pcm), rate_hz))
+
+
+def _with_player(player=None, **kwargs):
+    clock = _at(12)
+    speaker = RecordingSpeaker()
+    return Voice(speaker, clock, OFFSET_H, 0.4, player=player, **kwargs), speaker, clock
+
+
+def _played(player, timeout_s=5.0):
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while not player.played and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return player.played
+
+
+class TestAReplyIsATurn:
+    """FR-93: after the room replies, it listens for the answer without the wake word."""
+
+    def test_after_a_spoken_reply_a_window_is_offered_once(self):
+        voice, speaker, clock = _with_player()
+        voice.on_reply("t", _reply("Sorry, could you say that again?"))
+        _said(voice, speaker)
+        clock.advance(0.5)
+        assert voice.take_follow_up() is True and voice.take_follow_up() is False
+
+    def test_not_while_the_room_is_still_in_its_tail(self):
+        voice, speaker, clock = _with_player()
+        voice.on_reply("t", _reply())
+        _said(voice, speaker)
+        assert voice.take_follow_up() is False
+        clock.advance(0.5)
+        assert voice.take_follow_up() is True
+
+    def test_an_alert_is_not_a_turn(self):
+        voice, speaker, clock = _with_player()
+        voice.on_mode("t", ModeState(ts=1.0, mode=Mode.NORMAL, since_ts=1.0))
+        voice.on_mode("t", ModeState(ts=2.0, mode=Mode.SAFE_HOLD, since_ts=2.0))
+        _said(voice, speaker)
+        clock.advance(1.0)
+        assert voice.take_follow_up() is False
+
+    def test_a_reply_not_spoken_opens_nothing(self):
+        voice, speaker, clock = _with_player()
+        voice.on_reply("t", _reply(spoken=False))  # typed, and typed replies are not spoken
+        _said(voice, speaker)
+        clock.advance(1.0)
+        assert voice.take_follow_up() is False
+
+    def test_turned_off_it_opens_nothing(self):
+        voice, speaker, clock = _with_player(follow_up=False)
+        voice.on_reply("t", _reply())
+        _said(voice, speaker)
+        clock.advance(1.0)
+        assert voice.take_follow_up() is False
+
+
+class TestTheChime:
+    def test_it_plays_and_the_microphone_ignores_it_meanwhile(self):
+        player = _Player()
+        voice, _, clock = _with_player(player=player)
+        voice.chime()
+        assert voice.chiming is True and _played(player)[0][1] == 22050
+        clock.advance(1.0)
+        assert voice.chiming is False
+
+    def test_turned_off_it_plays_nothing(self):
+        player = _Player()
+        voice, _, _ = _with_player(player=player, chime=False)
+        voice.chime()
+        assert voice.chiming is False and player.played == []
+
+    def test_no_audio_output_costs_only_the_chime(self, caplog):
+        import time
+
+        voice, _, _ = _with_player(player=_Player(fails=True))
+        voice.chime()
+        deadline = time.monotonic() + 5
+        while "could not play the chime" not in caplog.text and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert "could not play the chime" in caplog.text
+
+    def test_it_is_two_short_notes_that_never_click(self):
+        import numpy as np
+
+        from src.speech.voice import chime_pcm, chime_seconds
+
+        samples = np.frombuffer(chime_pcm(1.0), dtype=np.int16)
+        assert len(samples) == int(22050 * 0.09) * 2 and chime_seconds() < 0.25
+        assert abs(int(samples[0])) < 50 and abs(int(samples[-1])) < 50  # faded at both ends
+
+    def test_it_follows_the_occupants_volume(self):
+        import numpy as np
+
+        from src.speech.voice import chime_pcm
+
+        loud = np.abs(np.frombuffer(chime_pcm(1.0), dtype=np.int16)).max()
+        soft = np.abs(np.frombuffer(chime_pcm(0.25), dtype=np.int16)).max()
+        assert soft < loud / 3
+
+
+class TestARemoteReply:
+    def test_is_never_said_in_the_room(self):
+        """FR-94: the person asking from their phone hears it there; the room stays silent."""
+        voice, speaker, _ = _voice()
+        voice.on_settings("t", SpeechSettings(ts=1.0, speak_typed=True))
+        voice.on_reply("t", _reply().model_copy(update={"remote": True}))
+        assert _said(voice, speaker) == []
+
+    def test_opens_no_window_in_the_room(self):
+        voice, speaker, clock = _voice()
+        voice.on_reply("t", _reply().model_copy(update={"remote": True}))
+        _said(voice, speaker)
+        clock.advance(1.0)
+        assert voice.take_follow_up() is False

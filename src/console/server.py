@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
@@ -32,6 +32,8 @@ from src.common import topics
 from src.common.mqtt_client import Blackboard
 from src.console.actions import ActionRefused, ConsoleActions
 from src.console.google_signin import GoogleSignIn, SignInError
+from src.console.messages import MessageBox
+from src.console.remote_voice import RemoteVoice, RemoteVoiceUnavailable
 from src.console.state import ConsoleState, Event, encode
 
 LOGGER = logging.getLogger(__name__)
@@ -181,6 +183,15 @@ class DeviceRequest(BaseModel):
     arguments: dict[str, bool | int | float | str | None] = Field(default_factory=dict)
 
 
+class RemoteSayRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+    profile_id: str = ""
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=800)
+
+
 class ComfortRequest(BaseModel):
     direction: str = Field(min_length=1, max_length=16)
     profile_id: str = ""
@@ -212,6 +223,9 @@ def create_app(
     link: Link,
     lock: threading.Lock,
     signin: GoogleSignIn | None = None,
+    remote_voice: RemoteVoice | None = None,
+    talk_max_bytes: int = 8_000_000,
+    messages: MessageBox | None = None,
 ) -> FastAPI:
     """The web application; every dependency injected so it can be tested."""
     @asynccontextmanager
@@ -252,6 +266,101 @@ def create_app(
     @app.post("/api/target")
     async def post_target(request: TargetRequest) -> JSONResponse:
         return act(actions.set_target, request.target_c, request.profile_id)
+
+    # --- talking from a phone away from the room (FR-94) ----------------------
+
+    @app.post("/api/talk")
+    async def post_talk(request: Request) -> JSONResponse:
+        """A recording from a device's microphone: transcribed here, sent on as a remote request.
+
+        Transcribed outside the lock: it takes a second, and the page must not
+        stall meanwhile. The recording is never kept (FR-51).
+        """
+        if remote_voice is None:
+            return JSONResponse({"ok": False, "error": "Talking from a device is not available here."}, status_code=503)
+        recording = await request.body()
+        if len(recording) > talk_max_bytes:
+            return JSONResponse({"ok": False, "error": "That recording is too large; keep it short."}, status_code=413)
+        try:
+            heard = await asyncio.to_thread(remote_voice.transcribe, recording)
+        except RemoteVoiceUnavailable as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        if not heard:
+            return JSONResponse({"ok": False, "error": "I didn't catch anything; try again, a little closer."}, status_code=400)
+        response = act(actions.say, heard, "", True)
+        if response.status_code == 200:
+            utterance = json.loads(response.body)["result"]
+            return JSONResponse({"ok": True, "result": {"utterance_id": utterance["utterance_id"], "transcript": heard}})
+        return response
+
+    @app.post("/api/talk/text")
+    async def post_talk_text(request: RemoteSayRequest) -> JSONResponse:
+        """Typed on a device away from the room: answered there too (FR-94)."""
+        return act(actions.say, request.text, request.profile_id, True)
+
+    @app.post("/api/voice/speak", response_model=None)
+    async def post_voice_speak(request: SpeakRequest) -> Response | JSONResponse:
+        """A reply in the room's voice, as audio for the device that asked to play."""
+        if remote_voice is None:
+            return JSONResponse({"ok": False, "error": "No voice here."}, status_code=503)
+        try:
+            audio = await asyncio.to_thread(remote_voice.speak, request.text)
+        except RemoteVoiceUnavailable as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        return Response(content=audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+    # --- messages home from someone away (FR-95) -----------------------------
+
+    @app.post("/api/messages")
+    async def post_message(request: Request, sender: str = Query(default="", max_length=200)) -> JSONResponse:
+        """A recording to be played in the room in the sender's own voice; it is kept."""
+        if messages is None:
+            return JSONResponse({"ok": False, "error": "Messages home are not available here."}, status_code=503)
+        recording = await request.body()
+        if len(recording) > messages.max_bytes:
+            return JSONResponse({"ok": False, "error": "That message is too large; keep it shorter."}, status_code=413)
+        try:
+            status = await asyncio.to_thread(messages.send, sender, recording)
+        except RemoteVoiceUnavailable as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        except OSError as exc:
+            LOGGER.warning("a message could not be kept: %s", exc)
+            return JSONResponse({"ok": False, "error": "The message could not be kept here; try again."}, status_code=503)
+        with lock:
+            known = state.messages
+        await asyncio.to_thread(messages.prune, [entry for entry in known if entry["message_id"] != status.message_id] + [status.model_dump(mode="json")])
+        return JSONResponse({"ok": True, "result": status.model_dump(mode="json")})
+
+    @app.post("/api/messages/{message_id}/replay")
+    async def post_message_replay(message_id: str) -> JSONResponse:
+        """Play a kept message in the room again."""
+        with lock:
+            known = state.message(message_id)
+        if messages is None or known is None:
+            return JSONResponse({"ok": False, "error": "There is no such message."}, status_code=404)
+        try:
+            messages.hand_over(known)
+        except FileNotFoundError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+        return JSONResponse({"ok": True, "result": {"message_id": message_id}})
+
+    @app.get("/api/messages/{message_id}/audio", response_model=None)
+    async def get_message_audio(message_id: str) -> FileResponse | JSONResponse:
+        return _recording(message_id, reply=False)
+
+    @app.get("/api/messages/{message_id}/reply/audio", response_model=None)
+    async def get_message_reply_audio(message_id: str) -> FileResponse | JSONResponse:
+        return _recording(message_id, reply=True)
+
+    def _recording(message_id: str, reply: bool) -> FileResponse | JSONResponse:
+        path = messages.recording(message_id, reply=reply) if messages is not None else None
+        if path is None:
+            return JSONResponse({"ok": False, "error": "That recording is not kept here."}, status_code=404)
+        return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/music/upload")
     async def post_music_upload(request: Request, name: str = Query(min_length=1, max_length=200)) -> JSONResponse:

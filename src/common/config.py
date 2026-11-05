@@ -17,8 +17,10 @@ from __future__ import annotations
 from enum import Enum
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.common.devices import DeviceClass, DeviceKind
@@ -258,6 +260,11 @@ class ValidatorConfig(_Section):
 
     setpoint_bounds_c: Bounds = Field(description="V-1 absolute bounds")
     max_step_c: float = Field(gt=0.0, description="V-2 rate limit per invocation")
+    pace_occupant: bool = Field(
+        default=False,
+        description="Also pace an occupant's own setpoint by max_step_c; off, a person who names "
+        "a temperature gets it at once, within the bounds",
+    )
     min_off_s: float = Field(ge=0.0, description="V-3 compressor dwell")
     min_command_interval_s: float = Field(
         gt=0.0, description="V-4 maximum command frequency"
@@ -518,6 +525,42 @@ class SpeechConfig(_Section):
         le=1.0,
         description="Detection score gate; low values make capture near-continuous",
     )
+    wake_engine: Literal["openwakeword", "sherpa", "both", "either"] = Field(
+        default="openwakeword",
+        description="Which wake word detector listens: openWakeWord, sherpa-onnx's keyword "
+        "spotter, both agreeing, or either (FR-98)",
+    )
+    kws_model_dir: str = Field(
+        default="models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+        description="The sherpa-onnx keyword spotting model",
+    )
+    kws_phrases: list[str] = Field(
+        default_factory=lambda: ["HEY JARVIS", "JARVIS"], min_length=1, description="What the keyword spotter listens for, as words"
+    )
+    kws_threshold: float = Field(default=0.1, gt=0.0, le=1.0, description="The keyword spotter's trigger threshold")
+    kws_boost: float = Field(default=3.0, gt=0.0, description="How much the spotter favours the phrases over other words")
+    wake_agree_s: float = Field(default=1.5, gt=0.0, description="How close together 'both' detectors must fire, in s")
+    wake_keep_s: float = Field(
+        default=1.5,
+        ge=0.0,
+        le=5.0,
+        description="What was heard just before the wake word fired, kept as the start of the request, in s",
+    )
+    transcript_wake: bool = Field(
+        default=True,
+        description="A sentence overheard that opens with the assistant's name is taken as a request, "
+        "though no wake word detector fired (FR-98)",
+    )
+    wake_names: list[str] = Field(
+        default_factory=lambda: ["jarvis"], min_length=1, description="The names a sentence may open with"
+    )
+    wake_echo_cancel: bool = Field(
+        default=True,
+        description="Also listen with what the speakers play taken out of the microphone (FR-98)",
+    )
+    echo_delay_ms: int = Field(
+        default=55, ge=0, le=500, description="First guess at how late the microphone hears the speakers, in ms; 54 measured on the laptop"
+    )
     vad_silence_ms: int = Field(gt=0, description="Silence marking end of utterance")
     no_speech_timeout_s: float = Field(
         gt=0.0, description="Give up if nothing is said after the wake word"
@@ -561,6 +604,20 @@ class SpeechConfig(_Section):
     )
     voice_length_scale: float = Field(
         default=1.0, gt=0.0, description="Piper speaking pace; above 1 is slower"
+    )
+    chime: bool = Field(
+        default=True,
+        description="Play a short chime whenever a capture window opens, so the "
+        "occupant knows the room is listening (FR-93)",
+    )
+    chime_volume: float = Field(default=0.35, ge=0.0, le=1.0, description="Chime loudness, before the occupant's volume")
+    chime_tail_ms: float = Field(
+        default=150.0, ge=0.0, description="Microphone ignored this long after the chime ends, in ms"
+    )
+    follow_up_after_reply: bool = Field(
+        default=True,
+        description="After a reply is spoken, open a capture window without the "
+        "wake word, so an answer to a question asked back is heard (FR-93)",
     )
     speaking_tail_ms: int = Field(
         default=400,
@@ -624,6 +681,11 @@ class SpeechConfig(_Section):
         description="Shortest utterance a speaker is judged from, in s",
     )
     asr_model: str = Field(min_length=1, description="Whisper model size")
+    asr_hotwords: str = Field(
+        default="",
+        description="Words a request is likely to hold, which Whisper is nudged towards: "
+        "the wake word, people's names, the devices (FR-50)",
+    )
     asr_device: str = Field(
         min_length=1,
         description="auto (prefer CUDA, fall back to CPU), cuda, or cpu",
@@ -1069,6 +1131,18 @@ class ConsoleConfig(_Section):
         description="Electricity price per kWh by tariff band, for Home's energy card",
     )
     currency: str = Field(default="Rs", description="Shown beside the energy cost")
+    tls_port: int = Field(
+        default=8443,
+        ge=0,
+        le=65535,
+        description="Where the console is also served over HTTPS, so a phone may use "
+        "its microphone (FR-94); 0 serves plain HTTP only",
+    )
+    tls_directory: str = Field(
+        default="state/console/tls", description="This node's own certificate, made on first start"
+    )
+    talk_max_seconds: float = Field(default=30.0, gt=0.0, description="Longest recording a device may send, in s")
+    talk_max_bytes: int = Field(default=8_000_000, gt=0, description="Largest recording a device may send")
     inbox_path: str = Field(
         default="state/console/inbox.json",
         description="Where the inbox is kept across restarts (S-10); the room's "
@@ -1171,13 +1245,42 @@ class MusicConfig(_Section):
     extensions: list[str] = Field(default_factory=lambda: [".mp3", ".flac", ".wav", ".ogg"])
     default_volume: int = Field(default=60, ge=0, le=100)
     max_upload_mb: float = Field(default=100.0, gt=0.0, description="Largest file accepted from the console, in MB")
+    online: bool = Field(
+        default=True, description="Search YouTube (yt-dlp) for a song the library does not have (FR-96)"
+    )
+    online_max_minutes: float = Field(default=15.0, gt=0.0, description="Longest result taken to be a song, in min")
+    online_timeout_s: float = Field(default=15.0, gt=0.0, description="How long a search may wait on the network, in s")
+    autoplay: bool = Field(default=True, description="Play another song when one ends: YouTube's next, or the library's")
+    duck_volume: float = Field(
+        default=0.25, ge=0.0, le=1.0, description="Share of the volume kept while the room listens or speaks"
+    )
+    wait_for_reply_s: float = Field(
+        default=20.0, gt=0.0, description="Longest a song asked for aloud waits for Jarvis to say so, in s"
+    )
+    request_window_s: float = Field(
+        default=45.0, gt=0.0, description="How recent a spoken request must be for a song to wait for its reply, in s"
+    )
+
+
+class MessagesConfig(_Section):
+    """Spoken messages from someone away, played in the room (FR-95)."""
+
+    directory: str = Field(default="state/messages", description="Where recordings and replies are kept")
+    max_seconds: float = Field(default=60.0, gt=0.0, description="Longest message accepted, in s")
+    max_bytes: int = Field(default=10_000_000, gt=0, description="Largest recording accepted")
+    keep_days: float = Field(default=7.0, gt=0.0, description="Recordings are deleted after this many days")
+    max_kept: int = Field(default=50, gt=0, description="Most messages kept; the oldest go first")
+    announce: bool = Field(default=True, description="Say who it is from before playing it")
+    reply_wait_s: float = Field(
+        default=8.0, gt=0.0, description="How long the room waits for an answer after playing it, in s"
+    )
 
 
 class ActuatorsConfig(_Section):
     """Device services beyond the thermal loop, and how the assistant reaches them (FR-87 to FR-91)."""
 
     command_timeout_s: float = Field(
-        default=8.0, gt=0.0, description="How long a device has to answer a command, in s"
+        default=12.0, gt=0.0, description="How long a device has to answer a command, in s"
     )
     max_device_tools: int = Field(
         default=6,
@@ -1237,6 +1340,7 @@ class Config(_Section):
     ambient: AmbientConfig = AmbientConfig()
     google: GoogleConfig = GoogleConfig()
     actuators: ActuatorsConfig = ActuatorsConfig()
+    messages: MessagesConfig = MessagesConfig()
 
     @model_validator(mode="after")
     def _compressor_dwell_agrees_across_components(self) -> Config:
@@ -1249,6 +1353,22 @@ class Config(_Section):
             raise ValueError(
                 f"controller.min_off_s ({self.controller.min_off_s}) must equal "
                 f"validator.min_off_s ({self.validator.min_off_s})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _the_assistant_outwaits_a_device(self) -> Config:
+        """A device's answer reaches the assistant only if it is still waiting.
+
+        The assistance bridge gives a device ``command_timeout_s`` to answer;
+        reasoning stops waiting at ``result_timeout_s``. Shorter on the
+        reasoning side, and a slow device -- a song searched for online
+        (FR-96) -- acts, but the occupant is told it did not answer.
+        """
+        if self.assistance.result_timeout_s <= self.actuators.command_timeout_s:
+            raise ValueError(
+                f"assistance.result_timeout_s ({self.assistance.result_timeout_s}) must exceed "
+                f"actuators.command_timeout_s ({self.actuators.command_timeout_s})"
             )
         return self
 

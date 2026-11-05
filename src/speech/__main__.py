@@ -35,11 +35,12 @@ from src.reasoning.devices import KnownDevices
 from src.reasoning.single_shot import PersonalContext, ReasoningUnavailableError
 from src.speech.asr import Transcriber, UtteranceDetector
 from src.speech.audio_capture import AudioCapture
-from src.speech.pipeline import SpeechPipeline
+from src.speech.messages import MessageDesk
+from src.speech.pipeline import MessageReply, SpeechPipeline
 from src.speech.speaker_profile import SpeakerIdentifier
 from src.speech.status import StatusPublisher
 from src.speech.voice import Voice, build_speaker
-from src.speech.wakeword import WakeWordDetector
+from src.speech.wakeword import build_wake_detector
 
 LOGGER = logging.getLogger(__name__)
 
@@ -69,13 +70,14 @@ def build_pipeline(
         config=config.speech,
         clock=clock,
         capture=capture,
-        detector=WakeWordDetector(config.speech),
+        detector=build_wake_detector(config.speech),
         utterance=UtteranceDetector(config.speech),
         transcriber=Transcriber(config.speech),
         personal_context=PersonalContext(config.reasoning, clock, devices=devices),
         speaker=SpeakerIdentifier(config.speech),
         conversations=conversations,
         on_activity=on_activity,
+        reply_wait_s=config.messages.reply_wait_s,
     )
 
 
@@ -98,6 +100,7 @@ def run(
     frames: int | None = None,
     status: StatusPublisher | None = None,
     voice: Voice | None = None,
+    messages: MessageDesk | None = None,
 ) -> int:
     """Pump audio frames through the pipeline until interrupted.
 
@@ -125,6 +128,19 @@ def run(
             continue
         if status is not None and status.activity in (SpeechActivity.SPEAKING, SpeechActivity.MUTED):
             status.changed(SpeechActivity.WAITING)
+        message_id = voice.take_message_window() if voice is not None else None
+        if message_id:
+            # A message home has just played: the answer is for its sender (FR-95).
+            pipeline.listen_for_reply(message_id)
+            voice.chime()
+        elif voice is not None and voice.take_follow_up():
+            # The room has just replied: the occupant's answer needs no wake word (FR-93).
+            pipeline.listen_for_answer()
+            voice.chime()
+        if voice is not None and voice.chiming:
+            # The chime's own sound is not speech; the window it announced stays open.
+            continue
+        was_listening = pipeline.listening_for_the_assistant
         try:
             hint = pipeline.accept(frame)
         except ReasoningUnavailableError as exc:
@@ -132,8 +148,18 @@ def run(
             # preference hint, not the audio pipeline (FR-47).
             LOGGER.warning("reasoning unavailable, dropping utterance: %s", exc)
             continue
+        if voice is not None and not was_listening and pipeline.listening_for_the_assistant and not pipeline.woke_mid_speech:
+            # The wake word was just heard. Not when it was said in the same
+            # breath as the request: the person is already talking, and the
+            # frames the chime holds back would be their words -- live, "next
+            # song" was heard as "song" (FR-98). The indicator still shows it.
+            voice.chime()
 
-        if hint is not None:
+        if isinstance(hint, MessageReply):
+            # Not a request: words for the person who sent the message.
+            if messages is not None:
+                messages.reply(hint)
+        elif hint is not None:
             _publish(blackboard, hint)
     return processed
 
@@ -177,6 +203,10 @@ def main(argv: list[str] | None = None) -> int:
         clock,
         utc_offset_h=config.site.utc_offset_h,
         tail_s=config.speech.speaking_tail_ms / 1000.0,
+        chime=config.speech.chime,
+        chime_volume=config.speech.chime_volume,
+        chime_tail_s=config.speech.chime_tail_ms / 1000.0,
+        follow_up=config.speech.follow_up_after_reply,
     )
     # Replies, the occupant's settings and changes of mode reach the voice;
     # it says what they ask for on a thread of its own (FR-79).
@@ -184,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
     blackboard.subscribe(topics.SPEECH_SETTINGS, SpeechSettings, voice.on_settings)
     blackboard.subscribe(topics.SYSTEM_MODE, ModeState, voice.on_mode)
     voice.start()
+    # Messages home, played here in the sender's own voice (FR-95).
+    messages = MessageDesk(config.messages, clock, blackboard, voice)
+    messages.subscribe()
     status = StatusPublisher(config.speech, clock, blackboard, capture.microphone, voice=voice.engine)
     # The devices in the room, so "turn on the fan" is filed as being about the fan (FR-89).
     devices = KnownDevices()
@@ -200,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         topics.CONTEXT_AMBIENT.pattern,
     )
     try:
-        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames, status=status, voice=voice)
+        run(config, clock, capture, pipeline, blackboard, frames=arguments.frames, status=status, voice=voice, messages=messages)
     except KeyboardInterrupt:
         LOGGER.info("stopping")
     finally:

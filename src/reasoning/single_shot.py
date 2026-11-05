@@ -34,8 +34,9 @@ from pydantic import ValidationError
 
 from src.common.clock import Clock
 from src.common.config import ReasoningConfig
-from src.common.schemas import Comfort, ContextTurn, Intent, PreferenceHint
+from src.common.schemas import Comfort, ContextTurn, DeviceCommand, Intent, PreferenceHint
 from src.reasoning.devices import KnownDevices
+from src.reasoning.quick import quick_command
 from src.reasoning.understanding import understood
 
 LOGGER = logging.getLogger(__name__)
@@ -221,6 +222,9 @@ class PersonalContext:
         """
         if not transcript.strip():
             return None
+        quick = self._quick(transcript)
+        if quick is not None:
+            return quick
 
         raw = self._complete(transcript, recent[-_RECENT_SHOWN:])
         hint = self._validate(raw)
@@ -235,6 +239,24 @@ class PersonalContext:
         # The words themselves travel with the hint, so whatever acts on it --
         # a calendar entry needs the exact time said -- need not trust a paraphrase.
         return hint.model_copy(update={"transcript": transcript.strip()})
+
+    def _quick(self, transcript: str) -> PreferenceHint | None:
+        """A short device command, read from the words with no model at all (FR-97)."""
+        if self._devices is None:
+            return None
+        command = quick_command(transcript, self._devices)
+        if command is None:
+            return None
+        LOGGER.info("quick command: %s %s %s", command.device_id, command.capability, command.arguments)
+        return PreferenceHint(
+            ts=self._clock.now(),
+            intent=Intent.SERVICE,
+            comfort=Comfort.UNCHANGED,
+            subject=command.device_id,
+            rationale=f"{command.capability.replace('_', ' ')} the {self._devices.name_of(command.device_id).lower()}",
+            transcript=transcript.strip(),
+            command=DeviceCommand(device_id=command.device_id, capability=command.capability, arguments=command.arguments),
+        )
 
     def _complete(self, transcript: str, recent: tuple[ContextTurn, ...] = ()) -> str:
         prompt = PERSONAL_CONTEXT_PROMPT

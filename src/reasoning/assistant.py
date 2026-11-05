@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 from src.common import topics
 from src.common.clock import Clock
 from src.common.config import AssistanceConfig, Bounds
+from src.common.devices import TOOL_JOINER
 from src.common.localtime import local_time
 from src.common.mqtt_client import Blackboard
 from src.common.schemas import (
@@ -231,8 +232,10 @@ class Assistant:
         utc_offset_h: float,
         devices: KnownDevices | None = None,
         max_device_tools: int = 6,
+        outdoor_sensor_id: str = "",
     ) -> None:
         """
+        :param outdoor_sensor_id: the outdoor sensor, so slow cooling is explained with the heat outside.
         :param devices: the devices in the room, for naming them (FR-89).
         :param max_device_tools: most tools of one device shown at once.
         """
@@ -253,7 +256,7 @@ class Assistant:
         self._corrections: list[str] = []
         self._specs = {spec.name: spec for spec in ASSISTANCE_TOOLS}
         #: What is true of the room, so a reply never claims otherwise.
-        self._room = RoomState()
+        self._room = RoomState(outdoor_sensor_id)
         self._profiles: dict[str, ProfileContext] = {}
         #: The entry each voice last put in or moved, so "move it" means that
         #: one. Bounded by the voices kept.
@@ -325,6 +328,8 @@ class Assistant:
             # its own earlier reply, and told a guest about Ravi's meeting
             # as something it knew about them (S-05, S-06).
             reply = self._what_i_know(hint)
+        elif hint.command is not None:
+            reply = self._command(hint)
         elif hint.intent in (Intent.SERVICE, Intent.QUESTION):
             # A question is answered the same way a request is served: with
             # the room's state, the person's context and the read tools.
@@ -333,7 +338,7 @@ class Assistant:
             reply = self._report_setpoint(hint)
         else:
             return None
-        reply = self._personalised(reply, hint).model_copy(update={"spoken": not hint.typed})
+        reply = self._personalised(reply, hint).model_copy(update={"spoken": not hint.typed, "remote": hint.remote})
         self._blackboard.publish(topics.CONTEXT_REPLY, reply)
         LOGGER.info("replied: %s", reply.reply)
         return reply
@@ -542,6 +547,27 @@ class Assistant:
             self._clock.sleep(_POLL_S)
 
     # --- service ------------------------------------------------------
+
+    def _command(self, hint: PreferenceHint) -> AssistantReply:
+        """A short device command recognised from the words: run, and the device's answer said (FR-97).
+
+        No model is asked. The call still goes through the executor, which
+        checks it against the device's manifest and gates as it does a
+        remote's tap; the reply is the device's own sentence.
+        """
+        command = hint.command
+        utterance = hint.transcript or hint.rationale
+        call = ToolCall(call_id="quick", name=f"{command.device_id}{TOOL_JOINER}{command.capability}", arguments=dict(command.arguments))
+        result = self._run(call, utterance, hint)
+        reply_text = result.message or _fallback([result]) or _NO_TOOL_REPLY
+        self._record(utterance, [], [result], reply_text)
+        return AssistantReply(
+            ts=self._clock.now(),
+            transcript=utterance,
+            intent=hint.intent,
+            reply=reply_text,
+            invocation_ids=(result.invocation_id,),
+        )
 
     def _serve(self, hint: PreferenceHint) -> AssistantReply:
         utterance = hint.transcript or hint.rationale
@@ -1130,6 +1156,14 @@ def _describe_verdict(
             # "Done" would claim an effect nothing will produce (U-03).
             return f"I've set the target to {applied:g} degrees."
         return f"Done. The room is now set to {applied:g} degrees."
+    if not safe_range_c.contains(asked) and hint.target_c is None:
+        # "Cooler" one below the lowest: the occupant named no number, so none
+        # is put in their mouth (live: "17 degrees is outside the safe range").
+        coolest = asked < safe_range_c.low
+        return (
+            f"It's already set as {'cool' if coolest else 'warm'} as I can make it: "
+            f"{applied:g} degrees, the {'lowest' if coolest else 'highest'} the safe range allows."
+        )
     if not safe_range_c.contains(asked):
         limit = safe_range_c.clamp(asked)
         now = (

@@ -38,6 +38,8 @@ from src.common.schemas import (
     Goal,
     GoogleStatus,
     InjectionCommand,
+    MessageState,
+    MessageStatus,
     ModeReset,
     ModeState,
     PreferenceHint,
@@ -81,6 +83,9 @@ _RECORDS_KEPT = 100
 #: Arrivals, and the time they must span, before a rate is worth stating (S-08).
 _RATE_MIN_ARRIVALS = 5
 _RATE_MIN_SPAN_S = 30.0
+
+#: Remote requests awaiting a reply, at most. Bounded: an unanswered one is forgotten.
+_REMOTE_KEPT = 16
 
 #: The longest gap between meter readings that is still integrated (FR-80).
 _ENERGY_GAP_S = 120.0
@@ -144,6 +149,10 @@ class ConsoleState:
         self._devices: dict[str, dict] = {}
         #: Device calls made from here, whose answers the page shows.
         self._device_requests: set[str] = set()
+        #: What a phone away from the room asked, by its words, awaiting the reply (FR-94).
+        self._remote_requests: OrderedDict[str, str] = OrderedDict()
+        #: Messages home, as each stands (FR-95); bounded by what is retained.
+        self._messages: dict[str, dict] = {}
         #: Today's electricity, integrated from the meter (FR-80).
         self._energy = {"day": "", "kwh": 0.0, "cost": 0.0}
         self._last_power: tuple[float, float] | None = None
@@ -191,6 +200,7 @@ class ConsoleState:
             (topics.DEVICE_MANIFEST.wildcard(), DeviceManifest, self._on_device_manifest),
             (topics.DEVICE_AVAILABILITY.wildcard(), DeviceAvailability, self._on_device_availability),
             (topics.DEVICE_STATE.wildcard(), DeviceState, self._on_device_state),
+            (topics.MESSAGE_STATUS.wildcard(), MessageStatus, self._on_message),
             (topics.FAULT.wildcard(), FaultEvent, self._on_fault),
             (topics.DIAGNOSIS.wildcard(), FaultDiagnosis, self._on_diagnosis),
             (topics.CONTEXT_UTTERANCE.wildcard(), ConsoleUtterance, self._on_typed),
@@ -242,11 +252,13 @@ class ConsoleState:
             "operator_controls": self._config.operator_controls,
             "speech_settings": self._speech_settings,
             "devices": self._device_list(),
+            "messages": self.messages,
             "google": self._google,
             "energy": {**self._energy, "currency": self._config.currency},
             "presets": self._config.presets_c,
             "cooling_off_c": self._config.cooling_off_c,
             "bounds_c": list(self._bounds_c),
+            "tls_port": self._config.tls_port,
         }
 
     def accept(self, topic: str, payload: bytes) -> list[Event]:
@@ -326,7 +338,9 @@ class ConsoleState:
 
     def _device(self, device_id: str) -> dict:
         # online is None until a manifest or an availability message says.
-        return self._devices.setdefault(device_id, {"device_id": device_id, "manifest": None, "online": None, "state": {}, "state_ts": None})
+        return self._devices.setdefault(
+            device_id, {"device_id": device_id, "manifest": None, "online": None, "state": {}, "state_ts": None, "last_result": None}
+        )
 
     def _device_list(self) -> list[dict]:
         return [device for _, device in sorted(self._devices.items()) if device["manifest"] is not None]
@@ -335,6 +349,12 @@ class ConsoleState:
         """One device as the page knows it, or None if it never announced itself."""
         found = self._devices.get(device_id)
         return found if found and found["manifest"] is not None else None
+
+    def expect_remote(self, utterance_id: str, text: str) -> None:
+        """A request from a device away from the room; its reply goes back to it (FR-94)."""
+        self._remote_requests[" ".join(text.lower().split())] = utterance_id
+        while len(self._remote_requests) > _REMOTE_KEPT:
+            self._remote_requests.popitem(last=False)
 
     def expect_device(self, invocation_id: str) -> None:
         """A device call made from here; its answer is shown when it comes."""
@@ -356,6 +376,26 @@ class ConsoleState:
         device = self._device(state.device_id)
         device["state"], device["state_ts"] = dict(state.values), state.ts
         return [self._event("devices", self._device_list())] if device["manifest"] is not None else []
+
+    @property
+    def messages(self) -> list[dict]:
+        """Every message home the board has, newest first (FR-95)."""
+        return sorted(self._messages.values(), key=lambda status: status["sent_ts"], reverse=True)
+
+    def message(self, message_id: str) -> dict | None:
+        return self._messages.get(message_id)
+
+    def _on_message(self, _topic, status: MessageStatus):
+        before = self._messages.get(status.message_id)
+        self._messages[status.message_id] = _dump(status)
+        events = [self._event("messages", self.messages)]
+        if before is None and status.state is MessageState.SENT:
+            events.append(self._step("message", f"Message from {status.sender}", status.transcript, tone="info", ref=status.message_id))
+        elif status.state is MessageState.REPLIED and (before is None or before["state"] != MessageState.REPLIED.value):
+            events.append(self._step("message", f"Answered {status.sender}", status.reply_transcript, tone="good", ref=status.message_id))
+        elif status.state is MessageState.FAILED and (before is None or before["state"] != MessageState.FAILED.value):
+            events.append(self._step("message", f"Message from {status.sender} not played", status.detail, tone="alert", ref=status.message_id))
+        return events
 
     def _on_speech_settings(self, _topic, settings: SpeechSettings):
         self._speech_settings = _dump(settings)
@@ -452,6 +492,8 @@ class ConsoleState:
             return [self._event("diagnoses", self._diagnoses)]
         if topic_matches(topics.INJECT.wildcard(), topic) and self._injections.pop(leaf, None):
             return [self._event("injections", self._injections)]
+        if topic_matches(topics.MESSAGE_STATUS.wildcard(), topic) and self._messages.pop(leaf, None):
+            return [self._event("messages", self.messages)]
         return []
 
     def _on_reset(self, _topic, reset: ModeReset):
@@ -484,7 +526,13 @@ class ConsoleState:
         return events
 
     def _on_reply(self, _topic, reply: AssistantReply):
-        return [self._say("assistant", reply.reply, intent=reply.intent.value, profile_id=reply.profile_id, waiting=reply.awaiting_confirmation)]
+        events = [self._say("assistant", reply.reply, intent=reply.intent.value, profile_id=reply.profile_id, waiting=reply.awaiting_confirmation)]
+        if reply.remote:
+            # The reply carries the words it answers, not an id: matched by them.
+            utterance_id = self._remote_requests.pop(" ".join(reply.transcript.lower().split()), None)
+            if utterance_id is not None:
+                events.append(self._event("remote_reply", {"utterance_id": utterance_id, "reply": reply.reply, "transcript": reply.transcript}))
+        return events
 
     def _on_profile(self, _topic, context: ProfileContext):
         self._profiles[context.profile_id] = {
@@ -507,11 +555,22 @@ class ConsoleState:
         arguments = ", ".join(f"{k}={v}" for k, v in invocation.arguments.items() if k != "profile_id")
         return [self._step("tool", f"Called {invocation.tool}", detail=arguments, ref=invocation.invocation_id)]
 
+    def _note_device_result(self, result: ToolResult) -> list[Event]:
+        """Keep a device's latest answer, whoever asked -- the assistant or a remote (FR-92)."""
+        device_id = next((tool["device"] for tool in self._catalogue if tool["name"] == result.tool and tool.get("device")), None)
+        if device_id is None or device_id not in self._devices:
+            return []
+        self._devices[device_id]["last_result"] = {"tool": result.tool, "status": result.status.value, "message": result.message, "ts": result.ts}
+        return [self._event("devices", self._device_list())]
+
     def _on_result(self, _topic, result: ToolResult):
+        noted = self._note_device_result(result)
         if result.invocation_id in self._device_requests:
+            # A remote's own call: its answer goes to the page that asked, and
+            # the result is logged like any other, so the device's activity shows it.
             self._device_requests.discard(result.invocation_id)
             answer = {"invocation_id": result.invocation_id, "tool": result.tool, "status": result.status.value, "message": result.message}
-            return [self._event("device_result", answer)]
+            noted.append(self._event("device_result", answer))
         if result.invocation_id in self._calendar_requests:
             self._calendar_requests.discard(result.invocation_id)
             self._calendar = _calendar_from(result, self._clock.now())
@@ -550,7 +609,7 @@ class ConsoleState:
             events.extend(self._booked(result))
         if result.status is ToolStatus.OK and result.tool == "send_mail":
             events.extend(self._mailed(result))
-        return events
+        return [*noted, *events]
 
     def _on_catalogue(self, _topic, catalogue: ToolCatalogue):
         self._catalogue = [{"name": t.name, "purpose": t.purpose, "effect": t.effect.value, "device": t.device} for t in catalogue.tools]

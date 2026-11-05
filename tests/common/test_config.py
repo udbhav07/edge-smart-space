@@ -129,6 +129,17 @@ class TestCrossSectionConsistency:
         with pytest.raises(ConfigError):
             load_config(path)
 
+    def test_the_assistant_waits_longer_than_a_device_is_given(self, default_config):
+        assert default_config.assistance.result_timeout_s > default_config.actuators.command_timeout_s
+
+    def test_an_assistant_that_gives_up_before_a_device_is_rejected(self, tmp_path):
+        # A song searched for online would play, and the occupant be told it did not (FR-96).
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("  result_timeout_s: 14.0", "  result_timeout_s: 5.0", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="must exceed actuators.command_timeout_s"):
+            load_config(path)
+
     def test_initial_theta_outside_its_own_bounds_is_rejected(self, tmp_path):
         text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
             "initial_theta: [0.02, -0.05, 0.01]",
@@ -283,3 +294,23 @@ class TestAmbientListening:
     def test_ambient_mining_is_bounded(self):
         config = load_config(Path("config/default.yaml"))
         assert config.ambient.max_calls_per_min > 0 and config.ambient.max_lines > 0
+
+
+class TestJetsonConfigs:
+    """The two boards' configs load, and keep the rules section 5.7.5 and 9.2 set."""
+
+    @pytest.mark.parametrize("name", ["jetsonDefault.yaml", "jetson16.yaml"])
+    def test_it_loads(self, name):
+        load_config(Path("config") / name)
+
+    @pytest.mark.parametrize("name", ["jetsonDefault.yaml", "jetson16.yaml"])
+    def test_the_model_does_not_think_aloud(self, name):
+        assert "instruct" in load_config(Path("config") / name).reasoning.model
+
+    @pytest.mark.parametrize("name", ["jetsonDefault.yaml", "jetson16.yaml"])
+    def test_whisper_demands_the_gpu(self, name):
+        assert load_config(Path("config") / name).speech.asr_device == "cuda"
+
+    def test_only_what_the_board_changes_differs_from_the_default(self, default_config):
+        board, default = load_config(Path("config/jetsonDefault.yaml")), default_config
+        assert board.controller == default.controller and board.validator == default.validator

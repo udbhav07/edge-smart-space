@@ -32,9 +32,16 @@ dependencies = [
     "google-auth==2.57.1",
     "google-auth-oauthlib==1.5.0",
     "google-api-python-client==2.201.0",
+    # The console's own certificate, so a phone may use its microphone (FR-94).
+    "cryptography==50.0.1",
     # The music player device (FR-87): decodes mp3, flac, wav and ogg and
     # plays them, with wheels for Windows, Linux and the Jetson's aarch64.
     "miniaudio==1.71",
+    # A song the library lacks, found online and streamed (FR-96): yt-dlp
+    # finds it, PyAV decodes the stream. yt-dlp must be kept current, as
+    # YouTube changes; PyAV is the version faster-whisper already brings.
+    "yt-dlp==2026.10.21",
+    "av==18.1.0",
     # The MCP bridge (FR-90): mounts any MCP server as a device on the board.
     "mcp==2.3.0",
 ]
@@ -56,6 +63,15 @@ speech = [
     "faster-whisper==1.1.1",
     "PyAudio==0.2.14",
     "silero-vad==5.1.2",
+    # The keyword spotter, which listens for "hey jarvis" as words alongside
+    # openWakeWord (FR-98); sentencepiece turns the phrases into its tokens.
+    "sherpa-onnx==2.0.1",
+    "sentencepiece==0.2.2",
+    # Hearing the wake word over the room's own music (FR-98): WebRTC's echo
+    # canceller through LiveKit's bindings, and the speakers' output recorded
+    # as its reference (WASAPI loopback; Windows only, so marked).
+    "livekit==1.2.0",
+    "PyAudioWPatch==0.2.12.9; sys_platform == 'win32'",
     "torch==2.5.1",
     "torchaudio==2.5.1",
     # Speaking replies (FR-79), in the same service that listens. Piper is a

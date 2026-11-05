@@ -94,7 +94,7 @@ export interface Diagnosis {
 
 export interface SpeechStatus {
   ts: number;
-  activity: "waiting" | "listening" | "transcribing" | "understanding" | "speaking" | "muted";
+  activity: "waiting" | "listening" | "overhearing" | "transcribing" | "understanding" | "speaking" | "muted";
   heard: string;
   microphone: string;
   wake_word: string;
@@ -171,6 +171,8 @@ export interface Device {
   online: boolean;
   state: Record<string, string | number | boolean | null>;
   state_ts: number | null;
+  /** Its latest answer, to the assistant or to a remote (FR-92). */
+  last_result: { tool: string; status: string; message: string; ts: number } | null;
 }
 
 export interface Energy {
@@ -247,6 +249,10 @@ export interface Snapshot {
   cooling_off_c: number;
   bounds_c: [number, number];
   devices: Device[];
+  /** Messages home from someone away, newest first (FR-95). */
+  messages: HomeMessage[];
+  /** Where the console is also served over HTTPS, so a phone may use its microphone (FR-94); 0 if not. */
+  tls_port: number;
 }
 
 export interface TopicRow {
@@ -309,3 +315,23 @@ export type ServerEvent =
   | { type: "step"; data: Step }
   | { type: "link"; data: { broker: boolean } }
   | { type: string; data: unknown };
+
+/** Where a message home is (FR-95). */
+export type MessageState = "sent" | "playing" | "played" | "replied" | "failed";
+
+/** A spoken message from someone away, and what became of it (FR-95). */
+export interface HomeMessage {
+  ts: number;
+  message_id: string;
+  sender: string;
+  transcript: string;
+  duration_s: number;
+  state: MessageState;
+  sent_ts: number;
+  played_ts: number | null;
+  replied_ts: number | null;
+  reply_transcript: string;
+  reply_duration_s: number | null;
+  reply_file: string;
+  detail: string;
+}

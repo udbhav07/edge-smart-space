@@ -240,6 +240,15 @@ speech:
   # follows a detection, but the false-wake rate is higher than the section
   # 5.8 privacy claim implies. Retrain or swap the model to raise this.
   wake_word_threshold: 0.1
+  # Which detector listens (FR-98). "either": openWakeWord above, or
+  # sherpa-onnx's keyword spotter listening for the words "hey jarvis" /
+  # "jarvis". Measured with tools/wake_eval.py on 45 synthesised takes mixed
+  # into two songs: with the music as loud as the voice, openWakeWord at 0.5
+  # caught 67 %, the pair 89 %; with it 5 dB louder, 29 % and 56 %; and the
+  # spotter added no false wakes on the music alone. Kept at 0.1 above, so
+  # nothing that wakes it today stops doing so; measure your own voices
+  # (python -m tools.wake_eval --voices DIR) before raising it.
+  wake_engine: either
   vad_silence_ms: 1000
   no_speech_timeout_s: 3.0
   command_timeout_s: 15.0
@@ -263,6 +272,10 @@ speech:
   voice_engine: piper
   voice_model_path: models/piper/en_US-lessac-medium.onnx
   voice_length_scale: 1.0
+  chime: true                   # a short chime when a capture window opens (FR-93)
+  chime_volume: 0.35
+  chime_tail_ms: 150
+  follow_up_after_reply: true   # after a spoken reply, listen without the wake word (FR-93)
   speaking_tail_ms: 400          # the microphone ignores the room's own voice
   ambient_max_no_speech_prob: 0.6
   ambient_min_avg_logprob: -1.0
@@ -276,13 +289,24 @@ speech:
   speaker_min_enrolment_utterances: 3
   speaker_min_audio_s: 1.0        # shorter utterances are judged as a guest
   speaker_min_speech_s: 1.5       # each enrolment take must hold this much speech
-  asr_model: base.en
+  # small.en, measured on an RTX 3050 (4 GB) for a 4.7 s command: 297 ms and
+  # 500 MiB at int8_float16, and the only size to get "Tum Hi Ho by Arijit
+  # Singh" and "speed 2" right; base.en (187 ms) heard "Tom Hye Ho by Ariget
+  # Singh", large-v3-turbo took 500 ms and 1.1 GB and did no better. On Indian
+  # English (Svarah) Whisper's word error falls from 13.6 % (base) as the model
+  # grows; small is what fits beside the 7B model on a 4 GB card.
+  asr_model: small.en
+  # Nudges Whisper towards these when a request is made to it, never for
+  # overheard talk. Add the household's names and the music they ask for.
+  asr_hotwords: "Jarvis, Arijit Singh, AC, fan, lamp"
   # GPU first. 'auto' prefers CUDA and falls back to CPU so a laptop still
   # runs (NFR-09); 'cuda' demands it and fails loudly if absent, which is what
   # you want on the Jetson where a silent CPU fallback looks like slow code
   # rather than a broken build (section 9.2).
   asr_device: auto
-  asr_compute_type: auto
+  # int8 weights with float16 maths: half the memory of float16 at a few ms
+  # more, which leaves the GPU to the 7B model (measured above).
+  asr_compute_type: int8_float16
 
 # Section 5.7.5. One server serves every call site.
 reasoning:
@@ -304,8 +328,10 @@ assistance:
   max_tool_rounds: 1
   # Seconds to wait for a result on space/assist/result before giving up and
   # answering without it. A calendar that has stopped responding must not hold
-  # a reply to the occupant open indefinitely.
-  result_timeout_s: 5.0
+  # a reply to the occupant open indefinitely. Longer than a device is given
+  # (actuators.command_timeout_s), or a slow device's answer is lost: a song
+  # found online takes 5-6 s to search and start (FR-96).
+  result_timeout_s: 14.0
   # FR-58. The occupant's own calendar, kept on the node: a hosted one needs
   # the outbound connection NFR-06 forbids. Bounded so a misheard request
   # repeated in a loop cannot fill the disk.
@@ -470,6 +496,12 @@ sim:
 console:
   host: 127.0.0.1
   port: 8077
+  # Also served over HTTPS, with a certificate this node makes for itself, so a
+  # phone away from the room may use its microphone (FR-94). 0 turns it off.
+  tls_port: 8443
+  tls_directory: state/console/tls
+  talk_max_seconds: 30
+  talk_max_bytes: 8000000
   conversation_kept: 80
   activity_kept: 120
   calendar_days: 7
@@ -508,7 +540,7 @@ ambient:
 # on the board with a retained manifest; the assistant is shown only the
 # tools of the device a request is about, at most max_device_tools of them.
 actuators:
-  command_timeout_s: 8.0
+  command_timeout_s: 12.0
   max_device_tools: 6
   fan:
     enabled: true              # simulated (FR-15): no thermal effect is claimed
@@ -519,6 +551,16 @@ actuators:
     library_path: ~/Music
     uploads_path: state/music/uploads
     default_volume: 60
+    # A song the library lacks is found on YouTube with yt-dlp and streamed
+    # (FR-96). For a personal room only: YouTube's terms restrict automated
+    # access. Keep yt-dlp current; off makes the player library-only.
+    online: true
+    online_max_minutes: 15
+    online_timeout_s: 15
+    autoplay: true            # when a song ends, YouTube's next (or another of yours)
+    duck_volume: 0.25         # the music dips to a quarter while the room listens or speaks
+    wait_for_reply_s: 20      # a song asked for aloud starts once Jarvis has said so, or after this
+    request_window_s: 45
   # An MCP server mounted as a device by the bridge (FR-90). Only the tools
   # listed are exposed, with the effect and class declared here.
   mcp_servers:
@@ -543,3 +585,14 @@ actuators:
     #   args: [some-spotify-mcp-server]
     #   tools:
     #     play: {effect: write, device_class: media}
+
+# Spoken messages from someone away, played in the room in their own voice
+# (FR-95). Recordings stay on this node and are deleted after keep_days.
+messages:
+  directory: state/messages
+  max_seconds: 60
+  max_bytes: 10000000
+  keep_days: 7
+  max_kept: 50
+  announce: true          # "Message from Ravi" before the recording
+  reply_wait_s: 8         # how long the room listens for an answer afterwards

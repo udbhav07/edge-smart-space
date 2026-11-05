@@ -44,6 +44,9 @@ class DeviceParts:
     tick: Callable[[DeviceService], None] | None = None
     #: Called once on the way out, to release what the device holds.
     close: Callable[[], None] = field(default=lambda: None)
+    #: Called once before connecting, for a device that follows other topics
+    #: too -- the music, which waits for the room to finish speaking.
+    subscribe: Callable[[Blackboard], None] | None = None
 
 
 @dataclass
@@ -99,6 +102,8 @@ def _connect(config: Config, clock: Clock, client_id: str, parts: DeviceParts) -
     blackboard = Blackboard(config.mqtt, transport)
     holder.append(blackboard)
     service = DeviceService(parts.manifest, parts.handlers, parts.state, clock, blackboard)
+    if parts.subscribe is not None:
+        parts.subscribe(blackboard)
     blackboard.start()
     LOGGER.info("%s (%s) is starting", parts.manifest.name, device_id)
     return _Running(parts, blackboard, service)

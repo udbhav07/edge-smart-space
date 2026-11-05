@@ -188,9 +188,22 @@ class Transcriber:
         """
         if not frames:
             return ""
-        segments, _ = self._model.transcribe(to_float_audio(frames), beam_size=_BEAM_SIZE)
+        return self.transcribe_audio(to_float_audio(frames), confident_only)
+
+    def transcribe_audio(self, audio: np.ndarray, confident_only: bool = False) -> str:
+        """Transcribe audio already decoded: 16 kHz mono float, as from a phone (FR-94)."""
+        if audio.size == 0:
+            return ""
+        # Names Whisper is nudged towards -- "Jarvis", Indian names, the devices --
+        # only for a request made to it: on overheard talk a prompt makes Whisper
+        # more ready to hear words that were never said.
+        hotwords = None if confident_only or not self._config.asr_hotwords else self._config.asr_hotwords
+        segments, _ = self._model.transcribe(audio, beam_size=_BEAM_SIZE, hotwords=hotwords)
         if confident_only:
-            segments = [segment for segment in segments if self._confident(segment)]
+            heard = list(segments)
+            segments = [segment for segment in heard if self._confident(segment)]
+            if len(segments) < len(heard):
+                LOGGER.info("overheard: kept %d of %d segments (%s)", len(segments), len(heard), _why_dropped(heard, self._config))
         # Whisper segments carry their own leading space, so each is trimmed
         # before joining: otherwise the transcript comes back double-spaced.
         return " ".join(segment.text.strip() for segment in segments).strip()
@@ -203,3 +216,11 @@ class Transcriber:
         if getattr(segment, "avg_logprob", 0.0) < config.ambient_min_avg_logprob:
             return False
         return getattr(segment, "compression_ratio", 0.0) <= config.ambient_max_compression_ratio
+
+
+def _why_dropped(segments, config) -> str:
+    """How many segments each of Whisper's own tests turned away, in numbers only."""
+    silent = sum(getattr(s, "no_speech_prob", 0.0) > config.ambient_max_no_speech_prob for s in segments)
+    unsure = sum(getattr(s, "avg_logprob", 0.0) < config.ambient_min_avg_logprob for s in segments)
+    looping = sum(getattr(s, "compression_ratio", 0.0) > config.ambient_max_compression_ratio for s in segments)
+    return f"{silent} likely silence, {unsure} low confidence, {looping} repeating"

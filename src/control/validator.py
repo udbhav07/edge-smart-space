@@ -37,6 +37,7 @@ from src.common.schemas import (
     Command,
     CommandKind,
     Goal,
+    GoalSource,
     Mode,
     ReasonCode,
     ValidationVerdict,
@@ -107,9 +108,16 @@ class GoalValidator:
         if bounded != candidate:
             candidate, reason = bounded, ReasonCode.BOUND_CLAMP
 
-        rate_limited = self._limit_rate(candidate)
-        if rate_limited != candidate:
-            candidate, reason = rate_limited, ReasonCode.RATE_LIMIT
+        # V-2 paces what the system proposes for itself -- the supervisor's
+        # model, a setback -- where a large jump is more likely a mistake than
+        # a wish. A person who names a temperature gets it at once, within the
+        # bounds: live, "set it to 18" was answered "it is 22 now and will get
+        # there over the next few minutes", and the occupant saw no reason for
+        # the wait. Bounds, dwell and the command interval still apply to all.
+        if goal.source is not GoalSource.PREFERENCE or self._config.pace_occupant:
+            rate_limited = self._limit_rate(candidate)
+            if rate_limited != candidate:
+                candidate, reason = rate_limited, ReasonCode.RATE_LIMIT
 
         verdict = Verdict.ACCEPTED if reason is ReasonCode.NONE else Verdict.CLAMPED
         self._applied_setpoint_c = candidate

@@ -484,9 +484,21 @@ class TestPeakTariff:
 
 
 class TestPursuingAPreference:
-    def test_a_distant_request_is_reached_step_by_step(self, wired, clock, config):
-        """ "Make it 20" from 24: V-2 grants 22, and the goal path goes on to 20."""
+    def test_a_distant_request_is_set_at_once(self, wired, clock):
+        """ "Make it 18" from 24: the occupant named it, and gets it -- not 22, then 20, then 18."""
         service, transport, blackboard = wired
+        _send_reading(blackboard, clock, 27.0)
+        _send_preference(blackboard, clock, target_c=18.0)
+        assert service.setpoint_c == 18.0
+
+    def test_paced_if_configured_it_is_reached_step_by_step(self, clock, config):
+        """With validator.pace_occupant, V-2 grants 22 and the goal path goes on to 20."""
+        paced = config.model_copy(update={"validator": config.validator.model_copy(update={"pace_occupant": True})})
+        transport = FakeTransport()
+        blackboard = Blackboard(paced.mqtt, transport)
+        service = build_service(paced, clock, blackboard)
+        service.subscribe()
+        blackboard.on_connected()
         _send_reading(blackboard, clock, 27.0)
         _send_preference(blackboard, clock, target_c=20.0)
         assert service.setpoint_c == 22.0

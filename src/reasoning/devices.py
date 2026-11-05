@@ -18,7 +18,7 @@ import re
 import threading
 
 from src.common import topics
-from src.common.devices import DeviceAvailability, DeviceClass, DeviceManifest
+from src.common.devices import DeviceAvailability, DeviceClass, DeviceManifest, DeviceState
 from src.common.mqtt_client import Blackboard
 
 
@@ -28,11 +28,29 @@ class KnownDevices:
     def __init__(self) -> None:
         self._manifests: dict[str, DeviceManifest] = {}
         self._online: dict[str, bool] = {}
+        #: Each device's latest state, so "stop" finds what is playing and "louder" how loud it is (FR-97).
+        self._states: dict[str, dict] = {}
         self._lock = threading.Lock()
 
     def subscribe(self, blackboard: Blackboard) -> None:
         blackboard.subscribe(topics.DEVICE_MANIFEST, DeviceManifest, self._on_manifest)
         blackboard.subscribe(topics.DEVICE_AVAILABILITY, DeviceAvailability, self._on_availability)
+        blackboard.subscribe(topics.DEVICE_STATE, DeviceState, self._on_state)
+
+    def _on_state(self, _topic: str, state: DeviceState) -> None:
+        with self._lock:
+            self._states[state.device_id] = dict(state.values)
+
+    def state_of(self, device_id: str) -> dict:
+        """A device's latest state as it published it; empty if none yet."""
+        with self._lock:
+            return dict(self._states.get(device_id, {}))
+
+    def can(self, device_id: str, capability: str) -> bool:
+        """Whether an operable device has this capability, and it is not the plant's."""
+        manifest = next((m for m in self.operable() if m.device_id == device_id), None)
+        declared = manifest.capability(capability) if manifest else None
+        return declared is not None and declared.device_class is not DeviceClass.PLANT
 
     def _on_manifest(self, _topic: str, manifest: DeviceManifest) -> None:
         with self._lock:

@@ -75,13 +75,20 @@ class ConsoleActions:
 
     # --- conversation ------------------------------------------------------
 
-    def say(self, text: str, profile_id: str = "") -> ConsoleUtterance:
+    def say(self, text: str, profile_id: str = "", remote: bool = False) -> ConsoleUtterance:
+        """Words for the assistant, typed here or said on a device away from the room.
+
+        :param remote: the reply goes back to the device that asked, and the
+            room stays silent (FR-94).
+        """
         words = " ".join(text.split())
         if not words:
             raise ActionRefused("there is nothing to say")
         utterance = ConsoleUtterance(
-            ts=self._clock.now(), utterance_id=self._id("say"), text=words[:500], profile_id=profile_id
+            ts=self._clock.now(), utterance_id=self._id("say"), text=words[:500], profile_id=profile_id, remote=remote
         )
+        if remote:
+            self._state.expect_remote(utterance.utterance_id, utterance.text)
         self._blackboard.publish(topics.CONTEXT_UTTERANCE, utterance)
         return utterance
 

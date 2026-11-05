@@ -321,6 +321,22 @@ class TestEarlierLinesAreNotReportedAgain:
         room.overhear("I have a haircut on Wednesday at six in the evening", profile_id="ravi")
         assert len(room.overhear("I have a haircut on Thursday at six too", profile_id="")) == 1
 
+    def test_a_generic_name_on_another_day_is_another_plan(self, config):
+        """Live: a 7B model calls every plan "Meeting", and three different
+        meetings on different days were each dropped as the first again."""
+        tuesday = {"subject": "Meeting", "starts_at": "2026-09-29T16:00:00"}
+        thursday = {"subject": "Meeting", "starts_at": "2026-10-01T11:00:00"}
+        room = Room(config, saying(findings(plans=[tuesday])), saying(findings(plans=[thursday])))
+        room.overhear("I'll have a meeting with you on Tuesday at four")
+        room.overhear("and the review meeting is on Thursday at eleven")
+        assert [event["starts_at"][:10] for event in room.calendar()] == ["2026-09-29", "2026-10-01"]
+
+    def test_a_generic_name_restated_the_same_day_is_the_same_plan(self, config):
+        tuesday = {"subject": "Meeting", "starts_at": "2026-09-29T16:00:00"}
+        room = Room(config, saying(findings(plans=[tuesday])), saying(findings(plans=[{**tuesday, "subject": "Meeting with you"}])))
+        room.overhear("I'll have a meeting with you on Tuesday at four")
+        assert room.overhear("yes, the meeting on Tuesday at four") == []
+
     def test_the_prompt_says_earlier_lines_were_already_read(self):
         from src.reasoning.ambient import AMBIENT_PROMPT
 

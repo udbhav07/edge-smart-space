@@ -535,6 +535,14 @@ THERMAL_SUBJECTS = frozenset(
 )
 
 
+class DeviceCommand(BlackboardMessage):
+    """One device capability and its arguments, as a remote would send it (FR-97)."""
+
+    device_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    capability: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    arguments: Mapping[str, bool | int | float | str] = Field(default_factory=dict)
+
+
 class PreferenceHint(TimestampedMessage):
     """A spoken preference, forwarded as a supervisory input (FR-53).
 
@@ -594,12 +602,23 @@ class PreferenceHint(TimestampedMessage):
         description="Hand the temperature back: the occupant's preference stops "
         "holding and the room returns to automatic (FR-81)",
     )
+    remote: bool = Field(
+        default=False,
+        description="Said or typed on a phone or laptop away from the room: the "
+        "answer goes back to that device, and the room stays silent (FR-94)",
+    )
     hold_s: float | None = Field(
         default=None,
         gt=0.0,
         le=86400.0,
         description="How long this preference outranks the supervisor, if not the "
         "configured hold: 'cooling off for three hours' (FR-81)",
+    )
+    command: DeviceCommand | None = Field(
+        default=None,
+        description="A short device command recognised from the words alone -- 'stop', "
+        "'next song', 'turn off the fan' -- run as a remote's tap is, through the "
+        "executor's checks, without asking a model (FR-97)",
     )
 
     @model_validator(mode="after")
@@ -767,6 +786,11 @@ class AssistantReply(TimestampedMessage):
         default=False,
         description="The request was spoken, so the reply is said aloud (FR-79)",
     )
+    remote: bool = Field(
+        default=False,
+        description="Said or typed on a phone or laptop away from the room: the "
+        "answer goes back to that device, and the room stays silent (FR-94)",
+    )
     profile_id: str = Field(
         default="",
         pattern=PROFILE_ID_PATTERN_OR_EMPTY,
@@ -791,6 +815,11 @@ class ConsoleUtterance(TimestampedMessage):
         pattern=PROFILE_ID_PATTERN_OR_EMPTY,
         description="Who chose to speak as whom in the console; personalises "
         "the reply and grants nothing (FR-52)",
+    )
+    remote: bool = Field(
+        default=False,
+        description="Said or typed on a phone or laptop away from the room: the "
+        "answer goes back to that device, and the room stays silent (FR-94)",
     )
 
 
@@ -824,7 +853,8 @@ class SpeechActivity(str, Enum):
     """What the speech pipeline is doing (section 5.8)."""
 
     WAITING = "waiting"            # for the wake word, or for speech when continuous
-    LISTENING = "listening"        # capture window open
+    LISTENING = "listening"        # a capture window open for the assistant: after the wake word, or after a reply
+    OVERHEARING = "overhearing"    # speech nobody addressed is being taken down (FR-76); not for the assistant
     TRANSCRIBING = "transcribing"  # utterance closed, Whisper running
     UNDERSTANDING = "understanding"  # transcript known, extraction running
     SPEAKING = "speaking"          # a reply is being said; the microphone is ignored (FR-79)
@@ -993,3 +1023,52 @@ class FaultDiagnosis(TimestampedMessage):
         description="True when the model gave nothing usable and the text is "
         "the fixed notification for the detector (section 5.7.1)",
     )
+
+
+# --- Messages home (FR-95) -----------------------------------------------------
+
+#: A message id: what the console made it, and the stem of its audio file.
+MESSAGE_ID_PATTERN = r"^msg_[a-z0-9_]{1,56}$"
+#: An audio file in the messages directory: a name, never a path.
+MESSAGE_FILE_PATTERN = r"^msg_[a-z0-9_]{1,56}(-reply)?\.wav$"
+
+
+class MessageState(str, Enum):
+    """Where a message home is."""
+
+    SENT = "sent"          # kept on this node, handed to the room
+    PLAYING = "playing"    # being played in the room now
+    PLAYED = "played"      # played aloud; nobody answered (yet)
+    REPLIED = "replied"    # someone at home answered, in their own voice
+    FAILED = "failed"      # could not be played; detail says why
+
+
+class HomeMessage(TimestampedMessage):
+    """A spoken message from someone away, to be played in the room (FR-95).
+
+    Carries words and a file name, never audio: the recording is kept in the
+    messages directory on this node and read from there.
+    """
+
+    message_id: str = Field(pattern=MESSAGE_ID_PATTERN)
+    sender: str = Field(min_length=1, max_length=40, description="Who it is from, as they wrote it")
+    transcript: str = Field(default="", max_length=1000, description="What it says, for the screen")
+    duration_s: float = Field(gt=0.0, le=600.0)
+    audio_file: str = Field(pattern=MESSAGE_FILE_PATTERN)
+
+
+class MessageStatus(TimestampedMessage):
+    """Everything about one message as it stands. Retained per message (FR-95)."""
+
+    message_id: str = Field(pattern=MESSAGE_ID_PATTERN)
+    sender: str = Field(min_length=1, max_length=40)
+    transcript: str = Field(default="", max_length=1000)
+    duration_s: float = Field(gt=0.0, le=600.0)
+    state: MessageState
+    sent_ts: float = Field(gt=0.0)
+    played_ts: float | None = None
+    replied_ts: float | None = None
+    reply_transcript: str = Field(default="", max_length=1000, description="What home said back")
+    reply_duration_s: float | None = Field(default=None, gt=0.0, le=600.0)
+    reply_file: str = Field(default="", pattern=r"^$|" + MESSAGE_FILE_PATTERN[1:])
+    detail: str = Field(default="", max_length=300, description="Why it failed, if it did")

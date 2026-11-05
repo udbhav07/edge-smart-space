@@ -125,7 +125,7 @@ class TestTheExtractionIsShownTheDevices:
 
     def test_the_devices_are_listed_one_line_each(self):
         client = _Client(self.REPLY)
-        PersonalContext(CONFIG.reasoning, SimClock(), client=client, devices=_known(_manifest("fan", "Ceiling fan", "the fan"))).extract("turn on the fan")
+        PersonalContext(CONFIG.reasoning, SimClock(), client=client, devices=_known(_manifest("fan", "Ceiling fan", "the fan"))).extract("could you get the fan going a little faster when it warms up")
         prompt = client.calls[0]["messages"][0]["content"]
         assert "- fan: Ceiling fan (also: the fan)" in prompt and "tools" not in client.calls[0]
 
@@ -200,3 +200,46 @@ class TestEndToEnd:
         shown = {tool["function"]["name"] for tool in chat.requests[0][1]}
         assert shown == {"fan_turn_on", "fan_turn_off", "fan_set_speed", "fan_status"}
         assert "ceiling fan" in chat.requests[0][0][0]["content"]
+
+    def test_a_quick_command_is_run_without_the_model(self, tmp_path):
+        """FR-97: the call rides on the hint; the executor still checks it, and the fan's own words are the reply."""
+        from src.common.schemas import DeviceCommand
+
+        config = CONFIG.model_copy(update={"assistance": CONFIG.assistance.model_copy(update={"calendar_path": str(tmp_path / "c.json"), "result_timeout_s": 1.0})})
+        clock = SimClock(start_epoch_s=1_790_000_000.0)
+        transport = LoopbackTransport()
+        boards = [Blackboard(config.mqtt, transport) for _ in range(3)]
+        for board in boards:
+            transport.attach(board)
+        executor = build_executor(config, clock, boards[0])
+        executor.subscribe()
+        DeviceDirectory(clock, boards[0], executor.registry, 1.0, on_change=executor.publish_catalogue).subscribe()
+        chat = ScriptedChat()
+        assistant = build_assistant(config, clock, boards[1], chat, KnownDevices())
+        assistant.subscribe()
+        fan = build_fan(config, clock)
+        DeviceService(fan.manifest, fan.handlers, fan.state, clock, boards[2]).start()
+
+        command = DeviceCommand(device_id="fan", capability="turn_on")
+        boards[2].publish(topics.CONTEXT_PREFERENCE, PreferenceHint(ts=clock.now(), intent=Intent.SERVICE, comfort=Comfort.UNCHANGED, subject="fan", transcript="turn on the fan", command=command))
+        (reply,) = assistant.process_pending()
+
+        assert fan.state()["on"] is True and "fan is on" in reply.reply and chat.requests == []
+
+    def test_a_quick_command_the_device_cannot_take_is_refused_plainly(self, tmp_path):
+        from src.common.schemas import DeviceCommand
+
+        config = CONFIG.model_copy(update={"assistance": CONFIG.assistance.model_copy(update={"calendar_path": str(tmp_path / "c.json"), "result_timeout_s": 1.0})})
+        clock = SimClock(start_epoch_s=1_790_000_000.0)
+        transport = LoopbackTransport()
+        boards = [Blackboard(config.mqtt, transport) for _ in range(2)]
+        for board in boards:
+            transport.attach(board)
+        executor = build_executor(config, clock, boards[0])
+        executor.subscribe()
+        assistant = build_assistant(config, clock, boards[1], ScriptedChat(), KnownDevices())
+        assistant.subscribe()
+        command = DeviceCommand(device_id="kettle", capability="boil")
+        boards[1].publish(topics.CONTEXT_PREFERENCE, PreferenceHint(ts=clock.now(), intent=Intent.SERVICE, comfort=Comfort.UNCHANGED, subject="kettle", transcript="boil the kettle", command=command))
+        (reply,) = assistant.process_pending()
+        assert reply.reply and "boiled" not in reply.reply.lower()

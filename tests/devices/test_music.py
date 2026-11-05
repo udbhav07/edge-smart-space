@@ -20,9 +20,11 @@ class RecordingPlayer:
     def __init__(self):
         self.calls = []
         self.finished = False
+        self.broken = False
+        self.position_s = 0.0
 
-    def play(self, path):
-        self.calls.append(("play", path.name))
+    def play(self, track, start_s=0.0, paused=False):
+        self.calls.append(("play", track.path.name if track.path else track.title))
 
     def pause(self):
         self.calls.append(("pause",))
@@ -91,7 +93,7 @@ class TestLibrary:
 class TestDevice:
     def test_play_by_words(self, music):
         device, player = music
-        assert device.play({"query": "jazz"}).message == "Playing Miles Davis - So What."
+        assert device.play({"query": "jazz"}).message == "Playing So What by Miles Davis."
         assert player.calls[-1] == ("play", "Miles Davis - So What.mp3")
 
     def test_play_by_file(self, music):
@@ -135,11 +137,18 @@ class TestDevice:
         with pytest.raises(ValueError, match="Nothing is paused"):
             music[0].resume({})
 
-    def test_stop(self, music):
+    def test_stop_keeps_the_place(self, music):
+        device, player = music
+        device.play({"query": "bach"})
+        assert "carry on" in device.stop({}).message
+        assert player.calls[-1] == ("pause",) and device.state()["paused"] is True and device.state()["track"] == "Cello Suite 1 by Bach"
+
+    def test_carry_on_after_stop(self, music):
         device, player = music
         device.play({"query": "bach"})
         device.stop({})
-        assert player.calls[-1] == ("stop",) and device.state()["track"] == ""
+        assert device.resume({}).message == "Carrying on with Cello Suite 1 by Bach." and player.calls[-1] == ("resume",)
+        assert device.state()["playing"] is True
 
     def test_volume_reaches_the_player_as_a_fraction(self, music):
         device, player = music
@@ -153,6 +162,7 @@ class TestDevice:
 
     def test_a_track_ending_by_itself_is_noticed_once(self, music):
         device, player = music
+        device.set_autoplay({"on": False})
         device.play({"query": "bach"})
         player.finished = True
         assert device.check() is True and device.state()["playing"] is False
@@ -161,7 +171,7 @@ class TestDevice:
     def test_now_playing(self, music):
         device, _ = music
         device.play({"query": "bach"})
-        assert device.now_playing({}).message == "Playing Bach - Cello Suite 1, at 60% volume."
+        assert device.now_playing({}).message == "Playing Cello Suite 1 by Bach, at 60% volume."
 
 
 class TestManifest:

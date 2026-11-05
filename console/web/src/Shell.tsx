@@ -8,6 +8,7 @@ import { NAV } from "@/lib/nav";
 import { useConsole, useMailSeen, useNow } from "@/lib/useConsole";
 import { CommandPalette } from "@/components/CommandPalette";
 import { Orb } from "@/components/Orb";
+import { VoiceIndicator, voicePresence } from "@/components/VoiceIndicator";
 
 function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { state, link } = useConsole();
@@ -16,12 +17,13 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const unreadMail = (state?.inbox ?? []).filter((item) => item.ts > mailSeen).length;
   const waiting = state?.waiting.length ?? 0;
   const faults = state?.faults.length ?? 0;
-  const badge: Record<string, number> = { "/bookings": waiting, "/faults": faults };
+  const offline = (state?.devices ?? []).filter((device) => !device.online).length;
+  const badge: Record<string, number> = { "/bookings": waiting, "/faults": faults, "/remotes": offline };
   const voice = speechAlive(state?.speech ?? null, now);
   return (
     <nav className="flex h-full flex-col gap-6 px-3 py-5" aria-label="Pages">
       <div className="flex items-center gap-3 px-2.5">
-        <Orb presence={link === "offline" ? "offline" : "idle"} size={30} />
+        <Orb presence={link === "offline" ? "offline" : voicePresence(state, now) ?? "idle"} size={30} />
         <div className="leading-tight">
           <div className="display text-[17px] font-semibold text-fg">Smart Space</div>
           <div className="text-[12px] text-muted">Room 1 · edge node</div>
@@ -49,7 +51,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                 <Icon className="h-4 w-4" />
                 {item.label}
                 {count > 0 && (
-                  <span className={cn("ml-auto min-w-[20px] rounded-full px-1.5 text-center text-[11px] font-semibold tabular", item.to === "/faults" ? "bg-alert text-white" : "bg-line/[0.08] text-fg/80")}>
+                  <span className={cn("ml-auto min-w-[20px] rounded-full px-1.5 text-center text-[11px] font-semibold tabular", item.to === "/faults" || item.to === "/remotes" ? "bg-alert text-white" : "bg-line/[0.08] text-fg/80")}>
                     {count}
                   </span>
                 )}
@@ -69,7 +71,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </div>
         <div className="flex items-center gap-2 text-muted">
           <Mic className={cn("h-3.5 w-3.5", voice ? "text-good" : "text-muted/60")} />
-          {!voice ? "Voice off" : state?.speech?.listen_mode === "continuous" && state.speech.activity === "waiting" ? "Always listening" : `Voice: ${state?.speech?.activity}`}
+          {!voice ? "Voice off" : state?.speech?.activity === "overhearing" ? "Hearing the room" : state?.speech?.listen_mode === "continuous" && state.speech.activity === "waiting" ? "Always listening" : `Voice: ${state?.speech?.activity}`}
         </div>
       </div>
     </nav>
@@ -168,6 +170,7 @@ export function Shell() {
           reset: () => void guard(api.reset("checked from the console"), "Reset sent"),
         }}
       />
+      <VoiceIndicator />
       <Toaster theme="system" position="bottom-right" toastOptions={{ className: "!bg-surface !text-fg !border-[rgb(var(--line)/0.08)] !rounded-2xl !shadow-lg" }} />
     </div>
   );
