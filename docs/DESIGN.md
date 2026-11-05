@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.18 |
+| Version | 1.24 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.24 | **How to add a service** (§5.12; FR-87, FR-90): the rules every new device service keeps -- the three routes onto one contract, the safety class declared and never inferred, another device used only through the executor, long tasks reported through state -- with the step-by-step guide in `docs/adding-a-service.md`. |
 | 1.23 | **A named temperature at once; a question answered** (§5.4, §5.7; FR-53, FR-98): V-2 paces only what the system proposes for itself, so an occupant's named temperature is applied at once within the bounds; a question about the room ("why is it not cooling?") is answered rather than read as "cooler", past a leading "hey Jarvis" and by "why" anywhere, and the model is told whether the AC is cooling, the last minutes' trend and the heat outside; a sentence opening with "Jarvis" is a request though no detector fired. |
 | 1.22 | **Heard over the music, answered at once** (§5.8.8, §5.11; FR-97, FR-98): the wake word detector is a seam, and openWakeWord is joined by sherpa-onnx's keyword spotter; the wake word is also heard with the room's own sound taken out by echo cancelling against the speakers' output; the moment before the wake is kept and a wake mid-sentence does not chime; short device commands -- stop, carry on, next, louder -- are understood without a model; transcription moves to Whisper small.en with hotwords. |
 | 1.21 | **The room's music** (§5.11; FR-96, revised): a song asked for aloud waits for Jarvis to finish saying so; the music dips while the room listens or speaks; stop keeps the place and carry on picks it up; songs are named as they are said ("Bohemian Rhapsody by Queen"); autoplay plays what YouTube would next, or another of the occupant's own; `next` and `set_autoplay` added. |
@@ -1740,6 +1741,30 @@ The same commands took 12 to 21 s through the model the day before. A song YouTu
 **Remotes** (FR-92). People control every device directly, not only through the model. The console's **Remotes** page shows each device's remote, usable from the grid, and `/remotes/<device>` its full remote, its state, what it can do and what it was last asked. A remote never talks to a device, the broker or an MCP server itself: it publishes a `ToolInvocation` on `space/assist/proposed` exactly as `add_entry` does, so the executor's argument check, bounds and confirmation gate apply to a person's tap as to the model's call, and the device checks again. The air conditioner's remote is the climate controls: a preference through the validator, never a device command. Which remote a device gets is decided in `console/web/src/remotes/registry.ts`, first match wins -- one written for the device's id, then one for its kind (fan, light, music, ac), then the generic remote drawn from its manifest -- and a specialised remote that does not fit the device's capabilities gives way to the generic one. So a device nobody wrote a remote for is still controllable the moment it announces itself, and a remote of its own is one file and one line. A device behind MCP knows its state only once asked, so opening its page reads it quietly with its parameterless read capability. The console keeps each device's latest result, whoever asked, so a remote shows what it last did and whether it failed.
 
 **Measured live** (2026-10-26, qwen2.5:7b): "turn on the fan", "set the desk lamp to 30 percent" (through MCP), "is the lamp on?", "play the evening chime" and "turn the music volume down to 20" were each carried out and answered in the device's own words in 10 to 18 s; "set the ac to 25 degrees" became a preference goal of 25 °C through the validator with nothing published on `space/device/ac/command`; killing the fan's service marked it offline and withdrew its tools within a second, and `start.py` brought it back two seconds later. "Set the fan to 5" was not refused: shown the parameter's maximum, the model asked for 3 itself, and the reply said "speed 3 of 3".
+
+### 5.12 How to add a service (v1.24; FR-87, FR-90)
+
+A new device is a new **service**, not a change to the core. The assistant, the executor, the console and the control loop learn about a device from its announcement and nothing else. Adding a fan, a kettle or a robot is therefore writing one service, registering it, and testing it. The step-by-step guide is [docs/adding-a-service.md](adding-a-service.md); this section states the rules it follows.
+
+**What every service is.** A manifest (retained), an availability flag under a last will (retained), a handler per capability answering `space/device/<id>/command` on `.../result`, and its state (retained) -- the contract of §5.11, nothing more.
+
+**Three routes, one contract.**
+
+| Route | When | Reference |
+|---|---|---|
+| Native Python service | The device's logic lives here; its state changes on its own (`tick`) or it follows other topics (`subscribe`) | `src/devices/fan`, `src/devices/music` |
+| MCP server through the bridge | Something already speaks MCP; it answers when asked | `examples/mcp_lamp`, `actuators.mcp_servers` |
+| No Python | A microcontroller publishing the same JSON | ESPHome or Tasmota, the topics in §6.1 |
+
+**The rules a new service must keep.**
+- **Its class is declared, never inferred.** `plant` is never a tool, and the room's temperature is reached only through the validator (FR-88). For an MCP server, the effect and class come from the configuration, not the server (FR-90).
+- **Its numbers are bounded.** Every parameter declares its bounds, and both the executor and the device service check them. Every capability can declare a rate limit.
+- **It uses another device the way a person does.** It publishes a `ToolInvocation` on `space/assist/proposed` and never touches another device's command topic. The executor's gates and audit then apply to it as to a remote's tap.
+- **It works in long tasks through state.** A handler answers within `actuators.command_timeout_s`. Anything slower (a robot walking) answers "on my way", and its progress is its published state.
+- **It obeys the layer rules.** Its time comes from the injected `Clock`, its topics from `topics.py`, and its tunables from config. It imports only `src.common` and `src/devices`.
+- **It is registered once.** One `Service` entry in `start.py` means it starts, restarts and stops with everything else. A remote of its own is optional: a device with none is controlled through the generic remote drawn from its manifest.
+
+**Done means:** manifest and handler tests with `SimClock`, the gate green, a requirement ID in the commit, a line in the README's device table, and the device seen on Remotes, used by Jarvis by name, and greyed out when its service stops.
 
 ---
 
