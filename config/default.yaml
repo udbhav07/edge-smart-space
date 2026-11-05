@@ -326,6 +326,11 @@ assistance:
   # One is enough to look something up and reply about it, and it is what
   # keeps Personal Context a bounded call rather than an open-ended agent.
   max_tool_rounds: 1
+  # A call refused for how the model wrote it -- an argument the tool does not
+  # take, a missing or out-of-bounds one -- is shown to the model with the
+  # refusal and asked for again this many times. The occupant never hears the
+  # refusal itself; if it still fails, they hear that it could not be done.
+  argument_retries: 1
   # Seconds to wait for a result on space/assist/result before giving up and
   # answering without it. A calendar that has stopped responding must not hold
   # a reply to the occupant open indefinitely. Longer than a device is given

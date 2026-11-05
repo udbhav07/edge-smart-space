@@ -192,6 +192,10 @@ _NOTHING_DONE = (
     "Could you say it another way?"
 )
 _NO_RESULT = "The request got no answer in time, so nothing is confirmed."
+#: Said in place of a refusal that was the model's mistake, never the refusal itself.
+_MISWORDED = "I couldn't do that: I got the request wrong on my side, so nothing was changed. Could you say it another way?"
+#: How a call the model wrote unreadably is refused (see ``_run``).
+_UNREADABLE = "the arguments were not readable"
 
 
 #: Days listed for the model to take dates from, today included.
@@ -635,6 +639,28 @@ class Assistant:
                         result = self._run(call, utterance, hint)
                         results.append(result)
                         messages.append(tool_message(call, _for_the_model(result)))
+            for _ in range(self._config.argument_retries):
+                mistakes = [result for result in results if _the_models_mistake(result)]
+                if not mistakes:
+                    break
+                # Live: asked to clean the bathroom, the model called
+                # robot_clean_the_bathroom with a room it does not take, and
+                # the occupant heard "'robot_clean_the_bathroom' does not take
+                # ['room']". A call refused for its own arguments is the
+                # model's mistake, not news for the occupant: it has the
+                # refusal as the tool's answer already, and is asked again.
+                LOGGER.info("the model's call was refused for its arguments; asking it again: %s", [result.message for result in mistakes])
+                self._corrections.append(f"{mistakes[0].tool} refused for its arguments was asked for again")
+                turn = self._chat.complete(messages, self._tools_for(hint))
+                turns.append(turn)
+                if not turn.tool_calls:
+                    break
+                results = [result for result in results if result not in mistakes]
+                messages.append(assistant_message(turn))
+                for call in turn.tool_calls:
+                    result = self._run(call, utterance, hint)
+                    results.append(result)
+                    messages.append(tool_message(call, _for_the_model(result)))
             done = PROFILE_TOOLS if asked is not None and asked.name in PROFILE_TOOLS else {asked.name if asked else ""}
             if asked is not None and not any(result.tool in done for result in results):
                 # The model said "I'll remember that", or "I'll update the
@@ -658,15 +684,15 @@ class Assistant:
                 # The provider's own sentence already says what happened;
                 # a second completion would only add latency and a chance
                 # to misstate it.
-                reply_text = _fallback(results)
+                reply_text = _fallback(_as_heard(results))
             elif results:
-                reply_text = self._phrase(utterance, results, now, turns)
+                reply_text = self._phrase(utterance, _as_heard(results), now, turns)
             else:
                 reply_text = turns[-1].content if turns else ""
         except ReasoningUnavailableError as exc:
             LOGGER.warning("assistant unavailable: %s", exc)
-            reply_text = _fallback(results) if results else hint.spoken_reply
-        reply_text = reply_text or _fallback(results) or _NO_TOOL_REPLY
+            reply_text = _fallback(_as_heard(results)) if results else hint.spoken_reply
+        reply_text = reply_text or _fallback(_as_heard(results)) or _NO_TOOL_REPLY
         if hint.intent is Intent.SERVICE and not results and _CLAIMS_DONE.search(reply_text):
             # Live: "cancel my meeting with the CEO" -- there was none -- was
             # answered "-cancelled the meeting with the CEO" with no tool
@@ -806,7 +832,7 @@ class Assistant:
                 invocation_id=invocation_id,
                 tool=call.name if call.name.isidentifier() else "unknown",
                 status=ToolStatus.BAD_ARGUMENTS,
-                message=f"the arguments were not readable: {call.malformed[:80]}",
+                message=f"{_UNREADABLE}: {call.malformed[:80]}",
             )
         spec = self._specs.get(call.name)
         if spec is not None and not spec.offered_to_assistant:
@@ -1128,6 +1154,27 @@ def _needs_phrasing(results: list[ToolResult]) -> bool:
         result.status is ToolStatus.OK and result.tool == "get_events"
         for result in results
     )
+
+
+def _the_models_mistake(result: ToolResult) -> bool:
+    """Whether a call was refused for how the model wrote it, not for anything about the request.
+
+    The declaration's own check (``ToolSpec.validate_arguments``) names the
+    tool first -- "'fan_set_speed' requires 'speed'" -- and a call that could
+    not be read, or named a tool that does not exist, is the model's too. A
+    provider's refusal ("there is no entry called plumber") and a device's
+    ("I'm feeding the dog") are about the request, and are said as they are.
+    """
+    if result.status is ToolStatus.UNKNOWN_TOOL:
+        return True
+    return result.status is ToolStatus.BAD_ARGUMENTS and (
+        result.message.startswith(f"'{result.tool}'") or result.message.startswith(_UNREADABLE)
+    )
+
+
+def _as_heard(results: list[ToolResult]) -> list[ToolResult]:
+    """The results with the model's own mistakes put in the occupant's words."""
+    return [result.model_copy(update={"message": _MISWORDED}) if _the_models_mistake(result) else result for result in results]
 
 
 def _fallback(results: list[ToolResult]) -> str:

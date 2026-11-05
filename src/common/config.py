@@ -736,6 +736,13 @@ class AssistanceConfig(_Section):
         gt=0,
         description="Tool-call rounds one reasoning call may make before answering",
     )
+    argument_retries: int = Field(
+        default=1,
+        ge=0,
+        description="Times the model is asked again after a call refused for its own "
+        "arguments -- one it does not take, one missing or out of bounds -- before the "
+        "occupant is told it could not be done",
+    )
     result_timeout_s: float = Field(
         gt=0.0, description="Seconds to wait for a tool result before answering without"
     )
