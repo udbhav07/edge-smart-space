@@ -598,6 +598,7 @@ web_search:
     min_page_chars: 200         # less main text is a block page ("Access Denied"), not read
     min_paragraph_chars: 30     # shorter is a menu item or a caption
     lead_paragraphs: 2          # opening paragraphs always kept: they say what the page is
+    max_query_chars: 120        # the model's better words are cut to this
     remembered_urls: 50         # addresses recent searches returned; only these may be read
     search_again: true          # one more search, in the model's better words
 

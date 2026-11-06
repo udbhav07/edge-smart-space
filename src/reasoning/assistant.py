@@ -200,8 +200,10 @@ ASK_FOR_MORE = (
     "the pages behind the results will be read for you."
 )
 
-#: The line the model writes to ask for the pages (FR-104).
-_MORE = re.compile(r"^\s*MORE\s*:\s*(?P<words>[^\n]*)", re.IGNORECASE)
+#: The line the model writes to ask for the pages (FR-104): on any line of
+#: its reply, since a 7B model often says a sentence first, and in capitals,
+#: as the prompt writes it, so an answer starting "More: rain is due" is said.
+_MORE = re.compile(r"^[ \t]*MORE[ \t]*:[ \t]*(?P<words>[^\n]*)", re.MULTILINE)
 
 #: Said when the model still asks for more after reading the pages.
 _NOT_FOUND = "I searched and read the top pages, but I couldn't find the answer to that."
@@ -283,10 +285,12 @@ class Assistant:
         max_device_tools: int = 6,
         outdoor_sensor_id: str = "",
         search_again: bool = False,
+        max_query_chars: int = 120,
     ) -> None:
         """
         :param search_again: whether a deep answer may search once more, in
             the model's better words, before the pages are read (FR-104).
+        :param max_query_chars: the longest those better words are searched as.
         :param outdoor_sensor_id: the outdoor sensor, so slow cooling is explained with the heat outside.
         :param devices: the devices in the room, for naming them (FR-89).
         :param max_device_tools: most tools of one device shown at once.
@@ -294,6 +298,7 @@ class Assistant:
         self._devices = devices or KnownDevices()
         self._max_device_tools = max_device_tools
         self._search_again = search_again
+        self._max_query_chars = max_query_chars
         self._config = config
         self._utc_offset_h = utc_offset_h
         self._safe_range_c = safe_range_c
@@ -737,12 +742,13 @@ class Assistant:
             elif results:
                 deepen = self._deepenable(results)
                 reply_text = self._phrase(utterance, _as_heard(results), now, turns, may_ask_for_more=deepen is not None)
-                more = _MORE.match(reply_text) if deepen is not None else None
+                more = _MORE.search(reply_text) if deepen is not None else None
                 if more is not None:
                     results += self._deepen(deepen, more.group("words").strip(), utterance)
                     reply_text = self._phrase(utterance, _as_heard(results), now, turns)
-                    if _MORE.match(reply_text):
+                    if _MORE.search(reply_text):
                         reply_text = _NOT_FOUND
+                        self._corrections.append("deep answer: still not found after the pages, said so")
             else:
                 reply_text = turns[-1].content if turns else ""
         except ReasoningUnavailableError as exc:
@@ -878,8 +884,7 @@ class Assistant:
     def _run(self, call: ToolCall, utterance: str, hint: PreferenceHint) -> ToolResult:
         """Publish one invocation and wait for the executor's answer."""
         now = self._clock.now()
-        invocation_id = f"inv_{int(now)}_{self._invocations}"
-        self._invocations += 1
+        invocation_id = self._next_id()
         if call.malformed:
             # FR-44: output failing post-decode validation is not acted on,
             # and the refusal is still an outcome to report.
@@ -989,6 +994,8 @@ class Assistant:
         key = "query" if searched.tool == WEB_SEARCH.name else "topic"
         before = str(asked.arguments.get(key, "")) if asked is not None else ""
         note = "deep answer: the snippets did not answer"
+        if len(better_words) > self._max_query_chars:
+            better_words = better_words[: self._max_query_chars + 1].rsplit(" ", 1)[0][: self._max_query_chars]
         if self._search_again and better_words and better_words.casefold() != before.strip().casefold():
             again = self._submit(self._next_id(), searched.tool, {**(asked.arguments if asked else {}), key: better_words}, utterance)
             added.append(again)

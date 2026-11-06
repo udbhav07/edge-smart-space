@@ -1629,6 +1629,9 @@ class DeepAnswerConfig(_Section):
     lead_paragraphs: int = Field(
         default=2, ge=0, description="Opening paragraphs kept whatever the question, since they say what the page is"
     )
+    max_query_chars: int = Field(
+        default=120, ge=10, description="Longest the model's better words are searched as, in characters"
+    )
     remembered_urls: int = Field(
         default=50, ge=1, description="Addresses recent searches returned, the only pages that may be read"
     )

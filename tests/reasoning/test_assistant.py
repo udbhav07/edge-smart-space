@@ -934,6 +934,37 @@ class TestDeepAnswers:
         reply = WorldRoom(config, chat).say("who won", intent=Intent.QUESTION, subject="")
         assert "couldn't find" in reply.reply and "MORE" not in reply.reply
 
+    def test_more_after_a_sentence_is_still_asking_for_more(self, config):
+        search = _Search()
+        chat = ScriptedChat(
+            calling(call("web_search", query="IPL")),
+            saying("The results don't say.\nMORE: IPL 2026 final player of the match"),
+            saying("Kohli was player of the match."),
+        )
+        reply = WorldRoom(config, chat, search=search).say("who was player of the match", intent=Intent.QUESTION, subject="")
+        assert search.asked == ["IPL", "IPL 2026 final player of the match"]
+        assert reply.reply == "Kohli was player of the match."
+
+    def test_an_answer_that_begins_more_in_plain_words_is_said(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="Kerala rain")), saying("More: rain is due in Kerala tomorrow, says the IMD."))
+        room = WorldRoom(config, chat)
+        reply = room.say("will it rain in Kerala", intent=Intent.QUESTION, subject="")
+        assert reply.reply == "More: rain is due in Kerala tomorrow, says the IMD."
+        assert [tool for tool, _ in self._invocations(room)] == ["web_search"]
+
+    def test_better_words_are_cut_to_a_search_length(self, config):
+        search = _Search()
+        words = " ".join(["cricket"] * 80)
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying(f"MORE: {words}"), saying("RCB."))
+        WorldRoom(config, chat, search=search).say("who won", intent=Intent.QUESTION, subject="")
+        assert len(search.asked[-1]) <= config.web_search.deep.max_query_chars and search.asked[-1].startswith("cricket")
+
+    def test_not_finding_it_after_the_pages_is_recorded(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE:"), saying("MORE: something else"))
+        room = WorldRoom(config, chat)
+        room.say("who won", intent=Intent.QUESTION, subject="")
+        assert "still not found after the pages" in room.published(topics.AUDIT_REASONING, ReasoningRecord)[-1].verdict
+
     def test_more_without_better_words_reads_the_pages_without_searching_again(self, config):
         search = _Search()
         chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE:"), saying("RCB."))
