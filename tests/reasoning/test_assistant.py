@@ -809,7 +809,8 @@ def _fetch_page(url, timeout_s, max_bytes):
         url=url,
         content_type="text/html",
         text="<html><title>Final report</title><article><p>RCB beat Gujarat Titans by five wickets in the final at Ahmedabad on Sunday night.</p>"
-        "<p>Virat Kohli made 75 from 42 balls and was named player of the match.</p></article></html>",
+        "<p>Virat Kohli made 75 from 42 balls and was named player of the match.</p>"
+        "<p>It was the franchise's first title, and the crowd stayed long after the presentation to celebrate.</p></article></html>",
     )
 
 
