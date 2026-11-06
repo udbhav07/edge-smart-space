@@ -1,6 +1,6 @@
 # Plan: web search, news and live cricket scores
 
-Branch: `feat/web-search`. Status: agreed, not started.
+Branch: `feat/web-search`. Status: implemented. What changed against this plan is listed at the end.
 Requirements: FR-101 (web search), FR-102 (news), FR-103 (live cricket scores), and a revision of NFR-06.
 
 Jarvis can answer questions about the room, the calendar and the devices, but
@@ -225,3 +225,22 @@ Each commit passes the full test suite on its own.
 - Clickable source links in the chat
 - Hosted search providers (Tavily, Brave, Exa) and CricketData.org
 - Ball-by-ball commentary
+
+## What changed during implementation
+
+- **SearXNG's time filter is not used.** Measured on the pinned image,
+  `time_range=day` drops Brave News and DuckDuckGo News and leaves results with
+  no dates. News is fetched unfiltered and narrowed by each result's own date,
+  read from `publishedDate`, a relative `pubdate` ("11 hours ago") or the head
+  of `metadata` ("48 minutes ago | News18").
+- **Readiness is `/healthz`, not the port.** Podman's port forwarder accepts
+  connections as soon as the container starts, so a TCP probe passed before
+  SearXNG could answer and the first searches were reset.
+- **SearXNG is stopped by name.** Ending the `podman run` client left the
+  container running; `start.py` runs `podman stop`, and `--rm` removes it.
+- **`searxng.port` became part of `web_search.url`**, so the two cannot disagree.
+- **Cricket gained `max_matches` and `aliases`** (RCB, CSK and the rest of the
+  IPL), because the feed writes every team's full name.
+- **The Orin unit is `deploy/searxng.service`**, beside `llama-server.service`,
+  installed and given its secret by `provision.sh`.
+- **Web and news search landed in one commit**: one provider serves both tools.
