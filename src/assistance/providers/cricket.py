@@ -218,7 +218,15 @@ class CricketScores:
         shown = matches[: self._max_matches]
         heading = f"Live cricket{' for ' + asked if asked else ''} from {source}{as_of}:"
         lines = [heading] + [f"{number}. {match.said()} ({match.url})" for number, match in enumerate(shown, start=1)]
-        return ProviderOutcome(message="\n".join(lines), detail={"matches": len(shown), "first_url": shown[0].url})
+        return ProviderOutcome(
+            message="\n".join(lines),
+            detail={
+                "matches": len(shown),
+                "first_url": shown[0].url,
+                # Said as it is when no model can phrase the answer: no links, one match.
+                "spoken": f"According to {source}{as_of}: {shown[0].said()}.",
+            },
+        )
 
 
 def _for_team(matches: tuple[Match, ...], team: str) -> list[Match]:

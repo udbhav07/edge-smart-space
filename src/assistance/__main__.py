@@ -37,7 +37,7 @@ from src.assistance.providers.local_calendar import LocalCalendar
 from src.assistance.providers.mock_mail import MockMail
 from src.assistance.providers.mock_travel import MockTravel
 from src.assistance.providers.profile_memory import ProfileMemory
-from src.assistance.providers.cricket import CricinfoFeed, CricketScores
+from src.assistance.providers.cricket import CricinfoFeed, CricketScores, ScoreSource
 from src.assistance.providers.web_search import SearchBackend, SearxngBackend, WebSearch
 from src.common import topics
 from src.common.clock import Clock, RealClock
@@ -88,6 +88,7 @@ def build_registry(
     clock: Clock,
     google: GoogleParts | None = None,
     search: SearchBackend | None = None,
+    scores: ScoreSource | None = None,
 ) -> ToolRegistry:
     """Declare the surface and bind what fulfils it (FR-71, FR-72).
 
@@ -98,8 +99,9 @@ def build_registry(
 
     Web and news search are declared only when ``web_search.enabled`` is on,
     so with it off the model is never shown them (FR-101, NFR-06). ``search``
-    replaces SearXNG -- a test's fake, or another service behind the same
-    seam; without it, the SearXNG at ``web_search.url`` is asked.
+    replaces SearXNG and ``scores`` Cricinfo's feed -- a test's fake, or
+    another service behind the same seam; without them, the configured ones
+    are asked.
     """
     registry = ToolRegistry(clock)
     local = google.calendar if google is not None else LocalCalendar(
@@ -128,11 +130,17 @@ def build_registry(
     registry.bind(FORGET.name, memory)
     registry.bind(SUGGEST_FACT.name, memory)
     registry.bind(SETTLE_FACT.name, memory)
-    bind_world(registry, config, clock, search)
+    bind_world(registry, config, clock, search, scores)
     return registry
 
 
-def bind_world(registry: ToolRegistry, config: Config, clock: Clock, search: SearchBackend | None = None) -> None:
+def bind_world(
+    registry: ToolRegistry,
+    config: Config,
+    clock: Clock,
+    search: SearchBackend | None = None,
+    scores: ScoreSource | None = None,
+) -> None:
     """Declare and bind the tools that look outside the house, as configured (FR-101 to FR-103).
 
     Live scores are their own switch under web search: off with it, or alone.
@@ -142,12 +150,12 @@ def bind_world(registry: ToolRegistry, config: Config, clock: Clock, search: Sea
         return
     if settings.cricket.enabled:
         cricket = settings.cricket
-        feed = CricinfoFeed(cricket.feed_url, cricket.timeout_s, clock, cricket.cache_s)
-        scores = CricketScores(
-            feed, clock, utc_offset_h=config.site.utc_offset_h, aliases=cricket.aliases, max_matches=cricket.max_matches
+        source = scores or CricinfoFeed(cricket.feed_url, cricket.timeout_s, clock, cricket.cache_s)
+        live = CricketScores(
+            source, clock, utc_offset_h=config.site.utc_offset_h, aliases=cricket.aliases, max_matches=cricket.max_matches
         )
         registry.declare(CRICKET_SCORE)
-        registry.bind(CRICKET_SCORE.name, scores)
+        registry.bind(CRICKET_SCORE.name, live)
     backend = search or SearxngBackend(settings.url, settings.region, settings.timeout_s, clock)
     provider = WebSearch(
         backend,
@@ -179,8 +187,9 @@ def build_service(
     google: GoogleParts | None = None,
     dispatch: Dispatch | None = None,
     search: SearchBackend | None = None,
+    scores: ScoreSource | None = None,
 ) -> AssistanceExecutor:
-    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google, search), dispatch=dispatch)
+    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google, search, scores), dispatch=dispatch)
 
 
 def build_google(config: Config, clock: Clock, blackboard: Blackboard) -> GoogleParts:

@@ -66,6 +66,7 @@ from src.common.tools import (
     ASSISTANCE_TOOLS,
     PROFILE_TOOLS,
     REMEMBER,
+    WORLD_TOOLS,
     ToolCatalogue,
     ToolInvocation,
     ToolRequester,
@@ -142,6 +143,11 @@ ASSISTANT_PROMPT = (
     "or hotel, and remember or forget when "
     "they ask you to keep or drop something about them. Call each tool at "
     "most once. "
+    "For a question about the world outside the room -- news, sport, a "
+    "score, a person, a place, a price, anything that may have changed since "
+    "you learned it -- use web_search, news_search or cricket_score when they "
+    "are offered, and never answer it from memory; if none is offered, say "
+    "you cannot look things up here. "
     "If the request cannot be done with these tools, say so in one sentence "
     "without calling any. Answer a question about the room, its temperature "
     "or the system from 'The room now' below and nothing else, and reply to "
@@ -167,6 +173,27 @@ ANSWER_PROMPT = (
     "booked yet and ask whether to go ahead. If a result says it is a mock, "
     "say it was a mock booking and no real reservation was made."
 )
+
+#: For an answer from the world outside (FR-101 to FR-103): from the results
+#: and nothing else, saying where they came from and how old they are.
+SEARCH_ANSWER_PROMPT = (
+    "You are the voice assistant of a smart room. It is now {now}. Answer "
+    "the person's question in one to three short spoken sentences, using only "
+    "the results given. Say where the answer comes from and how old it is, "
+    "the way a person would: 'According to The Hindu, three hours ago, ...' "
+    "or 'Cricinfo has India on 212 for 4'. If the results do not answer the "
+    "question, say you couldn't find it; never fill a gap from your own "
+    "memory, and never call something live or current that the results do "
+    "not date. Say scores and numbers the way people speak them, and never "
+    "read out a link."
+)
+
+#: The tools whose results are looked up to answer a question, so the reply
+#: is language written from them rather than their message read out.
+_LOOKUPS = frozenset({"get_events"})
+
+#: The ones that look outside the house, answered with SEARCH_ANSWER_PROMPT.
+_WORLD_LOOKUPS = frozenset(spec.name for spec in WORLD_TOOLS)
 
 _NO_TOOL_REPLY = "Sorry, I could not do that."
 
@@ -992,9 +1019,11 @@ class Assistant:
     ) -> str:
         """Turn tool results into a spoken reply, with no tools on offer."""
         summary = "\n".join(_for_the_model(result) for result in results)
+        searched = any(result.status is ToolStatus.OK and result.tool in _WORLD_LOOKUPS for result in results)
+        prompt = SEARCH_ANSWER_PROMPT if searched else ANSWER_PROMPT
         turn = self._chat.complete(
             [
-                {"role": "system", "content": ANSWER_PROMPT.format(now=now)},
+                {"role": "system", "content": prompt.format(now=now)},
                 {
                     "role": "user",
                     "content": f"They said: {utterance}\nTool results:\n{summary}",
@@ -1151,7 +1180,7 @@ def _needs_phrasing(results: list[ToolResult]) -> bool:
     already the answer.
     """
     return any(
-        result.status is ToolStatus.OK and result.tool == "get_events"
+        result.status is ToolStatus.OK and result.tool in _LOOKUPS | _WORLD_LOOKUPS
         for result in results
     )
 
@@ -1178,8 +1207,12 @@ def _as_heard(results: list[ToolResult]) -> list[ToolResult]:
 
 
 def _fallback(results: list[ToolResult]) -> str:
-    """A reply written from the results alone, when the model cannot phrase one."""
-    return " ".join(result.message for result in results if result.message)
+    """A reply written from the results alone, when the model cannot phrase one.
+
+    A search's message is a list with links, written for a model to read; its
+    provider leaves a one-sentence ``spoken`` version for this (FR-101).
+    """
+    return " ".join(str(result.detail.get("spoken") or result.message) for result in results if result.message)
 
 
 def _with_caveat(reply: str, caveat: str) -> str:

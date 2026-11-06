@@ -274,9 +274,16 @@ class WebSearch:
             age = _age(hit.published_ts, now, self._utc_offset_h)
             snippet = _cut(hit.snippet, self._snippet_chars)
             lines.append(f"{number}. {hit.title} — {hit.source}, {age}: {snippet} ({hit.url})")
+        first = shown[0]
         return ProviderOutcome(
             message="\n".join(lines),
-            detail={"results": len(shown), "first_url": shown[0].url, "first_source": shown[0].source},
+            detail={
+                "results": len(shown),
+                "first_url": first.url,
+                "first_source": first.source,
+                # Said as it is when no model can phrase the answer: no links, one result.
+                "spoken": f"The top result, from {first.source}, {_age(first.published_ts, now, self._utc_offset_h)}: {first.title}.",
+            },
         )
 
 

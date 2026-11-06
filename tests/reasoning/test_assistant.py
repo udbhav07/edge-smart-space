@@ -50,13 +50,13 @@ def _config(tmp_path):
 class Room:
     """An assistant, a real executor, and a place to look at what was published."""
 
-    def __init__(self, config, chat) -> None:
+    def __init__(self, config, chat, **executor) -> None:
         self.clock = SimClock(start_epoch_s=SATURDAY_AFTERNOON)
         self.transport = LoopbackTransport()
         boards = [Blackboard(config.mqtt, self.transport) for _ in range(3)]
         for board in boards:
             self.transport.attach(board)
-        self.executor = build_executor(config, self.clock, boards[0])
+        self.executor = build_executor(config, self.clock, boards[0], **executor)
         self.executor.subscribe()
         self.assistant = build_assistant(config, self.clock, boards[1], chat)
         self.assistant.subscribe()
@@ -772,3 +772,90 @@ class TestTheModelsOwnMistake:
         chat = ScriptedChat(calling(self.WRONG), calling(self.RIGHT))
         reply = Room(quiet, chat).say("what is on Thursday")
         assert len(chat.requests) == 1 and "does not take" not in reply.reply
+
+
+# --- The world outside (FR-101 to FR-103) ----------------------------------
+
+
+class _Search:
+    name = "searxng"
+
+    def __init__(self, hits=None):
+        from src.assistance.providers.web_search import Hit
+
+        self.hits = hits if hits is not None else [
+            Hit(title="RCB win the IPL final", url="https://www.cricbuzz.com/1", source="cricbuzz.com", snippet="By five wickets.", published_ts=SATURDAY_AFTERNOON - 3 * 3600)
+        ]
+
+    def search(self, query, *, news):
+        return list(self.hits)
+
+
+class _Scores:
+    name = "cricinfo"
+
+    def scores(self):
+        from src.assistance.providers.cricket import Match, Scores, Side
+
+        india = Match(home=Side("India", "212/4", True), away=Side("Australia", "260/10", False), url="https://cricinfo.com/1")
+        return Scores(matches=(india,), as_of=SATURDAY_AFTERNOON)
+
+
+class WorldRoom(Room):
+    """A room whose executor searches a fake web and reads a fake score feed."""
+
+    def __init__(self, config, chat, search=None) -> None:
+        super().__init__(config, chat, search=search or _Search(), scores=_Scores())
+        self.executor.publish_catalogue()
+
+
+def _system(chat, request):
+    return chat.requests[request][0][0]["content"]
+
+
+class TestTheWorldOutside:
+    def test_the_search_tools_are_offered_to_the_model(self, config):
+        chat = ScriptedChat(saying("Hello."))
+        WorldRoom(config, chat).say("hello", intent=Intent.QUESTION, subject="")
+        offered = {tool["function"]["name"] for tool in chat.requests[0][1]}
+        assert {"web_search", "news_search", "cricket_score"} <= offered
+
+    def test_the_model_is_told_never_to_answer_the_world_from_memory(self, config):
+        chat = ScriptedChat(saying("Hello."))
+        WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert "never answer it from memory" in _system(chat, 0)
+
+    def test_results_are_phrased_by_the_model_not_read_out(self, config):
+        chat = ScriptedChat(
+            calling(call("web_search", query="who won the IPL")),
+            saying("According to Cricbuzz, three hours ago, RCB won the final by five wickets."),
+        )
+        reply = WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert reply.reply == "According to Cricbuzz, three hours ago, RCB won the final by five wickets."
+
+    def test_the_phrasing_asks_for_the_source_and_the_age_and_no_memory(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), saying("RCB."))
+        WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        phrasing = _system(chat, 1)
+        assert "where" in phrasing and "how old" in phrasing and "memory" in phrasing
+
+    def test_the_results_reach_the_phrasing_with_their_source(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), saying("RCB."))
+        WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert "cricbuzz.com, 3 hours ago" in chat.requests[1][0][1]["content"]
+
+    def test_a_live_score_is_phrased_too(self, config):
+        chat = ScriptedChat(calling(call("cricket_score", team="India")), saying("India are 212 for 4, chasing 260."))
+        reply = WorldRoom(config, chat).say("what's the India score", intent=Intent.QUESTION, subject="")
+        assert reply.reply == "India are 212 for 4, chasing 260."
+
+    def test_without_the_model_to_phrase_it_the_top_result_is_said_without_links(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), UNAVAILABLE)
+        reply = WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert "RCB win the IPL final" in reply.reply and "cricbuzz.com" in reply.reply
+        assert "https://" not in reply.reply
+
+    def test_nothing_found_is_said_as_the_search_said_it(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="zzqx")), saying("unused"))
+        reply = WorldRoom(config, chat, search=_Search(hits=[])).say("search for zzqx", intent=Intent.QUESTION, subject="")
+        assert "found nothing" in reply.reply
