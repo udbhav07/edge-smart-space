@@ -8,6 +8,9 @@ holds a provider, so it is the only place a provider swap happens (FR-72): to
 move the calendar somewhere else, change the binding in :func:`build_registry`
 and nothing else.
 
+It is also the one process that asks SearXNG anything (FR-101): web and news
+search are bound here, and only when the configuration turns them on.
+
 Killing it costs the occupant their calendar and bookings until it is back.
 It costs the room nothing: no tool reaches the plant (FR-45).
 """
@@ -34,6 +37,7 @@ from src.assistance.providers.local_calendar import LocalCalendar
 from src.assistance.providers.mock_mail import MockMail
 from src.assistance.providers.mock_travel import MockTravel
 from src.assistance.providers.profile_memory import ProfileMemory
+from src.assistance.providers.web_search import SearchBackend, SearxngBackend, WebSearch
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
@@ -46,11 +50,13 @@ from src.common.tools import (
     GET_EVENTS,
     KEEP_EVENT,
     MOVE_EVENT,
+    NEWS_SEARCH,
     PENCIL_EVENT,
     REMEMBER,
     SCHEDULE_EVENT,
     SETTLE_FACT,
     SUGGEST_FACT,
+    WEB_SEARCH,
     ToolRegistry,
 )
 
@@ -75,13 +81,23 @@ class GoogleParts:
     sync: GoogleSync | None = None
 
 
-def build_registry(config: Config, clock: Clock, google: GoogleParts | None = None) -> ToolRegistry:
+def build_registry(
+    config: Config,
+    clock: Clock,
+    google: GoogleParts | None = None,
+    search: SearchBackend | None = None,
+) -> ToolRegistry:
     """Declare the surface and bind what fulfils it (FR-71, FR-72).
 
     With Google parts, the calendar is mirrored to Google Calendar, mail goes
     through Gmail once an account is connected, and a booking adds its entry
     and itinerary. Without them -- every test, and a node nobody signed in
     on -- it is the local calendar and the mocks, exactly as before.
+
+    Web and news search are declared only when ``web_search.enabled`` is on,
+    so with it off the model is never shown them (FR-101, NFR-06). ``search``
+    replaces SearXNG -- a test's fake, or another service behind the same
+    seam; without it, the SearXNG at ``web_search.url`` is asked.
     """
     registry = ToolRegistry(clock)
     local = google.calendar if google is not None else LocalCalendar(
@@ -110,7 +126,27 @@ def build_registry(config: Config, clock: Clock, google: GoogleParts | None = No
     registry.bind(FORGET.name, memory)
     registry.bind(SUGGEST_FACT.name, memory)
     registry.bind(SETTLE_FACT.name, memory)
+    bind_world(registry, config, clock, search)
     return registry
+
+
+def bind_world(registry: ToolRegistry, config: Config, clock: Clock, search: SearchBackend | None = None) -> None:
+    """Declare and bind the tools that look outside the house, as configured (FR-101, FR-102)."""
+    settings = config.web_search
+    if not settings.enabled:
+        return
+    backend = search or SearxngBackend(settings.url, settings.region, settings.timeout_s, clock)
+    provider = WebSearch(
+        backend,
+        clock,
+        max_results=settings.max_results,
+        snippet_chars=settings.snippet_chars,
+        utc_offset_h=config.site.utc_offset_h,
+        morning_from_h=settings.morning_from_h,
+    )
+    for spec in (WEB_SEARCH, NEWS_SEARCH):
+        registry.declare(spec)
+        registry.bind(spec.name, provider)
 
 
 def build_store(config: Config, clock: Clock) -> ProfileStore:
@@ -129,8 +165,9 @@ def build_service(
     blackboard: Blackboard,
     google: GoogleParts | None = None,
     dispatch: Dispatch | None = None,
+    search: SearchBackend | None = None,
 ) -> AssistanceExecutor:
-    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google), dispatch=dispatch)
+    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google, search), dispatch=dispatch)
 
 
 def build_google(config: Config, clock: Clock, blackboard: Blackboard) -> GoogleParts:

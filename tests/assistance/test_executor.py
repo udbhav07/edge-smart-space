@@ -140,7 +140,7 @@ class TestCatalogue:
         topic, payload, _, retain = transport.published[-1]
         assert topic == topics.ASSIST_CATALOGUE.pattern and retain
         names = {spec.name for spec in ToolCatalogue.model_validate_json(payload).tools}
-        assert names == {"schedule_event", "get_events", "cancel_event", "move_event", "book_travel", "send_mail", "remember", "forget", "pencil_event", "keep_event", "suggest_fact", "settle_fact"}
+        assert names == {"schedule_event", "get_events", "cancel_event", "move_event", "book_travel", "send_mail", "remember", "forget", "pencil_event", "keep_event", "suggest_fact", "settle_fact", "web_search", "news_search"}
 
 
 class TestOverheardPlans:
@@ -158,3 +158,56 @@ class TestOverheardPlans:
         event_id = _results(transport)[-1].detail["event_id"]
         caller.publish(topics.ASSIST_PROPOSED, _invocation(clock, "keep_event", {"event_id": event_id}, invocation_id="inv_2"))
         assert _results(transport)[-1].status is ToolStatus.OK
+
+
+class _Backend:
+    """A search service that answers at once, and remembers being asked."""
+
+    name = "searxng"
+
+    def __init__(self):
+        self.asked = []
+
+    def search(self, query, *, news):
+        from src.assistance.providers.web_search import Hit
+
+        self.asked.append((query, news))
+        return [Hit(title="RCB win the final", url="https://a.in/1", source="a.in", snippet="By five wickets.", published_ts=None)]
+
+
+def _search_wired(config, clock, backend):
+    transport = LoopbackTransport()
+    executor_board = Blackboard(config.mqtt, transport)
+    caller = Blackboard(config.mqtt, transport)
+    transport.attach(executor_board)
+    transport.attach(caller)
+    service = build_service(config, clock, executor_board, search=backend)
+    service.subscribe()
+    return service, transport, caller
+
+
+class TestWebSearch:
+    """FR-101: on by default, off on request, and never for overheard speech."""
+
+    def test_a_question_asked_of_the_room_is_searched(self, config, clock):
+        backend = _Backend()
+        _, transport, caller = _search_wired(config, clock, backend)
+        caller.publish(topics.ASSIST_PROPOSED, _invocation(clock, "web_search", {"query": "who won the IPL"}))
+        result = _results(transport)[-1]
+        assert result.status is ToolStatus.OK and result.provider == "searxng"
+        assert backend.asked == [("who won the IPL", False)]
+
+    def test_overheard_speech_never_reaches_the_search_service(self, config, clock):
+        backend = _Backend()
+        _, transport, caller = _search_wired(config, clock, backend)
+        overheard = _invocation(clock, "web_search", {"query": "who won the IPL"}).model_copy(
+            update={"requester": ToolRequester.AMBIENT}
+        )
+        caller.publish(topics.ASSIST_PROPOSED, overheard)
+        assert _results(transport)[-1].status is ToolStatus.NOT_ADDRESSED
+        assert backend.asked == []
+
+    def test_with_web_search_off_the_tools_are_not_declared(self, config, clock):
+        off = config.model_copy(update={"web_search": config.web_search.model_copy(update={"enabled": False})})
+        service, _, _ = _search_wired(off, clock, _Backend())
+        assert not {"web_search", "news_search"} & set(service.registry.names)
