@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.25 |
+| Version | 1.26 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.26 | **The world outside** (§5.7.8; FR-101 to FR-103; NFR-06 revised): Jarvis searches the web and the news through SearXNG on this machine, which `start.py` runs in Podman, and reads live cricket scores from Cricinfo's feed. Each answer names its source and its age, and nothing missing from the results is filled from the model's memory. Only someone addressing the room can cause a search -- overheard speech never does, and the registry refuses it with `NOT_ADDRESSED`. NFR-06 now lists every outbound exception with the switch that turns it off, YouTube's (FR-96) included, which v1.20 left out. |
 | 1.25 | **The house, and a robot** (§5.11, §5.12; FR-99, FR-100): a floor plan of four rooms in configuration, read by the robot to plan its walks and by the console to draw the house; the house's fans, lights and TV as one home service, each standing in a room; a home robot with scripted errands -- feed the dog, clean the bathroom, switch on the TV, go to a room -- whose progress is its state, and which uses the TV only by asking the executor; a 3D House page where every device does what its service says; and a request for what only one device does is routed to that device. |
 | 1.24 | **How to add a service** (§5.12; FR-87, FR-90): the rules every new device service keeps -- the three routes onto one contract, the safety class declared and never inferred, another device used only through the executor, long tasks reported through state -- with the step-by-step guide in `docs/adding-a-service.md`. |
 | 1.23 | **A named temperature at once; a question answered** (§5.4, §5.7; FR-53, FR-98): V-2 paces only what the system proposes for itself, so an occupant's named temperature is applied at once within the bounds; a question about the room ("why is it not cooling?") is answered rather than read as "cooler", past a leading "hey Jarvis" and by "why" anywhere, and the model is told whether the AC is cooling, the last minutes' trend and the heat outside; a sentence opening with "Jarvis" is a request though no detector fired. |
@@ -247,7 +248,7 @@ feature safe to ship at all.
 | FR-81 | The occupant shall be able to hand the temperature back to the system ("back to automatic") and to turn cooling off for a chosen time. Both are preferences gated like any other; cooling off asks for the safety gate's upper bound, never beyond it. | S | T |
 | FR-82 | The occupant shall be able to mute listening from the console. Muted means nothing is captured, and the status says so. The choice survives a restart. | M | T |
 | FR-83 | Quiet hours shall stop the room speaking unprompted. A reply the occupant asked for is still spoken. | C | T |
-| FR-84 | The occupant may connect a Google account from the console. Only then, and only to Google's APIs, does the node make outbound requests (revises NFR-06). Tokens stay in a local file and are never published. | S | D |
+| FR-84 | The occupant may connect a Google account from the console. Only then does the node make requests to Google's APIs, one of NFR-06's listed exceptions (revises NFR-06). Tokens stay in a local file and are never published. | S | D |
 | FR-85 | With an account connected, calendar entries shall also be written to Google Calendar, tentative ones as tentative, and Google-side entries shall appear in the room's calendar; a confirmed mail shall be sent through Gmail and still require the occupant's yes (FR-54). A confirmed mock booking shall add a calendar entry and email its itinerary to the occupant. | S | D |
 | FR-86 | Anything bound for Google while the node is offline shall be queued, kept across restarts, sent once Google is reachable, and never sent twice. The console shall show what is waiting. | S | T |
 | FR-87 | Every actuator beyond the thermal loop shall be a service on the blackboard: it announces a retained manifest of what it can do, its availability (with a last will saying offline), takes commands and answers on its own topics, and keeps its state retained. Adding a device shall need no change to the core. | S | T |
@@ -263,6 +264,9 @@ feature safe to ship at all.
 | FR-96 | The music player shall play a song the occupant's library lacks, or one asked for online, by finding it online and streaming it; the library shall always be tried first, and a request naming nothing shall never leave it. It shall be possible to turn this off, leaving the player library-only. A song asked for aloud shall start after Jarvis has said he is playing it; the music shall be turned down while the room listens or speaks; stopping shall keep the place; and, unless turned off, another song shall follow when one ends. | C | D |
 | FR-95 | Someone away shall be able to leave a spoken message that plays in the room at once in their own voice, announced with who it is from, and the room shall listen for an answer without the wake word. The answer, words and voice, shall reach the sender's page, and the sender shall see whether it was sent, played and answered. Recordings shall stay on the node, never cross the blackboard, and be deleted after `messages.keep_days`. | S | D |
 | FR-93 | The occupant shall know when the room is listening to them: a chime whenever a capture window opens, and an indicator on every page of the console while it listens, thinks and speaks. After a reply is spoken, the room shall listen for an answer without the wake word. Overheard speech shall not be shown as listening. | S | D |
+| FR-101 | The assistant shall answer a question about the world outside the room by searching the web through a search service on the node, from the results only, naming the source and how old it is, and saying so when the results do not answer it. Only a request addressed to the room shall cause a search; overheard speech shall never be sent anywhere to be searched. It shall be possible to turn web search off. | S | D |
+| FR-102 | The assistant shall answer for the news of today, this morning, yesterday or this week by searching news and keeping only what was published in that span on the node's local clock; an article with no date shall be said to have none. | S | T |
+| FR-103 | The assistant shall give the live score of a cricket match in progress, for a team named or for every live match, from a live-scores feed rather than from web search, naming the feed; with no live match for the team, it shall say so. It shall be possible to turn this off. | S | D |
 | FR-92 | Every device, including one behind an MCP server, shall be controllable by hand from the console, through the same executor and gates as the assistant: a page of remotes and a page per device. A remote written for a device or its kind is used where one exists; any other device gets a remote drawn from its manifest. | S | D |
 
 ### 3.7 Functional Requirements — Observability
@@ -283,7 +287,7 @@ feature safe to ship at all.
 | NFR-03 | Environmental Supervisor end-to-end latency shall be under 15 s on the Jetson AGX Orin at MAXN. | M | M |
 | NFR-04 | Wake-word to transcript latency shall be under 3 s for utterances up to 10 s. | S | M |
 | NFR-05 | Total resident memory of all system processes shall remain under 20 GB, leaving headroom on the 32 GB module. | M | M |
-| NFR-06 | The system shall operate with no outbound internet connectivity. The one exception is FR-84: after the occupant connects a Google account, requests to Google's APIs only; without it, none. | M | D |
+| NFR-06 | The system shall make no outbound internet connection except those listed here, each of which can be turned off in configuration: Google's APIs after the occupant connects an account (FR-84; `google`, by not connecting); songs the library lacks, from YouTube (FR-96; `actuators.music.online`); web and news search through the node's SearXNG (FR-101, FR-102; `web_search.enabled`); live cricket scores from Cricinfo (FR-103; `web_search.cricket.enabled`). With all four off, it makes none. | M | D |
 | NFR-07 | The system shall recover to a running state within 60 s of an unclean restart, restoring persisted coefficients. | S | T |
 | NFR-08 | All components shall run under process supervision and restart automatically on crash. | S | T |
 | NFR-09 | The full stack shall run in simulation on a development laptop with no hardware attached. | M | D |
@@ -1123,6 +1127,9 @@ available in this design, so the field is required and has no default.
 | `get_events` | read | `from_time`, `to_time` | the local calendar |
 | `book_travel` | commit | `kind`, `destination`, `depart_on`, `origin?`, `nights?` | the mock endpoint (FR-55) |
 | `send_mail` | commit | `to`, `subject`, `body` | a mock outbox; nothing is sent (FR-55, NFR-06) |
+| `web_search` | read, addressed only | `query` | SearXNG on the node (FR-101) |
+| `news_search` | read, addressed only | `topic?`, `when?` | SearXNG's news category, filtered by publish time (FR-102) |
+| `cricket_score` | read, addressed only | `team?` | Cricinfo's live-scores feed (FR-103) |
 
 Timestamps in a tool argument are ISO-8601 strings rather than the epoch
 seconds every message in §6.2 carries. The inconsistency is deliberate and is
@@ -1219,6 +1226,7 @@ the write" are different findings and only one of them is the model's fault.
 | `CONFIRMATION_REQUIRED` | A `commit` tool, not yet confirmed (FR-74). |
 | `EXPIRED` | Confirmed after the window closed. |
 | `UNAVAILABLE` | Declared, but nothing is bound to it. |
+| `NOT_ADDRESSED` | It sends words out of the house, and nobody addressed the room to ask for it: overheard speech (FR-101). |
 | `FAILED` | The provider was reached and did not complete. |
 
 A `ToolResult` names the `provider` that ran and whether the effect was
@@ -1245,7 +1253,21 @@ in `src/assistance/` and nowhere else: a calendar client is I/O, and
 
 **Mail and bookings.** With an account connected, `send_mail` is bound to `GmailOrMock`. It is still a COMMIT tool, so the occupant's yes (FR-54) comes first; the reply then says *sent* or *queued, it will send when the system is back online*. Without one, the FR-55 mock is unchanged. `book_travel` stays a labelled mock, but a confirmed booking (`TravelWithItinerary`) also adds its calendar entry (a flight at 09:00, a hotel check-in at 14:00) and queues the itinerary to the connected address.
 
-**NFR-06, revised.** Before sign-in the node makes no outbound request. After it, it reaches Google's APIs and nothing else, and disconnecting returns it to the first state. Testing-mode consent screens end refresh tokens after seven days; the console then shows **Reconnect**, and nothing queued is lost.
+**NFR-06, revised.** Before sign-in the node makes no request to Google. After it, it reaches Google's APIs, and disconnecting stops that again. Google is one of NFR-06's listed exceptions, each with its own switch (v1.26). Testing-mode consent screens end refresh tokens after seven days; the console then shows **Reconnect**, and nothing queued is lost.
+
+#### 5.7.8 The world outside: web search, news and live scores (v1.26; FR-101 to FR-103)
+
+**Three read tools, each doing one obvious thing.** `web_search` answers a question about the world, `news_search` the news of a span (`today`, `this_morning`, `yesterday`, `this_week`), and `cricket_score` the live score for a team or every live match. One tool with a type argument was considered and rejected: a 7B model picks between narrow tools more reliably than it fills in a mode. All three are `read`, so nothing waits for a yes (FR-74); every query is still on `space/assist/proposed` and in the console's trace (FR-75). Their result's `message` -- the only part of a result the model reads -- is a numbered list of title, source, age and snippet, and the reply is phrased from it by a second, tool-free completion told to use those results only, to name the source and its age, and to say it could not find the answer when they do not hold it. Nothing absent from the results is filled in from the model's memory.
+
+**SearXNG, on this machine.** Web and news search go to a SearXNG instance at `web_search.url`, run by `start.py` in Podman (on the Orin, by `deploy/searxng.service`) from an image pinned in `web_search.searxng.image`, with settings from `deploy/searxng/settings.yml`: JSON on, no limiter, published on 127.0.0.1 only, and a secret made once under `state/` and passed in the environment. It was chosen over hosted search APIs (Tavily, Brave, Exa) because it needs no key or account on the node and costs nothing; hosted providers return cleaner results, which is why the provider sits behind a `SearchBackend` seam and another is one file. SearXNG queries the engines itself, so the node's only search traffic is to it. `start.py` starts it only when the assistance service is started, reuses one already answering, and stops it by name; without Podman or its image, search is off for the run and the room starts anyway.
+
+**Dates are read, not assumed.** Measured on the pinned image: SearXNG's own `time_range=day` drops Brave News and DuckDuckGo News and leaves results with no dates, so it is not used. Each result's age is read instead from whichever it carries -- an ISO `publishedDate` or `pubdate`, a relative `pubdate` ("11 hours ago"), or the head of `metadata` ("48 minutes ago | The Sunday Guardian") -- against the injected clock, and `news_search` keeps only what falls in the span asked for, on the node's local day (`site.utc_offset_h`); "this morning" starts at `web_search.morning_from_h`. A result with no date is kept for `web_search` and said to be undated, and left out of a news span it cannot be shown to fall in.
+
+**Live scores are not a search.** A search snippet is a snapshot and a score page fills its numbers in with JavaScript, so `cricket_score` reads Cricinfo's live-scores RSS feed (`web_search.cricket.feed_url`) instead, caches it for `cache_s`, and matches the team named against both sides of each match. The feed carries the score line only -- no overs, no ball by ball -- and answers are given as "according to Cricinfo". Cricinfo's terms apply, as YouTube's do to FR-96: this is for a personal room.
+
+**Only someone who asked.** A tool that sends words out of the house is declared `addressed_only`, and the registry refuses it with `NOT_ADDRESSED` for any requester but the occupant's own -- personal context, the console, the operator. Overheard speech (FR-76) already calls the model with no tools; the declaration makes the rule hold if that ever changes, and makes it testable.
+
+**NFR-06.** Web search and live scores are two of its listed exceptions, `web_search.enabled` and `web_search.cricket.enabled` their switches. Both are on by default. Off, the tools are not declared to the model at all, and nothing the occupant says is sent anywhere.
 
 ### 5.8 Speech Pipeline
 
@@ -1691,6 +1713,7 @@ flowchart LR
 - **Search.** yt-dlp runs a flat search of five results, which is quick. The first result short enough to be a song (`online_max_minutes`, 15) is the only one resolved to its audio stream. Live streams and ten-hour mixes are passed over.
 - **Playback.** Nothing is downloaded. PyAV opens the stream and decodes it on a thread of its own into a bounded buffer, up to 10 s ahead (`stream.py`). The sound card reads from that buffer, so a slow network costs a moment of silence and never stalls the audio callback.
 - **What stays local.** The library is always tried first. "Play some music", which names nothing, never leaves it, and `actuators.music.online: false` makes the player library-only.
+- **NFR-06.** One of its listed exceptions, switched by `actuators.music.online`; with it off, the player makes no outbound connection.
 - **Caveats.** YouTube's terms restrict automated access, so this is for a personal room. yt-dlp must be kept current, because YouTube changes and an old yt-dlp stops finding anything.
 
 Searching and starting a stream takes 5 to 6 s, longer than any device answered before. A device was given 8 s, but the assistant stopped waiting at 5 s, so the song played while the occupant was told the device had not answered. Now a device has 12 s (`actuators.command_timeout_s`), the assistant waits 14 s (`assistance.result_timeout_s`), and the configuration refuses to load if the second is not the longer.
@@ -2225,6 +2248,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-98 | §5.8.8 | Unit + measurement (`tools/wake_eval.py`) + demonstration |
 | FR-99 | §5.11 | Unit + demonstration |
 | FR-100 | §5.11, §5.12 | Unit + demonstration |
+| FR-101 to FR-103 | §5.7.8 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 
