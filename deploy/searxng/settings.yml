@@ -1,0 +1,33 @@
+# SearXNG for edge-smart-space: web and news search for the assistant
+# (FR-101, FR-102). start.py mounts this directory read-only at /etc/searxng
+# and runs the image pinned in config/default.yaml (web_search.searxng).
+#
+# Only this machine talks to it: the port is published on 127.0.0.1, and the
+# assistance service is its one client. That is why the limiter -- which
+# guards a public instance against bots and needs a valkey database -- is off.
+#
+# The secret is not here. start.py makes one on first run in
+# state/searxng/secret_key and passes it as SEARXNG_SECRET, so nothing secret
+# is committed.
+
+use_default_settings: true
+
+general:
+  instance_name: "edge-smart-space"
+
+search:
+  safe_search: 1                # moderate; a voice assistant reads results aloud
+  autocomplete: ""              # nothing is typed into it
+  default_lang: "en-IN"         # matches web_search.region
+  formats:
+    - html                      # to look at results in a browser while debugging
+    - json                      # what the assistance service reads
+
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+ui:
+  static_use_hash: true
