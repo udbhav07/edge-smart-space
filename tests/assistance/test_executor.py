@@ -140,7 +140,7 @@ class TestCatalogue:
         topic, payload, _, retain = transport.published[-1]
         assert topic == topics.ASSIST_CATALOGUE.pattern and retain
         names = {spec.name for spec in ToolCatalogue.model_validate_json(payload).tools}
-        assert names == {"schedule_event", "get_events", "cancel_event", "move_event", "book_travel", "send_mail", "remember", "forget", "pencil_event", "keep_event", "suggest_fact", "settle_fact", "web_search", "news_search", "cricket_score"}
+        assert names == {"schedule_event", "get_events", "cancel_event", "move_event", "book_travel", "send_mail", "remember", "forget", "pencil_event", "keep_event", "suggest_fact", "settle_fact", "web_search", "news_search", "cricket_score", "read_pages"}
 
 
 class TestOverheardPlans:
@@ -221,3 +221,24 @@ class TestWebSearch:
         off = config.model_copy(update={"web_search": config.web_search.model_copy(update={"enabled": False})})
         service, _, _ = _search_wired(off, clock, _Backend())
         assert not {"web_search", "news_search", "cricket_score"} & set(service.registry.names)
+
+
+class TestDeepAnswers:
+    """FR-104: the page reader is there when deep answers are on, and only then."""
+
+    def test_the_page_reader_is_declared_but_never_shown_to_the_model(self, config, clock):
+        service, _, _ = _search_wired(config, clock, _Backend())
+        assert "read_pages" in service.registry.names
+        assert service.registry.spec("read_pages").offered_to_assistant is False
+
+    def test_with_deep_answers_off_there_is_no_page_reader(self, config, clock):
+        deep = config.web_search.deep.model_copy(update={"enabled": False})
+        off = config.model_copy(update={"web_search": config.web_search.model_copy(update={"deep": deep})})
+        service, _, _ = _search_wired(off, clock, _Backend())
+        assert "read_pages" not in service.registry.names
+
+    def test_a_page_no_search_returned_is_refused_through_the_executor(self, config, clock):
+        _, transport, caller = _search_wired(config, clock, _Backend())
+        caller.publish(topics.ASSIST_PROPOSED, _invocation(clock, "read_pages", {"urls": "http://127.0.0.1:8077/api/settings"}))
+        result = _results(transport)[-1]
+        assert result.status is ToolStatus.FAILED and "pages a search just found" in result.message

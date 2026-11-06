@@ -34,6 +34,7 @@ from src.assistance.google.travel import TravelWithItinerary
 from src.assistance.memory import ProfileStore
 from src.assistance.profiles import ProfileKeeper
 from src.assistance.providers.local_calendar import LocalCalendar
+from src.assistance.providers.pages import PageReader
 from src.assistance.providers.mock_mail import MockMail
 from src.assistance.providers.mock_travel import MockTravel
 from src.assistance.providers.profile_memory import ProfileMemory
@@ -54,6 +55,7 @@ from src.common.tools import (
     MOVE_EVENT,
     NEWS_SEARCH,
     PENCIL_EVENT,
+    READ_PAGES,
     REMEMBER,
     SCHEDULE_EVENT,
     SETTLE_FACT,
@@ -168,6 +170,18 @@ def bind_world(
     for spec in (WEB_SEARCH, NEWS_SEARCH):
         registry.declare(spec)
         registry.bind(spec.name, provider)
+    deep = settings.deep
+    if deep.enabled:
+        # Reads only what this provider's searches returned (FR-104).
+        reader = PageReader(
+            returned=provider.returned,
+            pages=deep.pages,
+            page_chars=deep.page_chars,
+            timeout_s=deep.page_timeout_s,
+            max_bytes=deep.max_page_kb * 1024,
+        )
+        registry.declare(READ_PAGES)
+        registry.bind(READ_PAGES.name, reader)
 
 
 def build_store(config: Config, clock: Clock) -> ProfileStore:

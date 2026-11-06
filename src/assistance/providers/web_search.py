@@ -27,6 +27,7 @@ import logging
 import re
 import urllib.parse
 import urllib.request
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,9 @@ PROVIDER_NAME = "searxng"
 
 #: Sent with every request; SearXNG and the engines behind it see this, not a browser.
 _USER_AGENT = "edge-smart-space/0.1 (+web search for a personal room)"
+
+#: Addresses remembered as a search's own, for the page reader to check (FR-104).
+_RETURNED_KEPT = 50
 
 #: What news is searched for when no topic was named.
 _HEADLINES_QUERY = "latest news"
@@ -211,10 +215,15 @@ class WebSearch:
         self._snippet_chars = snippet_chars
         self._utc_offset_h = utc_offset_h
         self._morning_from_h = morning_from_h
+        self._returned: deque[str] = deque(maxlen=_RETURNED_KEPT)
 
     @property
     def name(self) -> str:
         return self._backend.name
+
+    def returned(self, url: str) -> bool:
+        """Whether a recent search gave this address: the only pages that may be read (FR-104)."""
+        return url in self._returned
 
     @property
     def simulated(self) -> bool:
@@ -275,9 +284,11 @@ class WebSearch:
             snippet = _cut(hit.snippet, self._snippet_chars)
             lines.append(f"{number}. {hit.title} — {hit.source}, {age}: {snippet} ({hit.url})")
         first = shown[0]
+        self._returned.extend(hit.url for hit in shown)
         return ProviderOutcome(
             message="\n".join(lines),
             detail={
+                **{f"url_{number}": hit.url for number, hit in enumerate(shown, start=1)},
                 "results": len(shown),
                 "first_url": first.url,
                 "first_source": first.source,

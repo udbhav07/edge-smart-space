@@ -230,3 +230,22 @@ class TestAsAProvider:
     def test_it_refuses_a_tool_it_does_not_serve(self):
         with pytest.raises(ValueError):
             _provider(FakeSearxng()).invoke("schedule_event", {})
+
+
+class TestWhatAPageReaderMayRead:
+    """FR-104: a page is read only if a search returned it."""
+
+    def test_an_address_a_search_returned_is_known(self):
+        provider = _provider(FakeSearxng([_result("A", "https://a.in/x")]))
+        provider.invoke(WEB_SEARCH.name, {"query": "q"})
+        assert provider.returned("https://a.in/x")
+
+    def test_an_address_no_search_returned_is_not(self):
+        provider = _provider(FakeSearxng([_result("A", "https://a.in/x")]))
+        provider.invoke(WEB_SEARCH.name, {"query": "q"})
+        assert not provider.returned("http://127.0.0.1:8077/api")
+
+    def test_the_results_addresses_are_in_the_detail_best_first(self):
+        fake = FakeSearxng([_result(f"S{n}", f"https://a.in/{n}") for n in range(3)])
+        detail = _search(fake).detail
+        assert [detail["url_1"], detail["url_2"], detail["url_3"]] == ["https://a.in/0", "https://a.in/1", "https://a.in/2"]
