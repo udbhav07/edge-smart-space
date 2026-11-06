@@ -1534,6 +1534,76 @@ class AmbientConfig(_Section):
     )
 
 
+class SearxngConfig(_Section):
+    """The SearXNG instance web and news search go through (FR-101).
+
+    It is the one process the node runs that reaches search engines: the
+    assistance service talks only to it, on this machine. ``start.py`` runs it
+    in Podman when ``manage`` is on, the way it runs every service of ours.
+    """
+
+    manage: bool = Field(default=True, description="Whether start.py starts and stops it")
+    image: str = Field(
+        default="docker.io/searxng/searxng:2026.11.5-3e95f6cd2",
+        pattern=r"^[^\s:]+(/[^\s:]+)*:[^\s:]+$",
+        description="Container image, pinned to a release like every other dependency",
+    )
+    container_name: str = Field(default="edge-searxng", pattern=r"^[a-z][a-z0-9_.-]*$")
+    settings_dir: str = Field(default="deploy/searxng", description="Its settings.yml, mounted read-only")
+    secret_path: str = Field(
+        default="state/searxng/secret_key", description="Its secret, made on first run and never committed"
+    )
+    pull_timeout_s: float = Field(
+        default=600.0, gt=0.0, description="Longest the first run may spend fetching the image, in s"
+    )
+    ready_timeout_s: float = Field(
+        default=30.0, gt=0.0, description="How long start.py waits for it to answer after starting it, in s"
+    )
+
+
+class CricketConfig(_Section):
+    """Live cricket scores (FR-103)."""
+
+    enabled: bool = Field(default=True, description="Offer the live score tool; off, nothing reaches the feed")
+    provider: Literal["cricinfo"] = "cricinfo"
+    feed_url: str = Field(
+        default="https://static.cricinfo.com/rss/livescores.xml",
+        pattern=r"^https?://",
+        description="Cricinfo's live-scores RSS feed",
+    )
+    timeout_s: float = Field(default=5.0, gt=0.0, description="How long a read of the feed may wait, in s")
+    cache_s: float = Field(
+        default=30.0, ge=0.0, description="A feed read this recently is reused rather than read again, in s"
+    )
+
+
+class WebSearchConfig(_Section):
+    """Web and news search for questions about the world outside (FR-101, FR-102).
+
+    On by default and one of NFR-06's listed exceptions: off, nothing the
+    occupant says is sent anywhere to be searched.
+    """
+
+    enabled: bool = Field(default=True, description="Offer web and news search to the assistant")
+    provider: Literal["searxng"] = "searxng"
+    url: str = Field(
+        default="http://127.0.0.1:8888", pattern=r"^https?://", description="Where SearXNG answers"
+    )
+    region: str = Field(
+        default="en-IN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$", description="Language and region results are asked for in"
+    )
+    max_results: int = Field(default=5, ge=1, le=10, description="Results handed to the model per search")
+    snippet_chars: int = Field(
+        default=300, ge=50, description="Longest snippet kept per result; the 7B model reads every one"
+    )
+    timeout_s: float = Field(default=6.0, gt=0.0, description="How long a search may wait on SearXNG, in s")
+    morning_from_h: int = Field(
+        default=5, ge=0, le=11, description="Local hour 'this morning' starts at (FR-102)"
+    )
+    searxng: SearxngConfig = SearxngConfig()
+    cricket: CricketConfig = CricketConfig()
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -1565,6 +1635,7 @@ class Config(_Section):
     actuators: ActuatorsConfig = ActuatorsConfig()
     messages: MessagesConfig = MessagesConfig()
     house: HouseConfig = HouseConfig()
+    web_search: WebSearchConfig = WebSearchConfig()
 
     @model_validator(mode="after")
     def _the_house_holds_its_devices(self) -> Config:
@@ -1616,6 +1687,18 @@ class Config(_Section):
                 f"assistance.result_timeout_s ({self.assistance.result_timeout_s}) must exceed "
                 f"actuators.command_timeout_s ({self.actuators.command_timeout_s})"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _the_assistant_outwaits_a_search(self) -> Config:
+        """A search's answer reaches the occupant only if the assistant is still waiting (FR-101, FR-103)."""
+        waits = self.assistance.result_timeout_s
+        for name, timeout_s in (
+            ("web_search.timeout_s", self.web_search.timeout_s),
+            ("web_search.cricket.timeout_s", self.web_search.cricket.timeout_s),
+        ):
+            if timeout_s >= waits:
+                raise ValueError(f"{name} ({timeout_s}) must be below assistance.result_timeout_s ({waits})")
         return self
 
     @model_validator(mode="after")

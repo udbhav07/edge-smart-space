@@ -541,6 +541,35 @@ ambient:
   max_lines: 8                  # lines of context per voice
   max_calls_per_min: 6          # leaves the server to the assistant and supervisor
 
+# FR-101 to FR-103. Questions about the world outside: web search and news
+# through SearXNG on this machine, live cricket scores from Cricinfo's feed.
+# One of NFR-06's listed exceptions -- what the occupant asks Jarvis is sent
+# out to be searched. enabled: false (and cricket.enabled: false) keeps every
+# word on the node. Overheard speech never searches, whatever is set here.
+web_search:
+  enabled: true
+  provider: searxng
+  url: http://127.0.0.1:8888
+  region: en-IN                 # results in English, from India first
+  max_results: 5                # results the model reads per search
+  snippet_chars: 300            # per result; the 7B model reads all of them on CPU
+  timeout_s: 6.0                # below assistance.result_timeout_s, or a late answer is lost
+  morning_from_h: 5             # 'this morning' runs from this local hour (FR-102)
+  searxng:
+    manage: true                # start.py runs it in Podman, and stops it with the rest
+    image: docker.io/searxng/searxng:2026.11.5-3e95f6cd2
+    container_name: edge-searxng
+    settings_dir: deploy/searxng
+    secret_path: state/searxng/secret_key   # made on first run, never committed
+    pull_timeout_s: 600.0       # the first run fetches the image
+    ready_timeout_s: 30.0
+  cricket:
+    enabled: true
+    provider: cricinfo
+    feed_url: https://static.cricinfo.com/rss/livescores.xml
+    timeout_s: 5.0              # below assistance.result_timeout_s
+    cache_s: 30.0               # a question repeated within this reuses the last read
+
 # Device services beyond the thermal loop (FR-87 to FR-91). Each is a service
 # on the board with a retained manifest; the assistant is shown only the
 # tools of the device a request is about, at most max_device_tools of them.
