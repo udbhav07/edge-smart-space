@@ -341,6 +341,20 @@ _SEARCH_CLIENT = "assistance"
 _SEARXNG_WAIT_STEP_S = 0.5
 
 
+def searxng_ready(url: str, timeout_s: float = PROBE_TIMEOUT_S) -> bool:
+    """Whether SearXNG itself answers, not merely its port.
+
+    Podman's port forwarder accepts a connection as soon as the container
+    starts, seconds before SearXNG inside can serve one; a TCP probe passes
+    then and the first searches are reset. SearXNG's ``/healthz`` does not.
+    """
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/healthz", timeout=timeout_s) as response:
+            return response.status == 200
+    except (OSError, ValueError):
+        return False
+
+
 def searxng_command(config: Config) -> list[str]:
     """The Podman command that runs SearXNG for this node (FR-101).
 
@@ -409,7 +423,7 @@ def start_searxng(
     searxng = config.web_search.searxng
     if not config.web_search.enabled or not searxng.manage or _SEARCH_CLIENT not in selected:
         return None
-    probe = reachable or is_reachable
+    probe = reachable or (lambda host, port: searxng_ready(config.web_search.url))
     endpoint = urlparse(config.web_search.url)
     host, port = endpoint.hostname or "localhost", endpoint.port or 80
     if probe(host, port):

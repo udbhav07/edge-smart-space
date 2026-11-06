@@ -449,3 +449,37 @@ class TestStoppingSearxng:
         start.stop_searxng(config, Client(), run=lambda command, **_: asked.append(command) or _Completed(0))
         assert asked[0][:2] == ["podman", "stop"]
         assert asked[0][-1] == config.web_search.searxng.container_name
+
+
+class TestSearxngReadiness:
+    """An open port is not a ready SearXNG: Podman's forwarder accepts before it does."""
+
+    def test_an_open_port_that_does_not_serve_healthz_is_not_ready(self):
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            _, port = server.getsockname()
+            assert start.searxng_ready(f"http://127.0.0.1:{port}", timeout_s=0.5) is False
+
+    def test_a_server_answering_healthz_is_ready(self):
+        import http.server
+        import threading
+
+        class Healthy(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 -- the stdlib's name
+                self.send_response(200 if self.path == "/healthz" else 404)
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Healthy)
+        threading.Thread(target=server.handle_request, daemon=True).start()
+        try:
+            assert start.searxng_ready(f"http://127.0.0.1:{server.server_port}", timeout_s=2.0) is True
+        finally:
+            server.server_close()
+
+    def test_nothing_listening_is_not_ready(self):
+        assert start.searxng_ready("http://127.0.0.1:1", timeout_s=0.5) is False
