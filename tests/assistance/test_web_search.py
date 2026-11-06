@@ -50,7 +50,7 @@ class FakeSearxng:
 def _provider(fake, clock=None, **settings):
     clock = clock or _clock()
     backend = SearxngBackend("http://127.0.0.1:8888", "en-IN", 6.0, clock, fetch=fake)
-    options = {"max_results": 5, "snippet_chars": 300, "utc_offset_h": IST_H, "morning_from_h": 5} | settings
+    options = {"max_results": 5, "snippet_chars": 300, "utc_offset_h": IST_H, "morning_from_h": 5, "remembered_urls": 50} | settings
     return WebSearch(backend, clock, **options)
 
 

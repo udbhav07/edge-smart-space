@@ -44,9 +44,6 @@ PROVIDER_NAME = "searxng"
 #: Sent with every request; SearXNG and the engines behind it see this, not a browser.
 _USER_AGENT = "edge-smart-space/0.1 (+web search for a personal room)"
 
-#: Addresses remembered as a search's own, for the page reader to check (FR-104).
-_RETURNED_KEPT = 50
-
 #: What news is searched for when no topic was named.
 _HEADLINES_QUERY = "latest news"
 
@@ -208,6 +205,7 @@ class WebSearch:
         snippet_chars: int,
         utc_offset_h: float,
         morning_from_h: int,
+        remembered_urls: int,
     ) -> None:
         self._backend = backend
         self._clock = clock
@@ -215,7 +213,7 @@ class WebSearch:
         self._snippet_chars = snippet_chars
         self._utc_offset_h = utc_offset_h
         self._morning_from_h = morning_from_h
-        self._returned: deque[str] = deque(maxlen=_RETURNED_KEPT)
+        self._returned: deque[str] = deque(maxlen=remembered_urls)
 
     @property
     def name(self) -> str:

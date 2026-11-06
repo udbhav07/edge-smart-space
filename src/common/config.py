@@ -1614,6 +1614,24 @@ class DeepAnswerConfig(_Section):
         default=5.0, gt=0.0, description="How long one page may take to arrive; pages are read at once, in s"
     )
     max_page_kb: int = Field(default=2048, gt=0, description="Largest page body read, in KiB; the rest is not fetched")
+    wait_grace_s: float = Field(
+        default=1.0, ge=0.0, description="Waited past page_timeout_s for pages to finish, before they are given up on, in s"
+    )
+    min_page_chars: int = Field(
+        default=200,
+        ge=0,
+        description="A page with less main text than this is a block page ('Access Denied'), not read; "
+        "and an <article> holding less is not taken as the page's content, in characters",
+    )
+    min_paragraph_chars: int = Field(
+        default=30, ge=1, description="Shorter text is a menu item or a caption, not content, in characters"
+    )
+    lead_paragraphs: int = Field(
+        default=2, ge=0, description="Opening paragraphs kept whatever the question, since they say what the page is"
+    )
+    remembered_urls: int = Field(
+        default=50, ge=1, description="Addresses recent searches returned, the only pages that may be read"
+    )
     search_again: bool = Field(
         default=True, description="Let the model search once more, in better words, before the pages are read"
     )
@@ -1739,7 +1757,7 @@ class Config(_Section):
         for name, timeout_s in (
             ("web_search.timeout_s", self.web_search.timeout_s),
             ("web_search.cricket.timeout_s", self.web_search.cricket.timeout_s),
-            ("web_search.deep.page_timeout_s", self.web_search.deep.page_timeout_s),
+            ("web_search.deep.page_timeout_s + wait_grace_s", self.web_search.deep.page_timeout_s + self.web_search.deep.wait_grace_s),
         ):
             if timeout_s >= waits:
                 raise ValueError(f"{name} ({timeout_s}) must be below assistance.result_timeout_s ({waits})")

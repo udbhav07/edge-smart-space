@@ -421,6 +421,23 @@ class TestDeepAnswers:
     def test_a_second_search_is_allowed_by_default(self, default_config):
         assert default_config.web_search.deep.search_again is True
 
+    def test_what_was_hard_coded_in_the_reader_is_config(self, default_config):
+        deep = default_config.web_search.deep
+        assert (deep.wait_grace_s, deep.min_page_chars, deep.min_paragraph_chars, deep.lead_paragraphs, deep.remembered_urls) == (
+            1.0,
+            200,
+            30,
+            2,
+            50,
+        )
+
+    def test_a_page_read_whose_grace_outlasts_the_assistant_is_rejected(self, tmp_path):
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("    wait_grace_s: 1.0", "    wait_grace_s: 9.5", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="web_search.deep.page_timeout_s"):
+            load_config(path)
+
     def test_a_page_read_that_outlasts_the_assistant_is_rejected(self, tmp_path):
         text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("    page_timeout_s: 5.0", "    page_timeout_s: 30.0", 1)
         path = tmp_path / "config.yaml"

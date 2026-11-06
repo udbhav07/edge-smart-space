@@ -172,6 +172,7 @@ def bind_world(registry: ToolRegistry, config: Config, clock: Clock, world: Worl
         snippet_chars=settings.snippet_chars,
         utc_offset_h=config.site.utc_offset_h,
         morning_from_h=settings.morning_from_h,
+        remembered_urls=settings.deep.remembered_urls,
     )
     for spec in (WEB_SEARCH, NEWS_SEARCH):
         registry.declare(spec)
@@ -185,6 +186,10 @@ def bind_world(registry: ToolRegistry, config: Config, clock: Clock, world: Worl
             page_chars=deep.page_chars,
             timeout_s=deep.page_timeout_s,
             max_bytes=deep.max_page_kb * 1024,
+            wait_grace_s=deep.wait_grace_s,
+            min_page_chars=deep.min_page_chars,
+            min_paragraph_chars=deep.min_paragraph_chars,
+            lead_paragraphs=deep.lead_paragraphs,
             fetch=world.fetch_page or fetch_page,
         )
         registry.declare(READ_PAGES)

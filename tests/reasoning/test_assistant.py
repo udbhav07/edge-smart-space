@@ -802,7 +802,7 @@ class _Scores:
         return Scores(matches=(india,), as_of=SATURDAY_AFTERNOON)
 
 
-def _fetch_page(url, timeout_s, max_bytes):
+def _fetch_page(url, timeout_s, max_bytes, stop):
     from src.assistance.providers.pages import Page
 
     return Page(
