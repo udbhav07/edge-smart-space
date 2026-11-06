@@ -569,6 +569,18 @@ web_search:
     feed_url: https://static.cricinfo.com/rss/livescores.xml
     timeout_s: 5.0              # below assistance.result_timeout_s
     cache_s: 30.0               # a question repeated within this reuses the last read
+    max_matches: 6              # read out at most, per question
+    aliases:                    # what people say -> what the feed writes
+      RCB: Royal Challengers Bengaluru
+      CSK: Chennai Super Kings
+      MI: Mumbai Indians
+      KKR: Kolkata Knight Riders
+      SRH: Sunrisers Hyderabad
+      DC: Delhi Capitals
+      PBKS: Punjab Kings
+      RR: Rajasthan Royals
+      GT: Gujarat Titans
+      LSG: Lucknow Super Giants
 
 # Device services beyond the thermal loop (FR-87 to FR-91). Each is a service
 # on the board with a retained manifest; the assistant is shown only the

@@ -37,6 +37,7 @@ from src.assistance.providers.local_calendar import LocalCalendar
 from src.assistance.providers.mock_mail import MockMail
 from src.assistance.providers.mock_travel import MockTravel
 from src.assistance.providers.profile_memory import ProfileMemory
+from src.assistance.providers.cricket import CricinfoFeed, CricketScores
 from src.assistance.providers.web_search import SearchBackend, SearxngBackend, WebSearch
 from src.common import topics
 from src.common.clock import Clock, RealClock
@@ -46,6 +47,7 @@ from src.common.tools import (
     BOOK_TRAVEL,
     SEND_MAIL,
     CANCEL_EVENT,
+    CRICKET_SCORE,
     FORGET,
     GET_EVENTS,
     KEEP_EVENT,
@@ -131,10 +133,21 @@ def build_registry(
 
 
 def bind_world(registry: ToolRegistry, config: Config, clock: Clock, search: SearchBackend | None = None) -> None:
-    """Declare and bind the tools that look outside the house, as configured (FR-101, FR-102)."""
+    """Declare and bind the tools that look outside the house, as configured (FR-101 to FR-103).
+
+    Live scores are their own switch under web search: off with it, or alone.
+    """
     settings = config.web_search
     if not settings.enabled:
         return
+    if settings.cricket.enabled:
+        cricket = settings.cricket
+        feed = CricinfoFeed(cricket.feed_url, cricket.timeout_s, clock, cricket.cache_s)
+        scores = CricketScores(
+            feed, clock, utc_offset_h=config.site.utc_offset_h, aliases=cricket.aliases, max_matches=cricket.max_matches
+        )
+        registry.declare(CRICKET_SCORE)
+        registry.bind(CRICKET_SCORE.name, scores)
     backend = search or SearxngBackend(settings.url, settings.region, settings.timeout_s, clock)
     provider = WebSearch(
         backend,

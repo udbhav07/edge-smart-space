@@ -1561,6 +1561,21 @@ class SearxngConfig(_Section):
     )
 
 
+#: The IPL's ten teams by the letters people call them. The feed writes each in full.
+_IPL_TEAMS = {
+    "RCB": "Royal Challengers Bengaluru",
+    "CSK": "Chennai Super Kings",
+    "MI": "Mumbai Indians",
+    "KKR": "Kolkata Knight Riders",
+    "SRH": "Sunrisers Hyderabad",
+    "DC": "Delhi Capitals",
+    "PBKS": "Punjab Kings",
+    "RR": "Rajasthan Royals",
+    "GT": "Gujarat Titans",
+    "LSG": "Lucknow Super Giants",
+}
+
+
 class CricketConfig(_Section):
     """Live cricket scores (FR-103)."""
 
@@ -1574,6 +1589,11 @@ class CricketConfig(_Section):
     timeout_s: float = Field(default=5.0, gt=0.0, description="How long a read of the feed may wait, in s")
     cache_s: float = Field(
         default=30.0, ge=0.0, description="A feed read this recently is reused rather than read again, in s"
+    )
+    max_matches: int = Field(default=6, ge=1, le=20, description="Matches read out at most, per question")
+    aliases: dict[str, str] = Field(
+        default_factory=lambda: dict(_IPL_TEAMS),
+        description="Short names people say, to the full name the feed writes: RCB, CSK",
     )
 
 

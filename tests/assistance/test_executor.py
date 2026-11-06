@@ -140,7 +140,7 @@ class TestCatalogue:
         topic, payload, _, retain = transport.published[-1]
         assert topic == topics.ASSIST_CATALOGUE.pattern and retain
         names = {spec.name for spec in ToolCatalogue.model_validate_json(payload).tools}
-        assert names == {"schedule_event", "get_events", "cancel_event", "move_event", "book_travel", "send_mail", "remember", "forget", "pencil_event", "keep_event", "suggest_fact", "settle_fact", "web_search", "news_search"}
+        assert names == {"schedule_event", "get_events", "cancel_event", "move_event", "book_travel", "send_mail", "remember", "forget", "pencil_event", "keep_event", "suggest_fact", "settle_fact", "web_search", "news_search", "cricket_score"}
 
 
 class TestOverheardPlans:
@@ -207,7 +207,17 @@ class TestWebSearch:
         assert _results(transport)[-1].status is ToolStatus.NOT_ADDRESSED
         assert backend.asked == []
 
+    def test_live_scores_are_declared_beside_search(self, config, clock):
+        service, _, _ = _search_wired(config, clock, _Backend())
+        assert "cricket_score" in service.registry.names
+
+    def test_with_live_scores_off_only_that_tool_goes(self, config, clock):
+        cricket = config.web_search.cricket.model_copy(update={"enabled": False})
+        off = config.model_copy(update={"web_search": config.web_search.model_copy(update={"cricket": cricket})})
+        service, _, _ = _search_wired(off, clock, _Backend())
+        assert "cricket_score" not in service.registry.names and "web_search" in service.registry.names
+
     def test_with_web_search_off_the_tools_are_not_declared(self, config, clock):
         off = config.model_copy(update={"web_search": config.web_search.model_copy(update={"enabled": False})})
         service, _, _ = _search_wired(off, clock, _Backend())
-        assert not {"web_search", "news_search"} & set(service.registry.names)
+        assert not {"web_search", "news_search", "cricket_score"} & set(service.registry.names)
