@@ -324,6 +324,8 @@ class PageReader:
         if page.content_type not in _READABLE:
             return f"it is not a web page ({page.content_type})"
         title, paragraphs = main_text(page.text, page.content_type)
-        if not paragraphs:
-            return "it had no text to read"
+        if sum(map(len, paragraphs)) < _MIN_MAIN_CHARS:
+            # A block page ("Access Denied", "Just a moment...") is served as
+            # 200 with a line or two; it is not the page, so it is not read.
+            return "it had too little text to read"
         return title, paragraphs

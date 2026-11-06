@@ -139,6 +139,17 @@ class TestWhichPagesAreRead:
         with pytest.raises(ValueError, match="couldn't open"):
             _read(_reader(fetch), ["https://a.in/f.pdf"])
 
+    def test_a_block_page_with_almost_no_text_is_not_counted_as_read(self):
+        # Live: theweek.in answered 200 with "Access Denied" and a reference number.
+        denied = Page(
+            url="https://a.in/blocked",
+            content_type="text/html",
+            text="<html><title>Access Denied</title><body><p>Reference #18.53cd717.1793979496.2c948c7a</p>"
+            "<p>https://errors.edgesuite.net/18.53cd717.1793979496.2c948c7a</p></body></html>",
+        )
+        message = _read(_reader(FakeFetch(pages={"https://a.in/blocked": denied})), ["https://a.in/blocked", "https://a.in/2"]).message
+        assert "[1] could not be read: it had too little text" in message
+
     def test_what_was_read_has_a_sentence_to_say_without_a_model(self):
         outcome = _read(_reader(FakeFetch()), ["https://a.in/1", "https://a.in/2"])
         assert outcome.detail["spoken"] == "I also read 2 of the pages it found."
