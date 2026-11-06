@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from eval.loopback import LoopbackTransport
-from src.assistance.__main__ import build_service
+from src.assistance.__main__ import WorldParts, build_service
 from src.common import topics
 from src.common.clock import SimClock
 from src.common.config import load_config
@@ -181,7 +181,7 @@ def _search_wired(config, clock, backend):
     caller = Blackboard(config.mqtt, transport)
     transport.attach(executor_board)
     transport.attach(caller)
-    service = build_service(config, clock, executor_board, search=backend)
+    service = build_service(config, clock, executor_board, world=WorldParts(search=backend))
     service.subscribe()
     return service, transport, caller
 

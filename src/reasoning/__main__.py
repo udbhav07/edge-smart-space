@@ -59,6 +59,7 @@ def build_assistant(
         devices=devices,
         max_device_tools=config.actuators.max_device_tools,
         outdoor_sensor_id=config.estimator.outdoor_sensor_id,
+        search_again=config.web_search.deep.search_again,
     )
 
 
