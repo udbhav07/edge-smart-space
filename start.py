@@ -20,6 +20,13 @@ inference server is *not*: total reasoning unavailability must not stop
 regulatory control (FR-47), so a missing one is a warning and the run
 continues.
 
+A third, SearXNG, is both checked and -- unlike those two -- started here,
+in Podman, when web search is on (FR-101). It is ours: one container with
+settings from this repository, there only for the assistance service, so it
+is started when that service is and stopped with it. One already answering
+is reused. Without Podman, or without the image, search is off and the room
+starts anyway.
+
 Written to be OS-agnostic. Processes are launched through ``sys.executable``
 and stopped with terminate-then-kill, both of which behave the same on Linux,
 macOS and Windows. Only the printed remediation hints differ by platform.
@@ -30,7 +37,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import logging
+import os
 import platform
+import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -91,6 +101,8 @@ class Dependency:
     port: int
     required: bool
     hints: dict[str, str] = field(default_factory=dict)
+    #: What carrying on without an optional one costs, said when it is absent.
+    absent_note: str = "continuing without it; regulatory control does not depend on reasoning (FR-47)"
 
     def hint(self, system: str) -> str:
         return self.hints.get(system, self.hints.get(LINUX, ""))
@@ -185,6 +197,18 @@ def _inference_hints() -> dict[str, str]:
     }
 
 
+def _searxng_hints() -> dict[str, str]:
+    started = "python start.py starts it in Podman (web_search.searxng.manage)"
+    return {
+        LINUX: f"{started}; install Podman: sudo dnf install podman (Ubuntu: sudo apt install podman)",
+        MACOS: f"{started}; install Podman: brew install podman && podman machine init && podman machine start",
+        WINDOWS: f"{started}; install Podman Desktop from podman.io",
+    }
+
+
+SEARXNG = "searxng"
+
+
 def dependencies(config: Config) -> tuple[Dependency, ...]:
     """External services, resolved from configuration."""
     endpoint = urlparse(config.reasoning.base_url)
@@ -202,6 +226,22 @@ def dependencies(config: Config) -> tuple[Dependency, ...]:
             port=endpoint.port or 80,
             required=False,
             hints=_inference_hints(),
+        ),
+    ) + _searxng_dependency(config)
+
+
+def _searxng_dependency(config: Config) -> tuple[Dependency, ...]:
+    if not config.web_search.enabled:
+        return ()
+    endpoint = urlparse(config.web_search.url)
+    return (
+        Dependency(
+            name=SEARXNG,
+            host=endpoint.hostname or "localhost",
+            port=endpoint.port or 80,
+            required=False,
+            hints=_searxng_hints(),
+            absent_note="continuing without it; Jarvis cannot search the web until it answers (FR-101)",
         ),
     )
 
@@ -253,10 +293,7 @@ def preflight(config: Config, system: str) -> bool:
         if dependency.required:
             satisfied = False
         else:
-            LOGGER.warning(
-                "         continuing without it; regulatory control does not "
-                "depend on reasoning (FR-47)"
-            )
+            LOGGER.warning("         %s", dependency.absent_note)
     return satisfied
 
 
@@ -292,6 +329,137 @@ def describe_model_state(config: Config, loaded: tuple[str, ...] | None = ...) -
         f"{model} is not loaded yet; reasoning loads it at startup, and a reply "
         f"before that finishes takes about a minute"
     )
+
+
+#: The port SearXNG's image serves on inside its container.
+_SEARXNG_CONTAINER_PORT = 8080
+
+#: The service that asks SearXNG anything. Without it, there is nothing to start it for.
+_SEARCH_CLIENT = "assistance"
+
+#: Interval between probes while waiting for SearXNG to answer.
+_SEARXNG_WAIT_STEP_S = 0.5
+
+
+def searxng_command(config: Config) -> list[str]:
+    """The Podman command that runs SearXNG for this node (FR-101).
+
+    Published on 127.0.0.1 only, settings mounted read-only, and removed when
+    stopped, so nothing of it outlives the run but its image. The secret is
+    named, not given: Podman takes its value from the environment start.py
+    hands it, where listing processes cannot read it.
+    """
+    searxng = config.web_search.searxng
+    endpoint = urlparse(config.web_search.url)
+    settings = Path(searxng.settings_dir).resolve()
+    return [
+        "podman",
+        "run",
+        "--rm",
+        "--replace",
+        "--name",
+        searxng.container_name,
+        "--publish",
+        f"127.0.0.1:{endpoint.port or 80}:{_SEARXNG_CONTAINER_PORT}",
+        "--volume",
+        f"{settings}:/etc/searxng:Z,ro",
+        "--env",
+        "SEARXNG_SECRET",
+        searxng.image,
+    ]
+
+
+def searxng_secret(path: Path) -> str:
+    """SearXNG's secret: made once, kept readable by this user only, and reused.
+
+    It lives under ``state/``, which is not committed, because the settings
+    file in ``deploy/searxng`` is.
+    """
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    secret = secrets.token_hex(32)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(secret + "\n")
+    return secret
+
+
+def start_searxng(
+    config: Config,
+    selected: tuple[str, ...],
+    *,
+    which=shutil.which,
+    run=subprocess.run,
+    popen=subprocess.Popen,
+    reachable=None,
+    secret_path: Path | None = None,
+    wait_step_s: float = _SEARXNG_WAIT_STEP_S,
+) -> subprocess.Popen | None:
+    """Start SearXNG in Podman if web search needs it and nothing serves it yet (FR-101).
+
+    Every way of not starting it is a warning, never a refusal: the room runs
+    without search, and the assistance service says so when asked to search.
+
+    :param selected: the services being started; SearXNG is started only
+        for the one that uses it.
+    :returns: the process to stop at the end, or None if there is none of
+        ours to stop -- not wanted, reused, or unable to start.
+    """
+    searxng = config.web_search.searxng
+    if not config.web_search.enabled or not searxng.manage or _SEARCH_CLIENT not in selected:
+        return None
+    probe = reachable or is_reachable
+    endpoint = urlparse(config.web_search.url)
+    host, port = endpoint.hostname or "localhost", endpoint.port or 80
+    if probe(host, port):
+        LOGGER.info("ok       searxng already answering at %s:%s; using it", host, port)
+        return None
+    if which("podman") is None:
+        LOGGER.warning("absent   podman, so searxng cannot be started; web search is off this run")
+        return None
+    if run(["podman", "image", "exists", searxng.image], capture_output=True).returncode != 0:
+        LOGGER.info("fetching %s, once; this needs the internet and can take a minute", searxng.image)
+        try:
+            pulled = run(["podman", "pull", searxng.image], timeout=searxng.pull_timeout_s).returncode == 0
+        except subprocess.TimeoutExpired:
+            pulled = False
+        if not pulled:
+            LOGGER.warning("could not fetch %s; web search is off this run", searxng.image)
+            return None
+    secret = searxng_secret(secret_path or Path(searxng.secret_path))
+    process = popen(
+        searxng_command(config),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={**os.environ, "SEARXNG_SECRET": secret},
+    )
+    LOGGER.info("started  searxng in podman (its log: podman logs %s)", searxng.container_name)
+    deadline = time.monotonic() + searxng.ready_timeout_s
+    while not probe(host, port):
+        if process.poll() is not None or time.monotonic() > deadline:
+            LOGGER.warning("searxng did not answer at %s:%s; web search is off until it does", host, port)
+            break
+        time.sleep(wait_step_s)
+    return process
+
+
+def stop_searxng(config: Config, process: subprocess.Popen, *, run=subprocess.run) -> None:
+    """Stop the SearXNG container start.py started.
+
+    By name, through Podman: ending the ``podman run`` client leaves the
+    container serving. ``--rm`` then removes it, and the client exits.
+    """
+    name = config.web_search.searxng.container_name
+    LOGGER.info("stopping searxng")
+    try:
+        run(["podman", "stop", "--time", str(int(SHUTDOWN_GRACE_S)), name], capture_output=True, timeout=SHUTDOWN_GRACE_S * 3)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        LOGGER.warning("could not stop searxng (%s); stop it with: podman stop %s", exc, name)
+    try:
+        process.wait(timeout=SHUTDOWN_GRACE_S)
+    except subprocess.TimeoutExpired:
+        process.kill()
 
 
 #: A topic each periodic service publishes on every tick, live rather than
@@ -599,6 +767,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     running: dict[str, subprocess.Popen] = {}
+    # Outside running: supervise() restarts what it watches by service name,
+    # and SearXNG is not one of ours to relaunch -- only to stop.
+    searxng = start_searxng(config, tuple(service.name for service in services))
     try:
         for service in services:
             running[service.name] = launch(service, arguments.config)
@@ -611,6 +782,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         shutdown(running)
+        if searxng is not None:
+            stop_searxng(config, searxng)
 
 
 if __name__ == "__main__":
