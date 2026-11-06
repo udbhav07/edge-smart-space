@@ -1597,6 +1597,28 @@ class CricketConfig(_Section):
     )
 
 
+class DeepAnswerConfig(_Section):
+    """Reading the top pages, and searching again, when snippets do not answer (FR-104).
+
+    Used only when the model, given a search's snippets, says they do not
+    hold the answer; a question they answer costs nothing more. Headlines and
+    scores never take this path.
+    """
+
+    enabled: bool = Field(default=True, description="Read pages when snippets do not answer")
+    pages: int = Field(default=3, ge=1, le=5, description="Pages read at most, in the order the search ranked them")
+    page_chars: int = Field(
+        default=1500, ge=200, le=6000, description="Main text kept per page; the 7B model reads every character"
+    )
+    page_timeout_s: float = Field(
+        default=5.0, gt=0.0, description="How long one page may take to arrive; pages are read at once, in s"
+    )
+    max_page_kb: int = Field(default=2048, gt=0, description="Largest page body read, in KiB; the rest is not fetched")
+    search_again: bool = Field(
+        default=True, description="Let the model search once more, in better words, before the pages are read"
+    )
+
+
 class WebSearchConfig(_Section):
     """Web and news search for questions about the world outside (FR-101, FR-102).
 
@@ -1622,6 +1644,7 @@ class WebSearchConfig(_Section):
     )
     searxng: SearxngConfig = SearxngConfig()
     cricket: CricketConfig = CricketConfig()
+    deep: DeepAnswerConfig = DeepAnswerConfig()
 
 
 class Config(_Section):
@@ -1716,6 +1739,7 @@ class Config(_Section):
         for name, timeout_s in (
             ("web_search.timeout_s", self.web_search.timeout_s),
             ("web_search.cricket.timeout_s", self.web_search.cricket.timeout_s),
+            ("web_search.deep.page_timeout_s", self.web_search.deep.page_timeout_s),
         ):
             if timeout_s >= waits:
                 raise ValueError(f"{name} ({timeout_s}) must be below assistance.result_timeout_s ({waits})")

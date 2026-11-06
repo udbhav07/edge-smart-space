@@ -409,3 +409,21 @@ class TestWebSearch:
         path.write_text(text, encoding="utf-8")
         with pytest.raises(ConfigError, match="web_search.cricket.timeout_s"):
             load_config(path)
+
+
+class TestDeepAnswers:
+    """FR-104: reading the top pages and searching again, each bounded."""
+
+    def test_deep_answers_are_on_and_read_three_pages(self, default_config):
+        deep = default_config.web_search.deep
+        assert deep.enabled is True and deep.pages == 3
+
+    def test_a_second_search_is_allowed_by_default(self, default_config):
+        assert default_config.web_search.deep.search_again is True
+
+    def test_a_page_read_that_outlasts_the_assistant_is_rejected(self, tmp_path):
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("    page_timeout_s: 5.0", "    page_timeout_s: 30.0", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="web_search.deep.page_timeout_s"):
+            load_config(path)

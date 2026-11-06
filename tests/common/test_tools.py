@@ -805,3 +805,28 @@ class TestTheWorldOutside:
         registry.bind(SCHEDULE_EVENT.name, provider)
         invocation = _invocation(clock).model_copy(update={"requester": ToolRequester.AMBIENT})
         assert registry.invoke(invocation, confirmed=False).status is ToolStatus.OK
+
+
+class TestReadingPages:
+    """FR-104: the pages read are chosen by the code, never by the model."""
+
+    def test_it_is_never_offered_to_the_model(self):
+        from src.common.tools import READ_PAGES
+
+        assert READ_PAGES.offered_to_assistant is False
+
+    def test_only_someone_addressing_the_room_may_cause_it(self):
+        from src.common.tools import READ_PAGES
+
+        assert READ_PAGES.addressed_only and READ_PAGES.effect is ToolEffect.READ
+
+    def test_it_takes_the_addresses_and_the_question(self):
+        from src.common.tools import READ_PAGES
+
+        accepted = READ_PAGES.validate_arguments({"urls": "https://a.in/1 https://b.in/2", "question": "why did it fall"})
+        assert accepted["urls"].split() == ["https://a.in/1", "https://b.in/2"]
+
+    def test_it_is_not_in_the_default_surface(self):
+        from src.common.tools import READ_PAGES
+
+        assert READ_PAGES not in ASSISTANCE_TOOLS

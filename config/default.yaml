@@ -582,6 +582,20 @@ web_search:
       GT: Gujarat Titans
       LSG: Lucknow Super Giants
 
+  # FR-104. A deep answer: when the snippets of a web search (or a news
+  # search on a topic) do not hold the answer, the model may search once more
+  # in better words, and the top pages are read and given to it trimmed.
+  # A question the snippets answer costs nothing more; headlines and scores
+  # never come here. Only pages the search returned are read, never one on
+  # this machine or its network.
+  deep:
+    enabled: true
+    pages: 3                    # read at once, in the search's order
+    page_chars: 1500            # main text kept per page
+    page_timeout_s: 5.0         # below assistance.result_timeout_s
+    max_page_kb: 2048           # a page larger than this is cut off
+    search_again: true          # one more search, in the model's better words
+
 # Device services beyond the thermal loop (FR-87 to FR-91). Each is a service
 # on the board with a retained manifest; the assistant is shown only the
 # tools of the device a request is about, at most max_device_tools of them.

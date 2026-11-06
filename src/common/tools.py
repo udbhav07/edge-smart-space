@@ -1060,6 +1060,30 @@ CRICKET_SCORE = ToolSpec(
     addressed_only=True,
 )
 
+#: Run by the assistant itself when a search's snippets do not answer: it, not
+#: the model, chooses the addresses, and only ones a search returned are read
+#: (FR-104). Never offered, so the model cannot be talked into fetching a page.
+READ_PAGES = ToolSpec(
+    name="read_pages",
+    purpose="Read the main text of web pages a search returned, trimmed to what bears on the question.",
+    effect=ToolEffect.READ,
+    parameters=(
+        ToolParameter(
+            name="urls",
+            type=ParameterType.STRING,
+            description="The pages' addresses, separated by spaces, best first.",
+        ),
+        ToolParameter(
+            name="question",
+            type=ParameterType.STRING,
+            description="What was asked, so the parts of each page that bear on it are kept.",
+            required=False,
+        ),
+    ),
+    offered_to_assistant=False,
+    addressed_only=True,
+)
+
 #: Declared by the assistance service only when configuration turns them on,
 #: so a node with web search off never shows them to the model (NFR-06).
 WORLD_TOOLS: tuple[ToolSpec, ...] = (WEB_SEARCH, NEWS_SEARCH, CRICKET_SCORE)
