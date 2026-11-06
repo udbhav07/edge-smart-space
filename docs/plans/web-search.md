@@ -221,7 +221,6 @@ Each commit passes the full test suite on its own.
 
 ## Not in this plan
 
-- Reading a full article ("tell me more about that one")
 - Clickable source links in the chat
 - Hosted search providers (Tavily, Brave, Exa) and CricketData.org
 - Ball-by-ball commentary
@@ -244,3 +243,23 @@ Each commit passes the full test suite on its own.
 - **The Orin unit is `deploy/searxng.service`**, beside `llama-server.service`,
   installed and given its secret by `provision.sh`.
 - **Web and news search landed in one commit**: one provider serves both tools.
+
+## Added after: deep answers (FR-104)
+
+Asked for after the first version: reading the top pages, and a second
+search, for questions the snippets cannot answer.
+
+- **Who decides.** The model, given the snippets, may reply `MORE:` (with
+  better words) instead of an answer. A question the snippets answer costs no
+  extra call. Headlines and scores are never offered it.
+- **Who chooses the pages.** The assistant, from the search's own results;
+  `read_pages` is never offered to the model, and the reader refuses anything
+  a search did not return, and any address inside the network, redirects
+  included.
+- **Bounded.** Three pages read at once, 5 s and 2 MiB each, 1,500 characters
+  kept per page, trimmed to the question. One more search at most.
+- **Measured live.** Three real pages in 0.7 s, about 3,850 characters to the
+  model. One site answered 200 with "Access Denied", which is why a page with
+  almost no text is not counted as read.
+- **Not checked live:** the 7B model's use of `MORE:`, since Ollama was kept
+  off during this work.

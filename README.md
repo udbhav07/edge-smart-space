@@ -308,6 +308,22 @@ web_search:
     enabled: false      # no live scores
 ```
 
+**Deep answers.** When the search snippets don't answer the question — "why
+did the Sensex fall today?" rather than "who won?" — Jarvis may search once
+more in better words, reads the top three pages the search found, and answers
+from them (FR-104). Questions the snippets answer, the headlines and scores
+skip this, so they stay quick. Only pages a search returned are read, and never
+one on this machine or its network. Expect a deep answer to take noticeably
+longer on a laptop CPU, because the model reads a few thousand more characters.
+
+```yaml
+web_search:
+  deep:
+    enabled: false      # snippets only
+    pages: 3            # pages read at once
+    search_again: false # read the pages without a second search
+```
+
 SearXNG's settings are `deploy/searxng/settings.yml`; its secret is made on
 first run in `state/searxng/`. To look at its results yourself while it runs,
 open http://127.0.0.1:8888. If a team's short name isn't recognised, add it

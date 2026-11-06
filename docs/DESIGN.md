@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Document ID | SDD-ESS-001 |
-| Version | 1.26 |
+| Version | 1.27 |
 | Status | Draft for review |
 | Repository | `edge-smart-space` |
 | Target platform | NVIDIA Jetson AGX Orin 32 GB (JetPack 6.x) |
@@ -16,6 +16,7 @@
 
 | Version | Change |
 |---|---|
+| 1.27 | **A deep answer** (§5.7.8; FR-104): when a web search's snippets, or a news search's on a topic, do not hold the answer, the model may reply `MORE:` with better words instead of answering; the search runs once more if the words differ, the top pages it returned are read at once and trimmed to the question, and the answer is written from them. A question the snippets answer costs nothing more, and headlines and scores never take this path. Pages are read only if a search returned them, only at public addresses, never through a redirect into the network, and a page of almost no text -- a site's block page -- is not counted as read. |
 | 1.26 | **The world outside** (§5.7.8; FR-101 to FR-103; NFR-06 revised): Jarvis searches the web and the news through SearXNG on this machine, which `start.py` runs in Podman, and reads live cricket scores from Cricinfo's feed. Each answer names its source and its age, and nothing missing from the results is filled from the model's memory. Only someone addressing the room can cause a search -- overheard speech never does, and the registry refuses it with `NOT_ADDRESSED`. NFR-06 now lists every outbound exception with the switch that turns it off, YouTube's (FR-96) included, which v1.20 left out. |
 | 1.25 | **The house, and a robot** (§5.11, §5.12; FR-99, FR-100): a floor plan of four rooms in configuration, read by the robot to plan its walks and by the console to draw the house; the house's fans, lights and TV as one home service, each standing in a room; a home robot with scripted errands -- feed the dog, clean the bathroom, switch on the TV, go to a room -- whose progress is its state, and which uses the TV only by asking the executor; a 3D House page where every device does what its service says; and a request for what only one device does is routed to that device. |
 | 1.24 | **How to add a service** (§5.12; FR-87, FR-90): the rules every new device service keeps -- the three routes onto one contract, the safety class declared and never inferred, another device used only through the executor, long tasks reported through state -- with the step-by-step guide in `docs/adding-a-service.md`. |
@@ -267,6 +268,7 @@ feature safe to ship at all.
 | FR-101 | The assistant shall answer a question about the world outside the room by searching the web through a search service on the node, from the results only, naming the source and how old it is, and saying so when the results do not answer it. Only a request addressed to the room shall cause a search; overheard speech shall never be sent anywhere to be searched. It shall be possible to turn web search off. | S | D |
 | FR-102 | The assistant shall answer for the news of today, this morning, yesterday or this week by searching news and keeping only what was published in that span on the node's local clock; an article with no date shall be said to have none. | S | T |
 | FR-103 | The assistant shall give the live score of a cricket match in progress, for a team named or for every live match, from a live-scores feed rather than from web search, naming the feed; with no live match for the team, it shall say so. It shall be possible to turn this off. | S | D |
+| FR-104 | When the results of a web search, or of a news search on a topic, do not answer the question, the assistant shall read the top pages those results name, keep the parts bearing on the question, and answer from them, searching once more in better words first if that is allowed. Only pages a search returned shall be read, and none at an address inside the node's network. A question the results answer, the headlines and a score shall be answered without it. It shall be possible to turn this off. | S | T |
 | FR-92 | Every device, including one behind an MCP server, shall be controllable by hand from the console, through the same executor and gates as the assistant: a page of remotes and a page per device. A remote written for a device or its kind is used where one exists; any other device gets a remote drawn from its manifest. | S | D |
 
 ### 3.7 Functional Requirements — Observability
@@ -1130,6 +1132,7 @@ available in this design, so the field is required and has no default.
 | `web_search` | read, addressed only | `query` | SearXNG on the node (FR-101) |
 | `news_search` | read, addressed only | `topic?`, `when?` | SearXNG's news category, filtered by publish time (FR-102) |
 | `cricket_score` | read, addressed only | `team?` | Cricinfo's live-scores feed (FR-103) |
+| `read_pages` | read, addressed only, never offered | `urls`, `question?` | the pages a search returned, fetched by the node (FR-104) |
 
 Timestamps in a tool argument are ISO-8601 strings rather than the epoch
 seconds every message in §6.2 carries. The inconsistency is deliberate and is
@@ -1266,6 +1269,10 @@ in `src/assistance/` and nowhere else: a calendar client is I/O, and
 **Live scores are not a search.** A search snippet is a snapshot and a score page fills its numbers in with JavaScript, so `cricket_score` reads Cricinfo's live-scores RSS feed (`web_search.cricket.feed_url`) instead, caches it for `cache_s`, and matches the team named against both sides of each match. The feed carries the score line only -- no overs, no ball by ball -- and answers are given as "according to Cricinfo". Cricinfo's terms apply, as YouTube's do to FR-96: this is for a personal room.
 
 **Only someone who asked.** A tool that sends words out of the house is declared `addressed_only`, and the registry refuses it with `NOT_ADDRESSED` for any requester but the occupant's own -- personal context, the console, the operator. Overheard speech (FR-76) already calls the model with no tools; the declaration makes the rule hold if that ever changes, and makes it testable.
+
+**A deep answer, when the snippets are not enough** (v1.27; FR-104). A snippet holds a headline's worth, which answers "who won" but not "why did the Sensex fall". When the last search was a `web_search`, or a `news_search` on a topic, and `read_pages` is declared, the phrasing prompt offers the model one more choice: instead of answering, reply `MORE:` and, if it can, better words to search with. A question the snippets answer is answered as before and costs nothing more; headlines and scores are never offered it. On `MORE:` the assistant -- not the model -- searches once more if `web_search.deep.search_again` allows and the words differ, then publishes `read_pages` with the addresses that search returned, best first, and the question. The executor's `PageReader` reads up to `deep.pages` of them at once, each within `deep.page_timeout_s` and `deep.max_page_kb`, keeps the main text -- an `<article>` or `<main>` when the page marks one, never a script, menu, footer or aside -- and trims each to `deep.page_chars`, keeping the opening paragraphs and those sharing words with the question, in the page's order. The answer is then phrased from the snippets and the pages together, with `MORE:` no longer on offer; asked for again, the reply is that the answer could not be found. The `ReasoningRecord` says a deep answer was taken and why. Measured live, three pages arrive in under a second and come to about 3,800 characters for the model; on a CPU the longer prompt is what costs the time.
+
+**What a page reader may read.** `read_pages` is never offered to the model, so it cannot be talked into fetching anything, and the reader keeps that true on its own: it reads only addresses the search provider returned in its recent results, refuses any whose name resolves to a loopback, private, link-local or reserved address, and checks every redirect the same way, so the console, the broker and the router are out of reach. A page served as 200 with almost no text -- a site's "Access Denied", seen live -- is not counted as read. Text is pulled out with the standard library; a library such as trafilatura would do better on awkward pages and would replace one function.
 
 **NFR-06.** Web search and live scores are two of its listed exceptions, `web_search.enabled` and `web_search.cricket.enabled` their switches. Both are on by default. Off, the tools are not declared to the model at all, and nothing the occupant says is sent anywhere.
 
@@ -2248,7 +2255,7 @@ It refuses a recording holding a fault — calibrating from it would set the thr
 | FR-98 | §5.8.8 | Unit + measurement (`tools/wake_eval.py`) + demonstration |
 | FR-99 | §5.11 | Unit + demonstration |
 | FR-100 | §5.11, §5.12 | Unit + demonstration |
-| FR-101 to FR-103 | §5.7.8 | Unit + demonstration |
+| FR-101 to FR-104 | §5.7.8 | Unit + demonstration |
 | NFR-01 to NFR-05 | §4.6, §5.3 | E7 |
 | NFR-06 to NFR-09 | §9 | Demonstration |
 
