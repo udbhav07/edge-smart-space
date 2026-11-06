@@ -263,3 +263,11 @@ search, for questions the snippets cannot answer.
   almost no text is not counted as read.
 - **Not checked live:** the 7B model's use of `MORE:`, since Ollama was kept
   off during this work.
+- **Fixed after review.** The name was looked up twice, once to check and
+  once to connect, so a hostile name could answer public and then
+  127.0.0.1 (DNS rebinding; reproduced). Now each connection connects to the
+  address it checked. A bad charset or an answer cut short no longer fails
+  the whole read. A page still arriving is told to stop. The text extraction
+  reads divs and table cells, and a menu left unclosed no longer hides the
+  page. `MORE:` is heard after a sentence, and only in capitals. An undated
+  cricket feed says when it was read. The reader's numbers are config.
