@@ -141,6 +141,8 @@ class ToolStatus(str, Enum):
     EXPIRED = "EXPIRED"
     UNAVAILABLE = "UNAVAILABLE"
     FAILED = "FAILED"
+    #: Sends words out of the house, and nobody addressed the room to ask (FR-101).
+    NOT_ADDRESSED = "NOT_ADDRESSED"
 
 
 class ToolRequester(str, Enum):
@@ -161,6 +163,14 @@ class ToolRequester(str, Enum):
     #: A device using another, as a person at a remote would: the robot
     #: switching on the TV (FR-100). Its rationale names the device.
     DEVICE = "device"
+
+
+#: The requesters that are a person addressing the room: by voice with the
+#: wake word, by typing in the console, or as the operator. Only these may run
+#: a tool that sends what was said out of the house (FR-101).
+ADDRESSING_REQUESTERS = frozenset(
+    {ToolRequester.PERSONAL_CONTEXT, ToolRequester.CONSOLE, ToolRequester.OPERATOR}
+)
 
 
 # --- Errors ----------------------------------------------------------------
@@ -212,6 +222,12 @@ class ToolFailedError(ToolError):
     """The provider was reached and did not complete the action."""
 
     status = ToolStatus.FAILED
+
+
+class NotAddressedError(ToolError):
+    """A tool that sends words out of the house, asked for by no one (FR-101)."""
+
+    status = ToolStatus.NOT_ADDRESSED
 
 
 # --- Declaration -----------------------------------------------------------
@@ -388,6 +404,13 @@ class ToolSpec(BaseModel):
         description="The device this tool reaches, if it is a device's "
         "capability; how a request about one device is shown only that "
         "device's tools (FR-89)",
+    )
+    addressed_only: bool = Field(
+        default=False,
+        description="Whether it sends what was said out of the house, so that "
+        "only a person addressing the room may cause it -- never overheard "
+        "speech, never a device (FR-101). Checked by the registry, not the "
+        "prompt, so it holds whatever the model is shown",
     )
 
     @model_validator(mode="after")
@@ -969,6 +992,78 @@ SETTLE_FACT = ToolSpec(
     offered_to_assistant=False,
 )
 
+# --- The world outside (FR-101 to FR-103) ----------------------------------
+
+WEB_SEARCH = ToolSpec(
+    name="web_search",
+    purpose=(
+        "Search the web for a question about the world outside the room: a "
+        "fact, a person, a place, a result, a price, anything you would "
+        "otherwise answer from memory. Returns results with their source and "
+        "age; answer from those only."
+    ),
+    effect=ToolEffect.READ,
+    parameters=(
+        ToolParameter(
+            name="query",
+            type=ParameterType.STRING,
+            description="What to search for, in a few plain words.",
+        ),
+    ),
+    addressed_only=True,
+)
+
+#: The spans news can be asked for, by the words people use (FR-102).
+NEWS_SPANS = ("latest", "today", "this_morning", "yesterday", "this_week")
+
+NEWS_SEARCH = ToolSpec(
+    name="news_search",
+    purpose=(
+        "Find the news: the latest, or what was published today, this "
+        "morning, yesterday or this week, on a topic or in general. Use it "
+        "for any question about news, headlines or what happened recently."
+    ),
+    effect=ToolEffect.READ,
+    parameters=(
+        ToolParameter(
+            name="topic",
+            type=ParameterType.STRING,
+            description="What the news is about, such as ISRO or the stock market; leave out for the headlines.",
+            required=False,
+        ),
+        ToolParameter(
+            name="when",
+            type=ParameterType.STRING,
+            description="Which news: latest if no time was said.",
+            choices=NEWS_SPANS,
+            required=False,
+        ),
+    ),
+    addressed_only=True,
+)
+
+CRICKET_SCORE = ToolSpec(
+    name="cricket_score",
+    purpose=(
+        "The live score of cricket matches being played now, for a team or "
+        "for every live match. Use it for any question about a cricket score."
+    ),
+    effect=ToolEffect.READ,
+    parameters=(
+        ToolParameter(
+            name="team",
+            type=ParameterType.STRING,
+            description="A team named, such as India or RCB; leave out for every live match.",
+            required=False,
+        ),
+    ),
+    addressed_only=True,
+)
+
+#: Declared by the assistance service only when configuration turns them on,
+#: so a node with web search off never shows them to the model (NFR-06).
+WORLD_TOOLS: tuple[ToolSpec, ...] = (WEB_SEARCH, NEWS_SEARCH, CRICKET_SCORE)
+
 #: The declared assistance surface (section 5.7.6). Adding a tool is one
 #: entry here plus a provider binding, and touches nothing else (FR-72).
 ASSISTANCE_TOOLS: tuple[ToolSpec, ...] = (
@@ -1113,6 +1208,14 @@ class ToolRegistry:
             raise InvocationExpiredError(
                 f"{invocation.tool!r} expired; it was authorised until "
                 f"{invocation.expires_ts}"
+            )
+
+        # First: who asked decides whether the words may leave the house at
+        # all, before anything about them is looked at (FR-101).
+        if spec.addressed_only and invocation.requester not in ADDRESSING_REQUESTERS:
+            raise NotAddressedError(
+                f"{invocation.tool!r} sends words out of the house, and "
+                f"{invocation.requester.value} speech did not address the room"
             )
 
         # Before the gate: nobody should be asked to confirm a malformed

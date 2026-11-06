@@ -738,3 +738,70 @@ class TestOverheardTools:
 
     def test_overheard_speech_is_a_requester_of_its_own(self):
         assert ToolRequester.AMBIENT.value == "ambient"
+
+
+class TestTheWorldOutside:
+    """FR-101 to FR-103: three read tools, and only someone who asked can use them."""
+
+    def _searched(self, clock, requester):
+        from src.common.tools import WEB_SEARCH
+
+        registry = ToolRegistry(clock=clock, specs=(WEB_SEARCH,))
+        provider = FakeProvider(name="searxng")
+        registry.bind(WEB_SEARCH.name, provider)
+        invocation = ToolInvocation(
+            ts=clock.now(),
+            invocation_id="inv_1",
+            tool=WEB_SEARCH.name,
+            arguments={"query": "who won the match"},
+            requester=requester,
+            expires_ts=clock.now() + WINDOW_S,
+        )
+        return registry.invoke(invocation, confirmed=False), provider
+
+    def test_overheard_speech_is_never_sent_out_to_be_searched(self, clock):
+        result, provider = self._searched(clock, ToolRequester.AMBIENT)
+        assert result.status is ToolStatus.NOT_ADDRESSED
+        assert provider.calls == []
+
+    @pytest.mark.parametrize(
+        "requester", [ToolRequester.PERSONAL_CONTEXT, ToolRequester.CONSOLE, ToolRequester.OPERATOR]
+    )
+    def test_someone_addressing_the_room_may_search(self, clock, requester):
+        result, _ = self._searched(clock, requester)
+        assert result.status is ToolStatus.OK
+
+    @pytest.mark.parametrize("requester", [ToolRequester.DEVICE, ToolRequester.ASSISTANCE])
+    def test_nothing_but_a_person_may_search(self, clock, requester):
+        result, _ = self._searched(clock, requester)
+        assert result.status is ToolStatus.NOT_ADDRESSED
+
+    def test_each_reads_and_needs_no_yes(self):
+        from src.common.tools import WORLD_TOOLS
+
+        assert {spec.name for spec in WORLD_TOOLS} == {"web_search", "news_search", "cricket_score"}
+        assert all(spec.effect is ToolEffect.READ and spec.addressed_only for spec in WORLD_TOOLS)
+
+    def test_they_are_not_declared_until_the_assistance_service_turns_them_on(self):
+        # Off in config, the model must never be shown them (NFR-06).
+        from src.common.tools import WORLD_TOOLS
+
+        assert not set(WORLD_TOOLS) & set(ASSISTANCE_TOOLS)
+
+    def test_news_is_asked_for_by_span(self):
+        from src.common.tools import NEWS_SEARCH
+
+        accepted = NEWS_SEARCH.validate_arguments({"when": "this_morning"})
+        assert accepted["when"] == "this_morning"
+
+    def test_a_span_it_cannot_tell_is_refused(self):
+        from src.common.tools import NEWS_SEARCH
+
+        with pytest.raises(ToolArgumentError):
+            NEWS_SEARCH.validate_arguments({"when": "last_tuesday"})
+
+    def test_a_tool_declared_normally_takes_any_requester(self, clock, registry):
+        provider = FakeProvider()
+        registry.bind(SCHEDULE_EVENT.name, provider)
+        invocation = _invocation(clock).model_copy(update={"requester": ToolRequester.AMBIENT})
+        assert registry.invoke(invocation, confirmed=False).status is ToolStatus.OK
