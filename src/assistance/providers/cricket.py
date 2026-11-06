@@ -79,6 +79,8 @@ class Scores:
     matches: tuple[Match, ...]
     #: When the feed says it was written, in epoch seconds; None if it does not say.
     as_of: float | None
+    #: When it was read here, in epoch seconds: said instead when the feed gives no time.
+    read_at: float | None = None
 
 
 class ScoreSource(Protocol):
@@ -123,7 +125,7 @@ class CricinfoFeed:
             return self._cached[1]
         try:
             body = self._fetch(self._url, self._timeout_s)
-            scores = _parse(body)
+            scores = _parse(body, read_at=now)
         except (OSError, ValueError, ElementTree.ParseError) as exc:
             LOGGER.warning("cricinfo feed at %s could not be read: %s", self._url, exc)
             raise ScoresUnavailableError("Cricinfo isn't answering right now, so I can't get the score. Try again in a moment.") from exc
@@ -131,7 +133,7 @@ class CricinfoFeed:
         return scores
 
 
-def _parse(body: bytes) -> Scores:
+def _parse(body: bytes, read_at: float) -> Scores:
     channel = ElementTree.fromstring(body).find("channel")
     if channel is None:
         raise ValueError("no channel in the feed")
@@ -140,7 +142,7 @@ def _parse(body: bytes) -> Scores:
         match = _match(item.findtext("title") or "", (item.findtext("guid") or item.findtext("link") or "").strip())
         if match is not None:
             matches.append(match)
-    return Scores(matches=tuple(matches), as_of=_feed_time(channel.findtext("pubDate")))
+    return Scores(matches=tuple(matches), as_of=_feed_time(channel.findtext("pubDate")), read_at=read_at)
 
 
 def _match(title: str, url: str) -> Match | None:
@@ -211,10 +213,13 @@ class CricketScores:
             if team:
                 raise ValueError(f"No live match for {asked} right now, according to {source}.")
             raise ValueError(f"There are no live matches right now, according to {source}.")
+        # Every answer says how old it is (FR-103): the feed's own time, or
+        # failing that, when it was read -- never nothing.
         as_of = ""
-        if scores.as_of is not None:
-            moment = local_time(scores.as_of, self._utc_offset_h)
-            as_of = f", as of {moment.day} {moment:%b %Y, %H:%M}"
+        when = scores.as_of if scores.as_of is not None else scores.read_at
+        if when is not None:
+            moment = local_time(when, self._utc_offset_h)
+            as_of = f", {'as of' if scores.as_of is not None else 'read at'} {moment.day} {moment:%b %Y, %H:%M}"
         shown = matches[: self._max_matches]
         heading = f"Live cricket{' for ' + asked if asked else ''} from {source}{as_of}:"
         lines = [heading] + [f"{number}. {match.said()} ({match.url})" for number, match in enumerate(shown, start=1)]

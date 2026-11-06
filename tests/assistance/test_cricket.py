@@ -65,6 +65,21 @@ class TestReadingTheFeed:
         # The feed's own pubDate, 15:00:04 UTC, is 20:30 in the room.
         assert "from Cricinfo, as of 6 Nov 2026, 20:30" in _ask().message
 
+    def test_a_feed_that_does_not_say_when_is_said_to_be_as_read(self):
+        # The clock reads 20:35; the feed is read then, and says nothing of its own time.
+        undated = b"\n".join(line for line in FEED.splitlines() if b"<pubDate>" not in line)
+        outcome = _ask("Bangladesh", fake=FakeFeed(undated))
+        assert "from Cricinfo, read at 6 Nov 2026, 20:35:" in outcome.message
+        assert outcome.detail["spoken"].startswith("According to Cricinfo, read at 6 Nov 2026, 20:35:")
+
+    def test_a_cached_feed_says_when_it_was_read_not_when_asked(self):
+        undated = b"\n".join(line for line in FEED.splitlines() if b"<pubDate>" not in line)
+        clock = _clock()
+        scores = _scores(FakeFeed(undated), clock)
+        scores.invoke(CRICKET_SCORE.name, {})
+        clock.advance(20.0)
+        assert "read at 6 Nov 2026, 20:35:" in scores.invoke(CRICKET_SCORE.name, {}).message
+
 
 class TestFindingTheTeam:
     def test_the_team_itself_comes_before_its_a_side_and_under_19s(self):
