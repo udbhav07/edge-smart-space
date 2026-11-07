@@ -2,6 +2,7 @@ import { ArrowRight } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Device } from "@/lib/types";
 import { RemoteTile } from "@/remotes/RemoteTile";
+import { tileSpan } from "@/remotes/registry";
 
 // Home's strip of remotes: the same remotes as the Remotes page, from the
 // same registry, so the two cannot drift (FR-91, FR-92). The air conditioner
@@ -17,7 +18,7 @@ export function Devices({ devices }: { devices: Device[] }) {
         <Link to="/remotes" className="flex items-center gap-1 text-[13px] text-muted hover:text-fg">All remotes <ArrowRight className="h-3 w-3" /></Link>
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {shown.map((device) => <RemoteTile key={device.device_id} device={device} />)}
+        {shown.map((device) => <RemoteTile key={device.device_id} device={device} className={tileSpan(device)} />)}
       </div>
     </section>
   );

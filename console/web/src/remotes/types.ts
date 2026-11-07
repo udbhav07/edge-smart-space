@@ -24,4 +24,6 @@ export interface RemoteSpec {
   component: React.ComponentType<RemoteProps>;
   /** Whether this remote can drive the device; if not, the generic remote does. */
   fits?: (device: Device) => boolean;
+  /** Whether its compact remote needs two columns of a multi-column grid. */
+  wide?: boolean;
 }

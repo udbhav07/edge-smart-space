@@ -27,9 +27,18 @@ const BY_KIND: Record<string, RemoteSpec> = {
   robot: robotRemote,
 };
 
-export function remoteFor(device: Device): React.ComponentType<RemoteProps> {
+function specFor(device: Device): RemoteSpec | undefined {
   for (const spec of [BY_ID[device.device_id], BY_KIND[device.manifest.kind]]) {
-    if (spec && (!spec.fits || spec.fits(device))) return spec.component;
+    if (spec && (!spec.fits || spec.fits(device))) return spec;
   }
-  return GenericRemote;
+  return undefined;
+}
+
+export function remoteFor(device: Device): React.ComponentType<RemoteProps> {
+  return specFor(device)?.component ?? GenericRemote;
+}
+
+/** Grid classes for a device's tile: two columns for a wide remote, once the grid has them. */
+export function tileSpan(device: Device): string | undefined {
+  return specFor(device)?.wide ? "md:col-span-2" : undefined;
 }
