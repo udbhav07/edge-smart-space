@@ -516,6 +516,11 @@ class SpeechConfig(_Section):
         description="Input device by part of its name, case-insensitive; None "
         "selects the system default",
     )
+    fallback_device_names: list[str] = Field(
+        default_factory=list,
+        description="Tried in order when device_name matches nothing, so a "
+        "laptop without the node's microphone still listens",
+    )
     queue_seconds: float = Field(
         gt=0.0, description="Audio buffered before the oldest frame is dropped"
     )

@@ -229,6 +229,9 @@ speech:
   # Not by index: indices move whenever a headset connects, and the system
   # default vanished when one did, which stopped speech at start.
   device_name: C-Media
+  # When it is not plugged in (a development laptop), the first of these
+  # that is there. PipeWire follows the desktop's chosen input.
+  fallback_device_names: [pipewire]
   device_index: null            # an index here wins over device_name
   queue_seconds: 5.0
   wake_word: hey_jarvis

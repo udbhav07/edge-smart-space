@@ -1,8 +1,0 @@
-# A development laptop: the Orin's C-Media USB microphone is not plugged in,
-# so speech listens through PipeWire, to whichever input the desktop's sound
-# settings have chosen. Everything else is the default.
-# Run with: python start.py --config config/laptop.yaml
-extends: default.yaml
-
-speech:
-  device_name: pipewire
