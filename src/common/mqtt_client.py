@@ -172,7 +172,10 @@ class Blackboard:
         and silently stops receiving anything after the first blip.
         """
         self._connected = True
-        for pattern, qos in self._subscriptions.items():
+        # A copy: this runs on paho's thread while the component may still be
+        # subscribing on its own, and one added after the copy subscribes
+        # itself, since _connected is already set.
+        for pattern, qos in list(self._subscriptions.items()):
             self._transport.subscribe(pattern, qos)
         if self._subscriptions:
             LOGGER.info("subscribed to %d topic(s)", len(self._subscriptions))
