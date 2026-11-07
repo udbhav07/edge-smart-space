@@ -516,6 +516,11 @@ class SpeechConfig(_Section):
         description="Input device by part of its name, case-insensitive; None "
         "selects the system default",
     )
+    fallback_device_names: list[str] = Field(
+        default_factory=list,
+        description="Tried in order when device_name matches nothing, so a "
+        "laptop without the node's microphone still listens",
+    )
     queue_seconds: float = Field(
         gt=0.0, description="Audio buffered before the oldest frame is dropped"
     )
@@ -1534,6 +1539,140 @@ class AmbientConfig(_Section):
     )
 
 
+class SearxngConfig(_Section):
+    """The SearXNG instance web and news search go through (FR-101).
+
+    It is the one process the node runs that reaches search engines: the
+    assistance service talks only to it, on this machine. ``start.py`` runs it
+    in Podman when ``manage`` is on, the way it runs every service of ours.
+    """
+
+    manage: bool = Field(default=True, description="Whether start.py starts and stops it")
+    image: str = Field(
+        default="docker.io/searxng/searxng:2026.11.5-3e95f6cd2",
+        pattern=r"^[^\s:]+(/[^\s:]+)*:[^\s:]+$",
+        description="Container image, pinned to a release like every other dependency",
+    )
+    container_name: str = Field(default="edge-searxng", pattern=r"^[a-z][a-z0-9_.-]*$")
+    settings_dir: str = Field(default="deploy/searxng", description="Its settings.yml, mounted read-only")
+    secret_path: str = Field(
+        default="state/searxng/secret_key", description="Its secret, made on first run and never committed"
+    )
+    pull_timeout_s: float = Field(
+        default=600.0, gt=0.0, description="Longest the first run may spend fetching the image, in s"
+    )
+    ready_timeout_s: float = Field(
+        default=30.0, gt=0.0, description="How long start.py waits for it to answer after starting it, in s"
+    )
+
+
+#: The IPL's ten teams by the letters people call them. The feed writes each in full.
+_IPL_TEAMS = {
+    "RCB": "Royal Challengers Bengaluru",
+    "CSK": "Chennai Super Kings",
+    "MI": "Mumbai Indians",
+    "KKR": "Kolkata Knight Riders",
+    "SRH": "Sunrisers Hyderabad",
+    "DC": "Delhi Capitals",
+    "PBKS": "Punjab Kings",
+    "RR": "Rajasthan Royals",
+    "GT": "Gujarat Titans",
+    "LSG": "Lucknow Super Giants",
+}
+
+
+class CricketConfig(_Section):
+    """Live cricket scores (FR-103)."""
+
+    enabled: bool = Field(default=True, description="Offer the live score tool; off, nothing reaches the feed")
+    provider: Literal["cricinfo"] = "cricinfo"
+    feed_url: str = Field(
+        default="https://static.cricinfo.com/rss/livescores.xml",
+        pattern=r"^https?://",
+        description="Cricinfo's live-scores RSS feed",
+    )
+    timeout_s: float = Field(default=5.0, gt=0.0, description="How long a read of the feed may wait, in s")
+    cache_s: float = Field(
+        default=30.0, ge=0.0, description="A feed read this recently is reused rather than read again, in s"
+    )
+    max_matches: int = Field(default=6, ge=1, le=20, description="Matches read out at most, per question")
+    aliases: dict[str, str] = Field(
+        default_factory=lambda: dict(_IPL_TEAMS),
+        description="Short names people say, to the full name the feed writes: RCB, CSK",
+    )
+
+
+class DeepAnswerConfig(_Section):
+    """Reading the top pages, and searching again, when snippets do not answer (FR-104).
+
+    Used only when the model, given a search's snippets, says they do not
+    hold the answer; a question they answer costs nothing more. Headlines and
+    scores never take this path.
+    """
+
+    enabled: bool = Field(default=True, description="Read pages when snippets do not answer")
+    pages: int = Field(default=3, ge=1, le=5, description="Pages read at most, in the order the search ranked them")
+    page_chars: int = Field(
+        default=1500, ge=200, le=6000, description="Main text kept per page; the 7B model reads every character"
+    )
+    page_timeout_s: float = Field(
+        default=5.0, gt=0.0, description="How long one page may take to arrive; pages are read at once, in s"
+    )
+    max_page_kb: int = Field(default=2048, gt=0, description="Largest page body read, in KiB; the rest is not fetched")
+    wait_grace_s: float = Field(
+        default=1.0, ge=0.0, description="Waited past page_timeout_s for pages to finish, before they are given up on, in s"
+    )
+    min_page_chars: int = Field(
+        default=200,
+        ge=0,
+        description="A page with less main text than this is a block page ('Access Denied'), not read; "
+        "and an <article> holding less is not taken as the page's content, in characters",
+    )
+    min_paragraph_chars: int = Field(
+        default=30, ge=1, description="Shorter text is a menu item or a caption, not content, in characters"
+    )
+    lead_paragraphs: int = Field(
+        default=2, ge=0, description="Opening paragraphs kept whatever the question, since they say what the page is"
+    )
+    max_query_chars: int = Field(
+        default=120, ge=10, description="Longest the model's better words are searched as, in characters"
+    )
+    remembered_urls: int = Field(
+        default=50, ge=1, description="Addresses recent searches returned, the only pages that may be read"
+    )
+    search_again: bool = Field(
+        default=True, description="Let the model search once more, in better words, before the pages are read"
+    )
+
+
+class WebSearchConfig(_Section):
+    """Web and news search for questions about the world outside (FR-101, FR-102).
+
+    On by default and one of NFR-06's listed exceptions: off, nothing the
+    occupant says is sent anywhere to be searched.
+    """
+
+    enabled: bool = Field(default=True, description="Offer web and news search to the assistant")
+    provider: Literal["searxng"] = "searxng"
+    url: str = Field(
+        default="http://127.0.0.1:8888", pattern=r"^https?://", description="Where SearXNG answers"
+    )
+    region: str = Field(
+        default="en-IN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$", description="Language and region results are asked for in"
+    )
+    max_results: int = Field(default=5, ge=1, le=10, description="Results handed to the model per search")
+    snippet_chars: int = Field(
+        default=300, ge=50, description="Longest snippet kept per result; the 7B model reads every one"
+    )
+    timeout_s: float = Field(default=6.0, gt=0.0, description="How long a search may wait on SearXNG, in s")
+    morning_from_h: int = Field(
+        default=5, ge=0, le=11, description="Local hour 'this morning' starts at (FR-102)"
+    )
+    searxng: SearxngConfig = SearxngConfig()
+    cricket: CricketConfig = CricketConfig()
+    deep: DeepAnswerConfig = DeepAnswerConfig()
+
+
 class Config(_Section):
     """The whole configuration tree."""
 
@@ -1565,6 +1704,7 @@ class Config(_Section):
     actuators: ActuatorsConfig = ActuatorsConfig()
     messages: MessagesConfig = MessagesConfig()
     house: HouseConfig = HouseConfig()
+    web_search: WebSearchConfig = WebSearchConfig()
 
     @model_validator(mode="after")
     def _the_house_holds_its_devices(self) -> Config:
@@ -1616,6 +1756,19 @@ class Config(_Section):
                 f"assistance.result_timeout_s ({self.assistance.result_timeout_s}) must exceed "
                 f"actuators.command_timeout_s ({self.actuators.command_timeout_s})"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _the_assistant_outwaits_a_search(self) -> Config:
+        """A search's answer reaches the occupant only if the assistant is still waiting (FR-101, FR-103)."""
+        waits = self.assistance.result_timeout_s
+        for name, timeout_s in (
+            ("web_search.timeout_s", self.web_search.timeout_s),
+            ("web_search.cricket.timeout_s", self.web_search.cricket.timeout_s),
+            ("web_search.deep.page_timeout_s + wait_grace_s", self.web_search.deep.page_timeout_s + self.web_search.deep.wait_grace_s),
+        ):
+            if timeout_s >= waits:
+                raise ValueError(f"{name} ({timeout_s}) must be below assistance.result_timeout_s ({waits})")
         return self
 
     @model_validator(mode="after")

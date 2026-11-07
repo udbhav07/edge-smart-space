@@ -147,3 +147,33 @@ class TestConfigurationLayers:
 
     def test_reprovisioning_keeps_what_was_decided(self, script):
         assert "write_once()" in script and "kept" in script
+
+
+SEARXNG_UNIT = DEPLOY / "searxng.service"
+
+
+class TestSearxngOnTheNode:
+    """On the Orin systemd runs SearXNG, as start.py does elsewhere (FR-101)."""
+
+    def test_it_runs_the_image_the_config_pins(self, config):
+        assert config.web_search.searxng.image in SEARXNG_UNIT.read_text(encoding="utf-8")
+
+    def test_it_is_published_where_the_assistance_service_looks(self, config):
+        port = urlparse(config.web_search.url).port
+        assert f"--publish 127.0.0.1:{port}:8080" in SEARXNG_UNIT.read_text(encoding="utf-8")
+
+    def test_its_secret_comes_from_the_nodes_env_file_not_the_repository(self):
+        unit = SEARXNG_UNIT.read_text(encoding="utf-8")
+        assert "EnvironmentFile=/etc/edge-smart-space/searxng.env" in unit
+        assert "--env SEARXNG_SECRET " in unit
+
+    def test_it_is_stopped_by_name_so_the_container_goes_with_it(self, config):
+        name = config.web_search.searxng.container_name
+        assert f"ExecStop=/usr/bin/podman stop --time 5 {name}" in SEARXNG_UNIT.read_text(encoding="utf-8")
+
+    def test_provisioning_installs_and_enables_it(self, script):
+        assert "deploy/searxng.service" in script
+        assert "systemctl enable searxng.service" in script
+
+    def test_provisioning_makes_its_secret_once(self, script):
+        assert "searxng.env" in script and "SEARXNG_SECRET=" in script

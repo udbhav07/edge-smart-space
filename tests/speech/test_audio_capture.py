@@ -208,6 +208,24 @@ class TestChoosingTheMicrophone:
         from src.speech.audio_capture import choose_device
         assert choose_device(self.DEVICES, self._config(config, device_name=None, device_index=None)) is None
 
+    LAPTOP = [
+        (4, "ALSA", "Raptor Lake-P/U/H cAVS Stereo Microphone"),
+        (9, "ALSA", "pipewire"),
+    ]
+
+    def test_the_named_microphone_comes_before_a_fallback(self, config):
+        from src.speech.audio_capture import choose_device
+        both = self.DEVICES + self.LAPTOP
+        assert choose_device(both, self._config(config, device_name="c-media", fallback_device_names=["pipewire"])) == 1
+
+    def test_without_the_named_microphone_the_first_fallback_there_is_used(self, config):
+        from src.speech.audio_capture import choose_device
+        chosen = choose_device(self.LAPTOP, self._config(config, device_name="c-media", fallback_device_names=["blue yeti", "pipewire"]))
+        assert chosen == 9
+
+    def test_the_fallback_is_pipewire_by_default(self, config):
+        assert config.device_name == "C-Media" and config.fallback_device_names == ["pipewire"]
+
     def test_a_missing_microphone_names_the_ones_there_are(self, config):
         from src.speech.audio_capture import MicrophoneError, choose_device
         with pytest.raises(MicrophoneError, match="soundcore"):

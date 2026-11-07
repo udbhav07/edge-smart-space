@@ -42,6 +42,8 @@ restarted alone and the whole system is inspectable with `mosquitto_sub`.
   components.
 - **An inference server** — Ollama or `llama.cpp`, OpenAI-compatible on
   `localhost:11434`. Optional; the control loop runs without it.
+- **Podman** — optional, for web search. `start.py` runs SearXNG in it; without
+  it, everything but web and news search works.
 - **NVIDIA GPU** — optional. The project is CUDA-first but falls back to CPU.
 
 ---
@@ -91,7 +93,9 @@ The same step fetches the Piper voice the room speaks in
 
 ## External services
 
-Neither is started by this project — both are checked for.
+The broker and the inference server are not started by this project — both
+are checked for. SearXNG, for web search, is started by `start.py`; only
+Podman needs installing.
 
 **MQTT broker**
 
@@ -109,6 +113,17 @@ ollama serve
 ollama pull qwen2.5:7b
 ```
 
+**Podman** (only needed for web and news search)
+
+```bash
+sudo dnf install podman      # Fedora
+sudo apt install podman      # Ubuntu / Jetson
+brew install podman && podman machine init && podman machine start   # macOS
+```
+
+`start.py` fetches the pinned SearXNG image the first time (about a minute,
+and it needs the internet), then starts and stops it with everything else.
+
 ---
 
 ## Running
@@ -122,10 +137,13 @@ python start.py --check
 ```
 ok       mqtt broker at localhost:1883
 ok       inference server at localhost:11434
+ok       searxng at 127.0.0.1:8888
 ```
 
 A missing broker stops the launch. A missing inference server is a warning
 and the run continues — regulatory control does not depend on reasoning.
+`--check` reports SearXNG `absent` until a run has started it; that is
+expected, and `python start.py` starts it.
 
 Then start everything:
 
@@ -222,8 +240,9 @@ just answer: no wake word is needed for the next few seconds (FR-93).
 
 ### Google Calendar and Gmail
 
-Optional. Until it is connected nothing leaves this node; once it is, the
-node talks to Google's APIs and nowhere else (FR-84). It is set up once:
+Optional. Until it is connected nothing goes to Google; once it is, the node
+talks to Google's APIs (FR-84) — one of the outbound connections NFR-06 lists,
+beside web search and YouTube. It is set up once:
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create a
    project and enable the **Google Calendar API** and the **Gmail API**.
@@ -258,6 +277,57 @@ each calendar entry carries an id derived from the local one (FR-86). Home and
 Settings show how many are waiting. In *Testing* mode Google ends the sign-in
 after seven days; Settings then says **Reconnect**, and nothing waiting is
 lost.
+
+### Web search, news and cricket scores
+
+Ask Jarvis about the world outside the room and it looks it up (FR-101 to
+FR-103):
+
+| Ask | Tool | Where it looks |
+|---|---|---|
+| "Who won the IPL final?" | `web_search` | SearXNG on this machine |
+| "What's in the news this morning?" | `news_search` | SearXNG's news engines, kept to the span asked for: today, this morning, yesterday, this week |
+| "What's the India score?" | `cricket_score` | Cricinfo's live-scores feed |
+
+Every answer says where it came from and how old it is ("According to The
+Hindu, three hours ago, …"), and when the results don't hold the answer,
+Jarvis says it couldn't find it rather than answering from the model's memory.
+A live score comes from the feed, not a search, because a search result is a
+snapshot; the feed has the score line only, with no overs.
+
+**What leaves the house.** What you ask Jarvis is sent to SearXNG, which asks
+Google, Bing, DuckDuckGo and others for you; scores are read from Cricinfo.
+Speech the room overhears without "Jarvis" is never searched — the executor
+refuses it with `NOT_ADDRESSED`, whatever the model asks for. Both are on by
+default and each has a switch:
+
+```yaml
+web_search:
+  enabled: false        # no web or news search; the model is not even shown the tools
+  cricket:
+    enabled: false      # no live scores
+```
+
+**Deep answers.** When the search snippets don't answer the question — "why
+did the Sensex fall today?" rather than "who won?" — Jarvis may search once
+more in better words, reads the top three pages the search found, and answers
+from them (FR-104). Questions the snippets answer, the headlines and scores
+skip this, so they stay quick. Only pages a search returned are read, and never
+one on this machine or its network. Expect a deep answer to take noticeably
+longer on a laptop CPU, because the model reads a few thousand more characters.
+
+```yaml
+web_search:
+  deep:
+    enabled: false      # snippets only
+    pages: 3            # pages read at once
+    search_again: false # read the pages without a second search
+```
+
+SearXNG's settings are `deploy/searxng/settings.yml`; its secret is made on
+first run in `state/searxng/`. To look at its results yourself while it runs,
+open http://127.0.0.1:8888. If a team's short name isn't recognised, add it
+under `web_search.cricket.aliases` (the IPL's ten are there already).
 
 ### Devices: the fan, music, and anything you plug in
 

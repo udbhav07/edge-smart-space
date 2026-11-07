@@ -367,3 +367,80 @@ class TestTheHouse:
         data["house"]["spots"] = spots
         with pytest.raises(ValueError, match="dog_bowl"):
             Config(**data)
+
+
+class TestWebSearch:
+    """FR-101 to FR-103: on by default, each switchable, each bounded in time."""
+
+    def test_web_search_is_on_by_default_and_searches_india_in_english(self, default_config):
+        search = default_config.web_search
+        assert search.enabled is True
+        assert search.region == "en-IN"
+
+    def test_searxng_is_pinned_to_a_release_and_not_to_latest(self, default_config):
+        image = default_config.web_search.searxng.image
+        assert image.startswith("docker.io/searxng/searxng:")
+        assert not image.endswith(":latest")
+
+    def test_cricket_scores_are_on_by_default_from_cricinfo(self, default_config):
+        cricket = default_config.web_search.cricket
+        assert cricket.enabled is True
+        assert cricket.provider == "cricinfo"
+
+    def test_a_config_without_the_section_still_loads_with_it_on(self, tmp_path):
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")
+        start = text.index("\nweb_search:")
+        end = text.index("\n# ", start + 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text[:start] + text[end:], encoding="utf-8")
+        assert load_config(path).web_search.enabled is True
+
+    def test_a_search_that_outlasts_the_assistant_is_rejected(self, tmp_path):
+        # The occupant would be told nothing came back while the answer was on its way.
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("  timeout_s: 6.0  ", "  timeout_s: 20.0  ", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="web_search.timeout_s"):
+            load_config(path)
+
+    def test_a_score_feed_that_outlasts_the_assistant_is_rejected(self, tmp_path):
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("    timeout_s: 5.0  ", "    timeout_s: 20.0  ", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="web_search.cricket.timeout_s"):
+            load_config(path)
+
+
+class TestDeepAnswers:
+    """FR-104: reading the top pages and searching again, each bounded."""
+
+    def test_deep_answers_are_on_and_read_three_pages(self, default_config):
+        deep = default_config.web_search.deep
+        assert deep.enabled is True and deep.pages == 3
+
+    def test_a_second_search_is_allowed_by_default(self, default_config):
+        assert default_config.web_search.deep.search_again is True
+
+    def test_what_was_hard_coded_in_the_reader_is_config(self, default_config):
+        deep = default_config.web_search.deep
+        assert (deep.wait_grace_s, deep.min_page_chars, deep.min_paragraph_chars, deep.lead_paragraphs, deep.remembered_urls) == (
+            1.0,
+            200,
+            30,
+            2,
+            50,
+        )
+
+    def test_a_page_read_whose_grace_outlasts_the_assistant_is_rejected(self, tmp_path):
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("    wait_grace_s: 1.0", "    wait_grace_s: 9.5", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="web_search.deep.page_timeout_s"):
+            load_config(path)
+
+    def test_a_page_read_that_outlasts_the_assistant_is_rejected(self, tmp_path):
+        text = DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace("    page_timeout_s: 5.0", "    page_timeout_s: 30.0", 1)
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        with pytest.raises(ConfigError, match="web_search.deep.page_timeout_s"):
+            load_config(path)

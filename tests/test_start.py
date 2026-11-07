@@ -262,3 +262,224 @@ class TestRestarts:
 
         start.supervise({"reasoning": FakeProcess(code=1)}, relaunch=relaunch)
         assert len(relaunched) == start.MAX_RESTARTS
+
+
+# --- SearXNG, started here when web search is on (FR-101) ------------------
+
+
+def _without_web_search(config):
+    return config.model_copy(update={"web_search": config.web_search.model_copy(update={"enabled": False})})
+
+
+def _unmanaged(config):
+    searxng = config.web_search.searxng.model_copy(update={"manage": False})
+    return config.model_copy(update={"web_search": config.web_search.model_copy(update={"searxng": searxng})})
+
+
+class TestSearxngDependency:
+    def test_it_is_checked_when_web_search_is_on(self, config):
+        searxng = dependencies_by_name(config)["searxng"]
+        assert (searxng.host, searxng.port) == ("127.0.0.1", 8888)
+
+    def test_it_is_not_required_because_the_room_runs_without_search(self, config):
+        assert dependencies_by_name(config)["searxng"].required is False
+
+    def test_it_is_not_checked_when_web_search_is_off(self, config):
+        assert "searxng" not in dependencies_by_name(_without_web_search(config))
+
+    def test_its_absence_does_not_blame_reasoning(self, config, monkeypatch, caplog):
+        searxng_port = config.web_search.searxng and 8888
+        monkeypatch.setattr(start, "is_reachable", lambda host, port, **_: port != searxng_port)
+        monkeypatch.setattr(start, "loaded_models", lambda config: None)
+        monkeypatch.setattr(start, "active_injections", lambda config: [])
+        assert start.preflight(config, start.LINUX) is True
+        searxng_lines = [record.getMessage() for record in caplog.records if "searxng" in record.getMessage()]
+        assert searxng_lines and all("reasoning" not in line for line in searxng_lines)
+
+
+class TestSearxngCommand:
+    def test_it_runs_the_pinned_image(self, config):
+        assert config.web_search.searxng.image in start.searxng_command(config)
+
+    def test_it_is_published_on_this_machine_only(self, config):
+        command = start.searxng_command(config)
+        assert command[command.index("--publish") + 1] == "127.0.0.1:8888:8080"
+
+    def test_it_mounts_the_settings_read_only(self, config):
+        command = start.searxng_command(config)
+        mount = command[command.index("--volume") + 1]
+        assert mount.startswith(str(Path("deploy/searxng").resolve()) + ":/etc/searxng:")
+        assert "ro" in mount.rsplit(":", 1)[1].split(",")
+
+    def test_the_secret_is_named_but_its_value_is_not_on_the_command_line(self, config):
+        # A value given after -e would be readable by anyone listing processes.
+        command = start.searxng_command(config)
+        assert command[command.index("--env") + 1] == "SEARXNG_SECRET"
+
+    def test_it_removes_itself_when_stopped(self, config):
+        assert "--rm" in start.searxng_command(config)
+
+
+class TestSearxngSecret:
+    def test_one_is_made_on_first_run_and_kept_private(self, tmp_path):
+        path = tmp_path / "searxng" / "secret_key"
+        secret = start.searxng_secret(path)
+        assert len(secret) >= 32
+        assert path.stat().st_mode & 0o077 == 0
+
+    def test_the_same_one_is_used_on_every_later_run(self, tmp_path):
+        path = tmp_path / "secret_key"
+        assert start.searxng_secret(path) == start.searxng_secret(path)
+
+
+class _Podman:
+    """Records what start_searxng asked of podman, and answers as told."""
+
+    def __init__(self, *, installed=True, has_image=True, pull_ok=True):
+        self.installed = installed
+        self.has_image = has_image
+        self.pull_ok = pull_ok
+        self.pulled = False
+        self.started = []
+
+    def which(self, name):
+        return "/usr/bin/podman" if self.installed and name == "podman" else None
+
+    def run(self, command, **_):
+        if command[1:3] == ["image", "exists"]:
+            return _Completed(0 if self.has_image else 1)
+        if command[1] == "pull":
+            self.pulled = True
+            return _Completed(0 if self.pull_ok else 125)
+        raise AssertionError(f"unexpected command {command}")
+
+    def popen(self, command, **kwargs):
+        self.started.append((command, kwargs))
+        return _Process()
+
+
+class _Completed:
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+class _Process:
+    def poll(self):
+        return None
+
+
+def _start(config, podman, tmp_path, *, reachable=(False, True), selected=("assistance",)):
+    answers = iter(reachable)
+    last = [False]
+
+    def probe(host, port, **_):
+        last[0] = next(answers, last[0])
+        return last[0]
+
+    secret_path = tmp_path / "secret_key"
+    return start.start_searxng(
+        config,
+        selected,
+        which=podman.which,
+        run=podman.run,
+        popen=podman.popen,
+        reachable=probe,
+        secret_path=secret_path,
+        wait_step_s=0.0,
+    )
+
+
+class TestStartingSearxng:
+    def test_it_is_started_when_nothing_answers_yet(self, config, tmp_path):
+        podman = _Podman()
+        assert _start(config, podman, tmp_path) is not None
+        assert len(podman.started) == 1
+
+    def test_the_secret_reaches_it_through_the_environment(self, config, tmp_path):
+        podman = _Podman()
+        _start(config, podman, tmp_path)
+        _, kwargs = podman.started[0]
+        assert kwargs["env"]["SEARXNG_SECRET"] == (tmp_path / "secret_key").read_text(encoding="utf-8").strip()
+
+    def test_one_already_answering_is_reused_rather_than_started_twice(self, config, tmp_path):
+        podman = _Podman()
+        assert _start(config, podman, tmp_path, reachable=(True,)) is None
+        assert podman.started == []
+
+    def test_without_podman_the_room_starts_anyway(self, config, tmp_path, caplog):
+        podman = _Podman(installed=False)
+        assert _start(config, podman, tmp_path) is None
+        assert any("podman" in record.getMessage() for record in caplog.records)
+
+    def test_the_image_is_fetched_on_first_run(self, config, tmp_path):
+        podman = _Podman(has_image=False)
+        _start(config, podman, tmp_path)
+        assert podman.pulled and len(podman.started) == 1
+
+    def test_a_failed_fetch_leaves_search_off_and_the_room_running(self, config, tmp_path):
+        podman = _Podman(has_image=False, pull_ok=False)
+        assert _start(config, podman, tmp_path) is None
+        assert podman.started == []
+
+    def test_it_is_not_started_when_web_search_is_off(self, config, tmp_path):
+        podman = _Podman()
+        assert _start(_without_web_search(config), podman, tmp_path) is None
+        assert podman.started == []
+
+    def test_it_is_not_started_when_someone_else_runs_it(self, config, tmp_path):
+        podman = _Podman()
+        assert _start(_unmanaged(config), podman, tmp_path) is None
+        assert podman.started == []
+
+    def test_it_is_not_started_without_the_service_that_uses_it(self, config, tmp_path):
+        podman = _Podman()
+        assert _start(config, podman, tmp_path, selected=("simulator", "control")) is None
+        assert podman.started == []
+
+
+class TestStoppingSearxng:
+    def test_the_container_is_stopped_by_name_not_only_its_client(self, config):
+        # Ending the podman client leaves the container running (seen live).
+        asked = []
+
+        class Client:
+            def wait(self, timeout):
+                asked.append(("wait", timeout))
+
+        start.stop_searxng(config, Client(), run=lambda command, **_: asked.append(command) or _Completed(0))
+        assert asked[0][:2] == ["podman", "stop"]
+        assert asked[0][-1] == config.web_search.searxng.container_name
+
+
+class TestSearxngReadiness:
+    """An open port is not a ready SearXNG: Podman's forwarder accepts before it does."""
+
+    def test_an_open_port_that_does_not_serve_healthz_is_not_ready(self):
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            _, port = server.getsockname()
+            assert start.searxng_ready(f"http://127.0.0.1:{port}", timeout_s=0.5) is False
+
+    def test_a_server_answering_healthz_is_ready(self):
+        import http.server
+        import threading
+
+        class Healthy(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 -- the stdlib's name
+                self.send_response(200 if self.path == "/healthz" else 404)
+                self.end_headers()
+                self.wfile.write(b"OK")
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Healthy)
+        threading.Thread(target=server.handle_request, daemon=True).start()
+        try:
+            assert start.searxng_ready(f"http://127.0.0.1:{server.server_port}", timeout_s=2.0) is True
+        finally:
+            server.server_close()
+
+    def test_nothing_listening_is_not_ready(self):
+        assert start.searxng_ready("http://127.0.0.1:1", timeout_s=0.5) is False

@@ -1,0 +1,34 @@
+[Unit]
+# SearXNG, the one process on the node that reaches search engines: web and
+# news search for the assistance service (FR-101, FR-102). start.py runs the
+# same container on a development machine; on the Orin systemd does.
+#
+# One of NFR-06's listed exceptions. Turning web search off in the config
+# (web_search.enabled: false) stops the assistant asking; disable this unit
+# too and nothing is sent anywhere to be searched:
+#
+#   sudo systemctl disable --now searxng.service
+#
+# The image is pinned to config/default.yaml's web_search.searxng.image, and
+# the port to web_search.url; a test holds them together. Its secret is made
+# once by provision.sh into searxng.env, never committed.
+#
+# Not part of smart-space.target's hard path: the room runs without search,
+# and the assistance service says so when asked to search.
+Description=SearXNG web and news search for the assistant (FR-101)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/edge-smart-space/searxng.env
+ExecStartPre=-/usr/bin/podman rm --force edge-searxng
+ExecStart=/usr/bin/podman run --rm --replace --name edge-searxng --publish 127.0.0.1:8888:8080 --volume /opt/edge-smart-space/deploy/searxng:/etc/searxng:Z,ro --env SEARXNG_SECRET docker.io/searxng/searxng:2026.11.5-3e95f6cd2
+ExecStop=/usr/bin/podman stop --time 5 edge-searxng
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

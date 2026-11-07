@@ -289,3 +289,14 @@ class TestClassifiesConsistently:
         client = StubClient('{"comfort": "cooler", "target_c": 23, "rationale": "x"}')
         _context(config, client).extract(TRANSCRIPT)
         assert client.calls[-1]["temperature"] == 0.0
+
+
+class TestTheWorldOutsideIsAQuestion:
+    """FR-101 to FR-103: a question about the world reaches the tools, so it must be a question."""
+
+    @pytest.mark.parametrize("example", ['"what\'s in the news today" -> question', '"what\'s the India score" -> question'])
+    def test_news_and_scores_are_shown_as_questions(self, example):
+        assert example in PERSONAL_CONTEXT_PROMPT
+
+    def test_the_world_outside_is_part_of_what_a_question_is(self):
+        assert "question about the world outside" in PERSONAL_CONTEXT_PROMPT

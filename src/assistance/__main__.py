@@ -8,6 +8,9 @@ holds a provider, so it is the only place a provider swap happens (FR-72): to
 move the calendar somewhere else, change the binding in :func:`build_registry`
 and nothing else.
 
+It is also the one process that asks SearXNG anything (FR-101): web and news
+search are bound here, and only when the configuration turns them on.
+
 Killing it costs the occupant their calendar and bookings until it is back.
 It costs the room nothing: no tool reaches the plant (FR-45).
 """
@@ -31,9 +34,13 @@ from src.assistance.google.travel import TravelWithItinerary
 from src.assistance.memory import ProfileStore
 from src.assistance.profiles import ProfileKeeper
 from src.assistance.providers.local_calendar import LocalCalendar
+from src.assistance.providers.pages import Fetch as PageFetch
+from src.assistance.providers.pages import PageReader, fetch_page
 from src.assistance.providers.mock_mail import MockMail
 from src.assistance.providers.mock_travel import MockTravel
 from src.assistance.providers.profile_memory import ProfileMemory
+from src.assistance.providers.cricket import CricinfoFeed, CricketScores, ScoreSource
+from src.assistance.providers.web_search import SearchBackend, SearxngBackend, WebSearch
 from src.common import topics
 from src.common.clock import Clock, RealClock
 from src.common.config import Config, ConfigError, load_config
@@ -42,15 +49,19 @@ from src.common.tools import (
     BOOK_TRAVEL,
     SEND_MAIL,
     CANCEL_EVENT,
+    CRICKET_SCORE,
     FORGET,
     GET_EVENTS,
     KEEP_EVENT,
     MOVE_EVENT,
+    NEWS_SEARCH,
     PENCIL_EVENT,
+    READ_PAGES,
     REMEMBER,
     SCHEDULE_EVENT,
     SETTLE_FACT,
     SUGGEST_FACT,
+    WEB_SEARCH,
     ToolRegistry,
 )
 
@@ -75,13 +86,36 @@ class GoogleParts:
     sync: GoogleSync | None = None
 
 
-def build_registry(config: Config, clock: Clock, google: GoogleParts | None = None) -> ToolRegistry:
+@dataclass
+class WorldParts:
+    """What looks outside the house, when not the configured services (FR-101 to FR-104).
+
+    Each left as None is built from the configuration; a test hands in fakes,
+    so nothing it runs reaches SearXNG, Cricinfo or a web page.
+    """
+
+    search: SearchBackend | None = None
+    scores: ScoreSource | None = None
+    fetch_page: PageFetch | None = None
+
+
+def build_registry(
+    config: Config,
+    clock: Clock,
+    google: GoogleParts | None = None,
+    world: WorldParts | None = None,
+) -> ToolRegistry:
     """Declare the surface and bind what fulfils it (FR-71, FR-72).
 
     With Google parts, the calendar is mirrored to Google Calendar, mail goes
     through Gmail once an account is connected, and a booking adds its entry
     and itinerary. Without them -- every test, and a node nobody signed in
     on -- it is the local calendar and the mocks, exactly as before.
+
+    Web and news search are declared only when ``web_search.enabled`` is on,
+    so with it off the model is never shown them (FR-101, NFR-06). ``world``
+    replaces SearXNG, Cricinfo's feed or page fetching -- a test's fakes, or
+    another service behind the same seam.
     """
     registry = ToolRegistry(clock)
     local = google.calendar if google is not None else LocalCalendar(
@@ -110,7 +144,56 @@ def build_registry(config: Config, clock: Clock, google: GoogleParts | None = No
     registry.bind(FORGET.name, memory)
     registry.bind(SUGGEST_FACT.name, memory)
     registry.bind(SETTLE_FACT.name, memory)
+    bind_world(registry, config, clock, world or WorldParts())
     return registry
+
+
+def bind_world(registry: ToolRegistry, config: Config, clock: Clock, world: WorldParts) -> None:
+    """Declare and bind the tools that look outside the house, as configured (FR-101 to FR-103).
+
+    Live scores are their own switch under web search: off with it, or alone.
+    """
+    settings = config.web_search
+    if not settings.enabled:
+        return
+    if settings.cricket.enabled:
+        cricket = settings.cricket
+        source = world.scores or CricinfoFeed(cricket.feed_url, cricket.timeout_s, clock, cricket.cache_s)
+        live = CricketScores(
+            source, clock, utc_offset_h=config.site.utc_offset_h, aliases=cricket.aliases, max_matches=cricket.max_matches
+        )
+        registry.declare(CRICKET_SCORE)
+        registry.bind(CRICKET_SCORE.name, live)
+    backend = world.search or SearxngBackend(settings.url, settings.region, settings.timeout_s, clock)
+    provider = WebSearch(
+        backend,
+        clock,
+        max_results=settings.max_results,
+        snippet_chars=settings.snippet_chars,
+        utc_offset_h=config.site.utc_offset_h,
+        morning_from_h=settings.morning_from_h,
+        remembered_urls=settings.deep.remembered_urls,
+    )
+    for spec in (WEB_SEARCH, NEWS_SEARCH):
+        registry.declare(spec)
+        registry.bind(spec.name, provider)
+    deep = settings.deep
+    if deep.enabled:
+        # Reads only what this provider's searches returned (FR-104).
+        reader = PageReader(
+            returned=provider.returned,
+            pages=deep.pages,
+            page_chars=deep.page_chars,
+            timeout_s=deep.page_timeout_s,
+            max_bytes=deep.max_page_kb * 1024,
+            wait_grace_s=deep.wait_grace_s,
+            min_page_chars=deep.min_page_chars,
+            min_paragraph_chars=deep.min_paragraph_chars,
+            lead_paragraphs=deep.lead_paragraphs,
+            fetch=world.fetch_page or fetch_page,
+        )
+        registry.declare(READ_PAGES)
+        registry.bind(READ_PAGES.name, reader)
 
 
 def build_store(config: Config, clock: Clock) -> ProfileStore:
@@ -129,8 +212,9 @@ def build_service(
     blackboard: Blackboard,
     google: GoogleParts | None = None,
     dispatch: Dispatch | None = None,
+    world: WorldParts | None = None,
 ) -> AssistanceExecutor:
-    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google), dispatch=dispatch)
+    return AssistanceExecutor(clock, blackboard, build_registry(config, clock, google, world), dispatch=dispatch)
 
 
 def build_google(config: Config, clock: Clock, blackboard: Blackboard) -> GoogleParts:

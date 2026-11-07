@@ -65,7 +65,11 @@ from src.common.schemas import (
 from src.common.tools import (
     ASSISTANCE_TOOLS,
     PROFILE_TOOLS,
+    NEWS_SEARCH,
+    READ_PAGES,
     REMEMBER,
+    WEB_SEARCH,
+    WORLD_TOOLS,
     ToolCatalogue,
     ToolInvocation,
     ToolRequester,
@@ -142,6 +146,11 @@ ASSISTANT_PROMPT = (
     "or hotel, and remember or forget when "
     "they ask you to keep or drop something about them. Call each tool at "
     "most once. "
+    "For a question about the world outside the room -- news, sport, a "
+    "score, a person, a place, a price, anything that may have changed since "
+    "you learned it -- use web_search, news_search or cricket_score when they "
+    "are offered, and never answer it from memory; if none is offered, say "
+    "you cannot look things up here. "
     "If the request cannot be done with these tools, say so in one sentence "
     "without calling any. Answer a question about the room, its temperature "
     "or the system from 'The room now' below and nothing else, and reply to "
@@ -167,6 +176,44 @@ ANSWER_PROMPT = (
     "booked yet and ask whether to go ahead. If a result says it is a mock, "
     "say it was a mock booking and no real reservation was made."
 )
+
+#: For an answer from the world outside (FR-101 to FR-103): from the results
+#: and nothing else, saying where they came from and how old they are.
+SEARCH_ANSWER_PROMPT = (
+    "You are the voice assistant of a smart room. It is now {now}. Answer "
+    "the person's question in one to three short spoken sentences, using only "
+    "the results given. Say where the answer comes from and how old it is, "
+    "the way a person would: 'According to The Hindu, three hours ago, ...' "
+    "or 'Cricinfo has India on 212 for 4'. If the results do not answer the "
+    "question, say you couldn't find it; never fill a gap from your own "
+    "memory, and never call something live or current that the results do "
+    "not date. Say scores and numbers the way people speak them, and never "
+    "read out a link."
+)
+
+#: Offered with SEARCH_ANSWER_PROMPT when the pages behind the results could
+#: be read (FR-104). The model does not choose the pages; it only says the
+#: snippets were not enough, and in what words to search again.
+ASK_FOR_MORE = (
+    " If the results do not hold the answer, do not answer: reply with one "
+    "line, MORE: followed by better words to search the web with{again}, and "
+    "the pages behind the results will be read for you."
+)
+
+#: The line the model writes to ask for the pages (FR-104): on any line of
+#: its reply, since a 7B model often says a sentence first, and in capitals,
+#: as the prompt writes it, so an answer starting "More: rain is due" is said.
+_MORE = re.compile(r"^[ \t]*MORE[ \t]*:[ \t]*(?P<words>[^\n]*)", re.MULTILINE)
+
+#: Said when the model still asks for more after reading the pages.
+_NOT_FOUND = "I searched and read the top pages, but I couldn't find the answer to that."
+
+#: The tools whose results are looked up to answer a question, so the reply
+#: is language written from them rather than their message read out.
+_LOOKUPS = frozenset({"get_events"})
+
+#: The ones that look outside the house, answered with SEARCH_ANSWER_PROMPT.
+_WORLD_LOOKUPS = frozenset(spec.name for spec in WORLD_TOOLS)
 
 _NO_TOOL_REPLY = "Sorry, I could not do that."
 
@@ -237,14 +284,21 @@ class Assistant:
         devices: KnownDevices | None = None,
         max_device_tools: int = 6,
         outdoor_sensor_id: str = "",
+        search_again: bool = False,
+        max_query_chars: int = 120,
     ) -> None:
         """
+        :param search_again: whether a deep answer may search once more, in
+            the model's better words, before the pages are read (FR-104).
+        :param max_query_chars: the longest those better words are searched as.
         :param outdoor_sensor_id: the outdoor sensor, so slow cooling is explained with the heat outside.
         :param devices: the devices in the room, for naming them (FR-89).
         :param max_device_tools: most tools of one device shown at once.
         """
         self._devices = devices or KnownDevices()
         self._max_device_tools = max_device_tools
+        self._search_again = search_again
+        self._max_query_chars = max_query_chars
         self._config = config
         self._utc_offset_h = utc_offset_h
         self._safe_range_c = safe_range_c
@@ -686,7 +740,15 @@ class Assistant:
                 # to misstate it.
                 reply_text = _fallback(_as_heard(results))
             elif results:
-                reply_text = self._phrase(utterance, _as_heard(results), now, turns)
+                deepen = self._deepenable(results)
+                reply_text = self._phrase(utterance, _as_heard(results), now, turns, may_ask_for_more=deepen is not None)
+                more = _MORE.search(reply_text) if deepen is not None else None
+                if more is not None:
+                    results += self._deepen(deepen, more.group("words").strip(), utterance)
+                    reply_text = self._phrase(utterance, _as_heard(results), now, turns)
+                    if _MORE.search(reply_text):
+                        reply_text = _NOT_FOUND
+                        self._corrections.append("deep answer: still not found after the pages, said so")
             else:
                 reply_text = turns[-1].content if turns else ""
         except ReasoningUnavailableError as exc:
@@ -822,8 +884,7 @@ class Assistant:
     def _run(self, call: ToolCall, utterance: str, hint: PreferenceHint) -> ToolResult:
         """Publish one invocation and wait for the executor's answer."""
         now = self._clock.now()
-        invocation_id = f"inv_{int(now)}_{self._invocations}"
-        self._invocations += 1
+        invocation_id = self._next_id()
         if call.malformed:
             # FR-44: output failing post-decode validation is not acted on,
             # and the refusal is still an outcome to report.
@@ -871,18 +932,7 @@ class Assistant:
                 status=ToolStatus.BAD_ARGUMENTS,
                 message=refusal,
             )
-        invocation = ToolInvocation(
-            ts=now,
-            invocation_id=invocation_id,
-            tool=tool,
-            arguments=corrected,
-            requester=ToolRequester.PERSONAL_CONTEXT,
-            rationale=utterance,
-            expires_ts=now + self._config.confirmation_window_s,
-        )
-        self._invocations_by_id[invocation_id] = invocation
-        self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
-        result = self._await_result(invocation)
+        result = self._submit(invocation_id, tool, corrected, utterance)
         voice = hint.profile_id or GUEST_PROFILE_ID
         if result.status is ToolStatus.OK and tool in ("schedule_event", "move_event"):
             starts_at = str(result.detail.get("starts_at") or corrected.get("starts_at") or "")
@@ -896,6 +946,75 @@ class Assistant:
         elif result.status is ToolStatus.OK and tool == "cancel_event":
             self._last_entry.pop(voice, None)
         return result
+
+    def _submit(self, invocation_id: str, tool: str, arguments: dict, utterance: str) -> ToolResult:
+        """Publish one invocation for the person who asked, and wait for the executor's answer."""
+        now = self._clock.now()
+        invocation = ToolInvocation(
+            ts=now,
+            invocation_id=invocation_id,
+            tool=tool,
+            arguments=arguments,
+            requester=ToolRequester.PERSONAL_CONTEXT,
+            rationale=utterance,
+            expires_ts=now + self._config.confirmation_window_s,
+        )
+        self._invocations_by_id[invocation_id] = invocation
+        self._blackboard.publish(topics.ASSIST_PROPOSED, invocation)
+        return self._await_result(invocation)
+
+    def _deepenable(self, results: list[ToolResult]) -> ToolResult | None:
+        """The search a deep answer would build on: the last web search, or news on a topic (FR-104).
+
+        None when the pages cannot be read here, or nothing searched could
+        be deepened: headlines and scores are answered as they come.
+        """
+        if READ_PAGES.name not in self._specs:
+            return None
+        for result in reversed(results):
+            if result.status is not ToolStatus.OK:
+                continue
+            asked = self._invocations_by_id.get(result.invocation_id)
+            if result.tool == WEB_SEARCH.name or (
+                result.tool == NEWS_SEARCH.name and asked is not None and asked.arguments.get("topic")
+            ):
+                return result
+        return None
+
+    def _deepen(self, searched: ToolResult, better_words: str, utterance: str) -> list[ToolResult]:
+        """Search again in better words if allowed and different, then read the top pages (FR-104).
+
+        The model only said the snippets were not enough. Which pages are
+        read is decided here, from the search's own results, and the reader
+        refuses any it did not return.
+        """
+        added: list[ToolResult] = []
+        source = searched
+        asked = self._invocations_by_id.get(searched.invocation_id)
+        key = "query" if searched.tool == WEB_SEARCH.name else "topic"
+        before = str(asked.arguments.get(key, "")) if asked is not None else ""
+        note = "deep answer: the snippets did not answer"
+        if len(better_words) > self._max_query_chars:
+            better_words = better_words[: self._max_query_chars + 1].rsplit(" ", 1)[0][: self._max_query_chars]
+        if self._search_again and better_words and better_words.casefold() != before.strip().casefold():
+            again = self._submit(self._next_id(), searched.tool, {**(asked.arguments if asked else {}), key: better_words}, utterance)
+            added.append(again)
+            note += f"; searched again for {better_words!r}"
+            if again.status is ToolStatus.OK:
+                source = again
+        ranked = sorted((rank, name) for name in source.detail if (rank := _url_rank(name)) is not None)
+        urls = " ".join(str(source.detail[name]) for _, name in ranked)
+        if urls:
+            added.append(self._submit(self._next_id(), READ_PAGES.name, {"urls": urls, "question": utterance}, utterance))
+            note += "; read the top pages"
+        LOGGER.info("%s", note)
+        self._corrections.append(note)
+        return added
+
+    def _next_id(self) -> str:
+        invocation_id = f"inv_{int(self._clock.now())}_{self._invocations}"
+        self._invocations += 1
+        return invocation_id
 
     def _the_one_meant(self, tool: str, arguments: dict, utterance: str, hint: PreferenceHint) -> dict:
         """FR-44 for a pronoun: "move it" is the entry this voice last touched.
@@ -989,12 +1108,21 @@ class Assistant:
         results: list[ToolResult],
         now: str,
         turns: list[ChatTurn],
+        may_ask_for_more: bool = False,
     ) -> str:
-        """Turn tool results into a spoken reply, with no tools on offer."""
+        """Turn tool results into a spoken reply, with no tools on offer.
+
+        :param may_ask_for_more: offer the model MORE: instead of an answer,
+            when the pages behind a search could still be read (FR-104).
+        """
         summary = "\n".join(_for_the_model(result) for result in results)
+        searched = any(result.status is ToolStatus.OK and result.tool in _WORLD_LOOKUPS for result in results)
+        prompt = SEARCH_ANSWER_PROMPT.format(now=now) if searched else ANSWER_PROMPT.format(now=now)
+        if may_ask_for_more:
+            prompt += ASK_FOR_MORE.format(again=", or nothing after it if these words were right" if self._search_again else "")
         turn = self._chat.complete(
             [
-                {"role": "system", "content": ANSWER_PROMPT.format(now=now)},
+                {"role": "system", "content": prompt},
                 {
                     "role": "user",
                     "content": f"They said: {utterance}\nTool results:\n{summary}",
@@ -1143,6 +1271,12 @@ def _onto_named_day(tool: str, arguments: dict, day) -> dict:
     return corrected
 
 
+def _url_rank(key: str) -> int | None:
+    """1 for ``url_1``, the search's best; None for any other detail key."""
+    number = key.removeprefix("url_")
+    return int(number) if key.startswith("url_") and number.isdigit() else None
+
+
 def _needs_phrasing(results: list[ToolResult]) -> bool:
     """Whether a reply needs the model: only to answer a question from a read.
 
@@ -1151,7 +1285,7 @@ def _needs_phrasing(results: list[ToolResult]) -> bool:
     already the answer.
     """
     return any(
-        result.status is ToolStatus.OK and result.tool == "get_events"
+        result.status is ToolStatus.OK and result.tool in _LOOKUPS | _WORLD_LOOKUPS
         for result in results
     )
 
@@ -1178,8 +1312,12 @@ def _as_heard(results: list[ToolResult]) -> list[ToolResult]:
 
 
 def _fallback(results: list[ToolResult]) -> str:
-    """A reply written from the results alone, when the model cannot phrase one."""
-    return " ".join(result.message for result in results if result.message)
+    """A reply written from the results alone, when the model cannot phrase one.
+
+    A search's message is a list with links, written for a model to read; its
+    provider leaves a one-sentence ``spoken`` version for this (FR-101).
+    """
+    return " ".join(str(result.detail.get("spoken") or result.message) for result in results if result.message)
 
 
 def _with_caveat(reply: str, caveat: str) -> str:

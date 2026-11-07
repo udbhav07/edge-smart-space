@@ -189,6 +189,23 @@ class TestSubscriptionLifecycle:
         board.on_connected()
         assert len(transport.subscribed) == 2
 
+    def test_a_subscription_added_while_connecting_is_not_a_crash(self, config):
+        """Live, the music service: its main thread subscribed while paho's
+        thread was issuing subscriptions on connect -- 'dictionary changed
+        size during iteration' killed the network thread."""
+        board, transport = _blackboard(config)
+        board.subscribe(topics.SENSOR_STATE, SensorReading, lambda t, m: None)
+        issue = transport.subscribe
+
+        def subscribe_and_race(topic, qos):
+            issue(topic, qos)
+            if len(transport.subscribed) == 1:
+                board.subscribe_device("device/music/command", lambda t, text: None)
+
+        transport.subscribe = subscribe_and_race
+        board.on_connected()
+        assert {topic for topic, _ in transport.subscribed} == {"space/sensor/+/state", "device/music/command"}
+
     def test_subscribing_while_already_connected_takes_effect_at_once(self, config):
         board, transport = _blackboard(config)
         board.on_connected()
