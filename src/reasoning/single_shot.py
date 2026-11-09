@@ -58,8 +58,10 @@ PERSONAL_CONTEXT_PROMPT = (
     "schedule, reminders, meetings or bookings -- adding, moving, cancelling "
     "or asking about them -- and for asking you to remember or forget "
     'something about them; "question" for a question about the room, its '
-    "temperature, the system, or what you remember about them, and for a "
-    'greeting or small talk; or "none" when nothing was said to you. '
+    "temperature, the system, or what you remember about them, for a "
+    "question about the world outside -- the news, a cricket score, a fact, "
+    'a person, a place -- and for a greeting or small talk; or "none" when '
+    "nothing was said to you. "
     '"subject": a short noun for what it was about, such as "temperature", '
     '"lights", "calendar", "booking" or "memory", or "" for none. '
     '"comfort": one of "warmer", "cooler", "unchanged"; "unchanged" unless '
@@ -77,6 +79,9 @@ PERSONAL_CONTEXT_PROMPT = (
     '"make it 22 degrees" -> environment, target_c 22; '
     '"why is it so warm" -> question; "what\'s the temperature" -> question; '
     '"hello" -> question; "what do you know about me" -> question; '
+    '"what\'s in the news today" -> question, news; '
+    '"what\'s the India score" -> question, cricket; '
+    '"who is the chief minister of Karnataka" -> question, web; '
     '"remember that I am vegetarian" -> service, memory; '
     '"forget what I said about meetings" -> service, memory; '
     '"cancel the meeting with Ravi" -> service, calendar; '

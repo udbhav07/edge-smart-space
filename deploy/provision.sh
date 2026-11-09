@@ -20,7 +20,8 @@
 #   6. the broker: the system mosquitto the units start after, with
 #      deploy/mosquitto.conf's persistence so retained state survives it
 #   7. llama.cpp built with CUDA, and the model it serves
-#   8. every systemd unit, with smart-space.target and llama-server enabled
+#   8. every systemd unit, with smart-space.target, llama-server and SearXNG
+#      enabled; Podman, SearXNG's pinned image and its secret
 #   9. Layer 1 selected in the deployed config: devices.source simulated or
 #      esphome, and exactly one of the two Layer 1 units enabled
 #  10. the preflight: python start.py --check
@@ -29,9 +30,11 @@
 # decide the IR protocol. Those are bring-up steps with a person holding the
 # board, checked afterwards with python -m tools.bringup.
 #
-# Network: provisioning is a setup-time step and fetches packages and the
-# model. The running system makes no outbound connection (NFR-06); nothing
-# installed here is started with a reason to.
+# Network: provisioning is a setup-time step and fetches packages, the model
+# and SearXNG's image. The running system's outbound connections are the ones
+# NFR-06 lists, each with its switch: web search through SearXNG (FR-101 to
+# FR-103), songs from YouTube (FR-96), and Google once an account is connected
+# (FR-84).
 
 set -euo pipefail
 
@@ -166,7 +169,7 @@ if [[ -z "$PYTHON" ]]; then
     run apt-get install -y python3.11 python3.11-venv python3.11-dev
     PYTHON="python3.11"
 fi
-run apt-get install -y git cmake build-essential mosquitto mosquitto-clients portaudio19-dev
+run apt-get install -y git cmake build-essential mosquitto mosquitto-clients portaudio19-dev podman
 run mkdir -p "$INSTALL_DIR"
 run rsync -a --delete --exclude .git --exclude .venv --exclude state \
     --exclude __pycache__ "$REPO_DIR/" "$INSTALL_DIR/"
@@ -220,10 +223,23 @@ fi
 
 # --- 8. systemd --------------------------------------------------------------
 step "systemd units, enabled at boot"
+# SearXNG's image is the one config/default.yaml pins; its secret is this
+# node's, made once and kept with llm.env rather than in the repository.
+SEARXNG_IMAGE="$(sed -n 's/^ExecStart=.* \(docker\.io\/searxng\/searxng:[^ ]*\)$/\1/p' "$REPO_DIR/deploy/searxng.service")"
+run podman pull "$SEARXNG_IMAGE"
+if [[ -f "$ENV_DIR/searxng.env" ]]; then
+    echo "    kept $ENV_DIR/searxng.env"
+elif [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "    [dry-run] write $ENV_DIR/searxng.env: SEARXNG_SECRET=<made once>"
+else
+    printf 'SEARXNG_SECRET=%s\n' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$ENV_DIR/searxng.env"
+    chmod 600 "$ENV_DIR/searxng.env"
+fi
 run cp "$INSTALL_DIR"/deploy/systemd/*.service "$INSTALL_DIR"/deploy/systemd/*.target \
-    "$INSTALL_DIR"/deploy/llama-server.service /etc/systemd/system/
+    "$INSTALL_DIR"/deploy/llama-server.service "$INSTALL_DIR"/deploy/searxng.service /etc/systemd/system/
 run systemctl daemon-reload
 run systemctl enable llama-server.service
+run systemctl enable searxng.service
 run systemctl enable smart-space.target
 
 # --- 9. Layer 1 --------------------------------------------------------------
@@ -257,6 +273,7 @@ fi
 # --- 10. start and check -----------------------------------------------------
 step "Starting, then the preflight"
 run systemctl restart llama-server.service
+run systemctl restart searxng.service
 run systemctl restart smart-space.target
 run sudo -u "$SERVICE_USER" "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/start.py" \
     --check --config "$CONFIG"

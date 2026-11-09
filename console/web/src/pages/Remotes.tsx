@@ -2,6 +2,7 @@ import { Plug } from "lucide-react";
 import { useConsole } from "@/lib/useConsole";
 import { Card, Empty, PageHeader } from "@/components/ui";
 import { RemoteTile } from "@/remotes/RemoteTile";
+import { tileSpan } from "@/remotes/registry";
 
 // Every device's remote, usable from here (FR-92). Each is the same remote as
 // the device's own page, compact; the name opens the full one.
@@ -29,7 +30,7 @@ export function Remotes() {
         </Card>
       ) : (
         <div className="grid grid-cols-[minmax(0,1fr)] gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {devices.map((device) => <RemoteTile key={device.device_id} device={device} />)}
+          {devices.map((device) => <RemoteTile key={device.device_id} device={device} className={tileSpan(device)} />)}
         </div>
       )}
     </div>

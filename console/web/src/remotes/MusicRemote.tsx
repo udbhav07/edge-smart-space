@@ -52,7 +52,7 @@ function MusicRemote({ device, size, call }: RemoteProps) {
   };
   return (
     <div className="grid gap-3">
-      <div className={cn("flex items-center gap-3", size === "full" && "flex-col py-4 text-center")}>
+      <div className={cn("flex flex-wrap items-center gap-3", size === "full" && "flex-col py-4 text-center")}>
         <span className={cn("flex items-center justify-center rounded-2xl", size === "full" ? "h-28 w-28" : "h-11 w-11", state.playing ? "bg-glacier text-white" : "bg-raised text-muted")}>
           <Music className={size === "full" ? "h-12 w-12" : "h-5 w-5"} />
         </span>
@@ -60,7 +60,7 @@ function MusicRemote({ device, size, call }: RemoteProps) {
           <div className={cn("truncate font-medium text-fg", size === "full" ? "text-[22px]" : "text-[15px]")}>{state.track || "Nothing playing"}</div>
           <div className="text-[12px] text-muted">{status}{online ? " · from YouTube" : ` · ${state.tracks ?? 0} ${state.tracks === 1 ? "track" : "tracks"} in your library`}</div>
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex flex-wrap gap-1.5">
           {state.playing
             ? <Button icon={Pause} disabled={off} onClick={() => void call("pause")}>Pause</Button>
             : <Button icon={Play} variant="primary" disabled={off} onClick={() => void call(state.paused ? "resume" : "play")}>Play</Button>}
@@ -92,4 +92,6 @@ function MusicRemote({ device, size, call }: RemoteProps) {
 export const musicRemote: RemoteSpec = {
   component: MusicRemote,
   fits: (device: Device) => has(device, "play", "pause", "stop"),
+  // The track, its status and three buttons do not fit one column beside them.
+  wide: true,
 };

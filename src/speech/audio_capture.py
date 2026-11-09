@@ -59,17 +59,27 @@ def candidate_devices(devices: list[tuple[int, str, str]], config: SpeechConfig)
     resamples was absent from one enumeration, and the first match left was
     one that refuses 16 kHz.
 
-    :raises MicrophoneError: when a name is configured and nothing matches.
+    When the configured name matches nothing, each of
+    ``fallback_device_names`` is tried in turn, and the one used is logged.
+
+    :raises MicrophoneError: when a name is configured and neither it nor
+        any fallback matches.
     """
     if config.device_index is not None:
         return [config.device_index]
     if not config.device_name:
         return [None]
-    wanted = config.device_name.casefold()
-    matches = [device for device in devices if wanted in device[2].casefold()]
+    matches: list[tuple[int, str, str]] = []
+    for name in [config.device_name, *config.fallback_device_names]:
+        matches = [device for device in devices if name.casefold() in device[2].casefold()]
+        if matches:
+            if name != config.device_name:
+                LOGGER.warning("no microphone matches %r; using the fallback %r", config.device_name, name)
+            break
     if not matches:
         raise MicrophoneError(
-            f"no input device matches speech.device_name {config.device_name!r}; "
+            f"no input device matches speech.device_name {config.device_name!r} "
+            f"or any of speech.fallback_device_names {config.fallback_device_names}; "
             f"inputs: {_names(devices)}"
         )
 

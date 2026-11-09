@@ -50,13 +50,13 @@ def _config(tmp_path):
 class Room:
     """An assistant, a real executor, and a place to look at what was published."""
 
-    def __init__(self, config, chat) -> None:
+    def __init__(self, config, chat, **executor) -> None:
         self.clock = SimClock(start_epoch_s=SATURDAY_AFTERNOON)
         self.transport = LoopbackTransport()
         boards = [Blackboard(config.mqtt, self.transport) for _ in range(3)]
         for board in boards:
             self.transport.attach(board)
-        self.executor = build_executor(config, self.clock, boards[0])
+        self.executor = build_executor(config, self.clock, boards[0], **executor)
         self.executor.subscribe()
         self.assistant = build_assistant(config, self.clock, boards[1], chat)
         self.assistant.subscribe()
@@ -772,3 +772,244 @@ class TestTheModelsOwnMistake:
         chat = ScriptedChat(calling(self.WRONG), calling(self.RIGHT))
         reply = Room(quiet, chat).say("what is on Thursday")
         assert len(chat.requests) == 1 and "does not take" not in reply.reply
+
+
+# --- The world outside (FR-101 to FR-103) ----------------------------------
+
+
+class _Search:
+    name = "searxng"
+
+    def __init__(self, hits=None):
+        from src.assistance.providers.web_search import Hit
+
+        self.hits = hits if hits is not None else [
+            Hit(title="RCB win the IPL final", url="https://www.cricbuzz.com/1", source="cricbuzz.com", snippet="By five wickets.", published_ts=SATURDAY_AFTERNOON - 3 * 3600)
+        ]
+
+    def search(self, query, *, news):
+        self.asked = [*getattr(self, "asked", []), query]
+        return list(self.hits)
+
+
+class _Scores:
+    name = "cricinfo"
+
+    def scores(self):
+        from src.assistance.providers.cricket import Match, Scores, Side
+
+        india = Match(home=Side("India", "212/4", True), away=Side("Australia", "260/10", False), url="https://cricinfo.com/1")
+        return Scores(matches=(india,), as_of=SATURDAY_AFTERNOON)
+
+
+def _fetch_page(url, timeout_s, max_bytes, stop):
+    from src.assistance.providers.pages import Page
+
+    return Page(
+        url=url,
+        content_type="text/html",
+        text="<html><title>Final report</title><article><p>RCB beat Gujarat Titans by five wickets in the final at Ahmedabad on Sunday night.</p>"
+        "<p>Virat Kohli made 75 from 42 balls and was named player of the match.</p>"
+        "<p>It was the franchise's first title, and the crowd stayed long after the presentation to celebrate.</p></article></html>",
+    )
+
+
+class WorldRoom(Room):
+    """A room whose executor searches a fake web and reads a fake score feed."""
+
+    def __init__(self, config, chat, search=None, fetch_page=None) -> None:
+        from src.assistance.__main__ import WorldParts
+
+        world = WorldParts(search=search or _Search(), scores=_Scores(), fetch_page=fetch_page or _fetch_page)
+        super().__init__(config, chat, world=world)
+        self.executor.publish_catalogue()
+
+
+def _system(chat, request):
+    return chat.requests[request][0][0]["content"]
+
+
+class TestTheWorldOutside:
+    def test_the_search_tools_are_offered_to_the_model(self, config):
+        chat = ScriptedChat(saying("Hello."))
+        WorldRoom(config, chat).say("hello", intent=Intent.QUESTION, subject="")
+        offered = {tool["function"]["name"] for tool in chat.requests[0][1]}
+        assert {"web_search", "news_search", "cricket_score"} <= offered
+
+    def test_the_model_is_told_never_to_answer_the_world_from_memory(self, config):
+        chat = ScriptedChat(saying("Hello."))
+        WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert "never answer it from memory" in _system(chat, 0)
+
+    def test_results_are_phrased_by_the_model_not_read_out(self, config):
+        chat = ScriptedChat(
+            calling(call("web_search", query="who won the IPL")),
+            saying("According to Cricbuzz, three hours ago, RCB won the final by five wickets."),
+        )
+        reply = WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert reply.reply == "According to Cricbuzz, three hours ago, RCB won the final by five wickets."
+
+    def test_the_phrasing_asks_for_the_source_and_the_age_and_no_memory(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), saying("RCB."))
+        WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        phrasing = _system(chat, 1)
+        assert "where" in phrasing and "how old" in phrasing and "memory" in phrasing
+
+    def test_the_results_reach_the_phrasing_with_their_source(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), saying("RCB."))
+        WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert "cricbuzz.com, 3 hours ago" in chat.requests[1][0][1]["content"]
+
+    def test_a_live_score_is_phrased_too(self, config):
+        chat = ScriptedChat(calling(call("cricket_score", team="India")), saying("India are 212 for 4, chasing 260."))
+        reply = WorldRoom(config, chat).say("what's the India score", intent=Intent.QUESTION, subject="")
+        assert reply.reply == "India are 212 for 4, chasing 260."
+
+    def test_without_the_model_to_phrase_it_the_top_result_is_said_without_links(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), UNAVAILABLE)
+        reply = WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert "RCB win the IPL final" in reply.reply and "cricbuzz.com" in reply.reply
+        assert "https://" not in reply.reply
+
+    def test_nothing_found_is_said_as_the_search_said_it(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="zzqx")), saying("unused"))
+        reply = WorldRoom(config, chat, search=_Search(hits=[])).say("search for zzqx", intent=Intent.QUESTION, subject="")
+        assert "found nothing" in reply.reply
+
+
+class TestDeepAnswers:
+    """FR-104: snippets first; the pages, and a second search, only when they do not answer."""
+
+    def _invocations(self, room):
+        return [(invocation.tool, dict(invocation.arguments)) for invocation in room.published(topics.ASSIST_PROPOSED, ToolInvocation)]
+
+    def test_a_question_the_snippets_answer_reads_no_page(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), saying("According to Cricbuzz, RCB won."))
+        room = WorldRoom(config, chat)
+        room.say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert [tool for tool, _ in self._invocations(room)] == ["web_search"]
+
+    def test_the_model_may_ask_for_more_when_snippets_could_be_deepened(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="who won the IPL")), saying("RCB."))
+        WorldRoom(config, chat).say("who won the IPL", intent=Intent.QUESTION, subject="")
+        assert "MORE:" in _system(chat, 1)
+
+    def test_asked_for_more_it_searches_again_in_the_better_words(self, config):
+        search = _Search()
+        chat = ScriptedChat(
+            calling(call("web_search", query="IPL")),
+            saying("MORE: IPL 2026 final result man of the match"),
+            saying("According to the final report, Kohli was player of the match."),
+        )
+        room = WorldRoom(config, chat, search=search)
+        room.say("who was player of the match in the IPL final", intent=Intent.QUESTION, subject="")
+        assert search.asked == ["IPL", "IPL 2026 final result man of the match"]
+
+    def test_then_the_top_pages_are_read_with_the_question(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE: IPL final"), saying("Kohli."))
+        room = WorldRoom(config, chat)
+        room.say("who was player of the match in the IPL final", intent=Intent.QUESTION, subject="")
+        tool, arguments = self._invocations(room)[-1]
+        assert tool == "read_pages" and arguments["urls"] == "https://www.cricbuzz.com/1"
+        assert arguments["question"] == "who was player of the match in the IPL final"
+
+    def test_the_answer_is_written_from_the_pages(self, config):
+        chat = ScriptedChat(
+            calling(call("web_search", query="IPL")),
+            saying("MORE:"),
+            saying("According to the final report, Virat Kohli was player of the match."),
+        )
+        room = WorldRoom(config, chat)
+        reply = room.say("who was player of the match in the IPL final", intent=Intent.QUESTION, subject="")
+        assert reply.reply == "According to the final report, Virat Kohli was player of the match."
+        assert "named player of the match" in chat.requests[2][0][1]["content"]
+
+    def test_the_final_answer_may_not_ask_for_more_again(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE:"), saying("RCB."))
+        WorldRoom(config, chat).say("who won", intent=Intent.QUESTION, subject="")
+        assert "MORE:" not in _system(chat, 2)
+
+    def test_asking_for_more_a_second_time_is_answered_as_not_found(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE:"), saying("MORE: something else"))
+        reply = WorldRoom(config, chat).say("who won", intent=Intent.QUESTION, subject="")
+        assert "couldn't find" in reply.reply and "MORE" not in reply.reply
+
+    def test_more_after_a_sentence_is_still_asking_for_more(self, config):
+        search = _Search()
+        chat = ScriptedChat(
+            calling(call("web_search", query="IPL")),
+            saying("The results don't say.\nMORE: IPL 2026 final player of the match"),
+            saying("Kohli was player of the match."),
+        )
+        reply = WorldRoom(config, chat, search=search).say("who was player of the match", intent=Intent.QUESTION, subject="")
+        assert search.asked == ["IPL", "IPL 2026 final player of the match"]
+        assert reply.reply == "Kohli was player of the match."
+
+    def test_an_answer_that_begins_more_in_plain_words_is_said(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="Kerala rain")), saying("More: rain is due in Kerala tomorrow, says the IMD."))
+        room = WorldRoom(config, chat)
+        reply = room.say("will it rain in Kerala", intent=Intent.QUESTION, subject="")
+        assert reply.reply == "More: rain is due in Kerala tomorrow, says the IMD."
+        assert [tool for tool, _ in self._invocations(room)] == ["web_search"]
+
+    def test_better_words_are_cut_to_a_search_length(self, config):
+        search = _Search()
+        words = " ".join(["cricket"] * 80)
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying(f"MORE: {words}"), saying("RCB."))
+        WorldRoom(config, chat, search=search).say("who won", intent=Intent.QUESTION, subject="")
+        assert len(search.asked[-1]) <= config.web_search.deep.max_query_chars and search.asked[-1].startswith("cricket")
+
+    def test_not_finding_it_after_the_pages_is_recorded(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE:"), saying("MORE: something else"))
+        room = WorldRoom(config, chat)
+        room.say("who won", intent=Intent.QUESTION, subject="")
+        assert "still not found after the pages" in room.published(topics.AUDIT_REASONING, ReasoningRecord)[-1].verdict
+
+    def test_more_without_better_words_reads_the_pages_without_searching_again(self, config):
+        search = _Search()
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE:"), saying("RCB."))
+        room = WorldRoom(config, chat, search=search)
+        room.say("who won", intent=Intent.QUESTION, subject="")
+        assert search.asked == ["IPL"] and self._invocations(room)[-1][0] == "read_pages"
+
+    def test_the_same_words_again_are_not_searched_twice(self, config):
+        search = _Search()
+        chat = ScriptedChat(calling(call("web_search", query="IPL final")), saying("MORE: ipl final"), saying("RCB."))
+        WorldRoom(config, chat, search=search).say("who won", intent=Intent.QUESTION, subject="")
+        assert search.asked == ["IPL final"]
+
+    def test_with_a_second_search_turned_off_only_the_pages_are_read(self, config):
+        deep = config.web_search.deep.model_copy(update={"search_again": False})
+        config = config.model_copy(update={"web_search": config.web_search.model_copy(update={"deep": deep})})
+        search = _Search()
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE: IPL final"), saying("RCB."))
+        WorldRoom(config, chat, search=search).say("who won", intent=Intent.QUESTION, subject="")
+        assert search.asked == ["IPL"]
+
+    def test_a_deep_answer_is_recorded_with_why(self, config):
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("MORE: IPL final"), saying("RCB."))
+        room = WorldRoom(config, chat)
+        room.say("who won", intent=Intent.QUESTION, subject="")
+        assert "deep answer" in room.published(topics.AUDIT_REASONING, ReasoningRecord)[-1].verdict
+
+    def test_headlines_are_never_deepened(self, config):
+        chat = ScriptedChat(calling(call("news_search", when="today")), saying("Here is the news."))
+        WorldRoom(config, chat).say("what's the news today", intent=Intent.QUESTION, subject="")
+        assert "MORE:" not in _system(chat, 1)
+
+    def test_news_on_a_topic_may_be_deepened(self, config):
+        chat = ScriptedChat(calling(call("news_search", topic="ISRO", when="this_week")), saying("ISRO launched."))
+        WorldRoom(config, chat).say("what did ISRO do this week", intent=Intent.QUESTION, subject="")
+        assert "MORE:" in _system(chat, 1)
+
+    def test_scores_are_never_deepened(self, config):
+        chat = ScriptedChat(calling(call("cricket_score", team="India")), saying("India are 212 for 4."))
+        WorldRoom(config, chat).say("what's the India score", intent=Intent.QUESTION, subject="")
+        assert "MORE:" not in _system(chat, 1)
+
+    def test_with_deep_answers_off_the_model_is_not_offered_more(self, config):
+        deep = config.web_search.deep.model_copy(update={"enabled": False})
+        config = config.model_copy(update={"web_search": config.web_search.model_copy(update={"deep": deep})})
+        chat = ScriptedChat(calling(call("web_search", query="IPL")), saying("RCB."))
+        WorldRoom(config, chat).say("who won", intent=Intent.QUESTION, subject="")
+        assert "MORE:" not in _system(chat, 1)
